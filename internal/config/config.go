@@ -68,12 +68,42 @@ type Config struct {
 	ChatsPageSize               int
 }
 
+var runtimeEnvPassthroughKeys = []string{
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"ALL_PROXY",
+	"NO_PROXY",
+	"http_proxy",
+	"https_proxy",
+	"all_proxy",
+	"no_proxy",
+	"NODE_USE_ENV_PROXY",
+}
+
+func RuntimeEnvPassthroughKeys() []string {
+	return append([]string(nil), runtimeEnvPassthroughKeys...)
+}
+
 func Load() (Config, error) {
 	values, err := LoadEnvFile(ConfigFilePath())
 	if err != nil {
 		return Config{}, err
 	}
+	applyRuntimeEnv(values)
 	return fromSource(envSource{lookup: os.LookupEnv, file: values}), nil
+}
+
+func applyRuntimeEnv(values map[string]string) {
+	for _, key := range runtimeEnvPassthroughKeys {
+		value := strings.TrimSpace(values[key])
+		if value == "" {
+			continue
+		}
+		if existing, ok := os.LookupEnv(key); ok && strings.TrimSpace(existing) != "" {
+			continue
+		}
+		_ = os.Setenv(key, value)
+	}
 }
 
 func FromEnv() Config {

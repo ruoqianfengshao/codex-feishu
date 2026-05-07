@@ -21,7 +21,8 @@ Source builds are fine for contributors, but they add friction for operators who
 
 - No cloud account, hosted relay, or external config service.
 - No GoReleaser dependency in the first distribution slice.
-- No automatic OS service installation.
+- Automatic OS service installation was excluded from `v0.3.0`; macOS user-level
+  service installation is added later by ADR-018.
 - No migration away from environment variables; existing deployments continue to work.
 
 ## Consequences

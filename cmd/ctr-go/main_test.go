@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/mideco-tech/codex-tg/internal/config"
+	"github.com/mideco-tech/codex-tg/internal/telegram"
 )
 
 func TestDaemonLogOutputCanBeDisabled(t *testing.T) {
@@ -142,5 +144,16 @@ func TestStatusAndDoctorDoNotLeakConfigFileToken(t *testing.T) {
 		if strings.Contains(out.String(), token) {
 			t.Fatalf("%v leaked token:\n%s", command, out.String())
 		}
+	}
+}
+
+func TestFatalErrorSanitizerRedactsTelegramBotURL(t *testing.T) {
+	errText := `Post "https://api.telegram.org/bot123456:abcdefghijklmnopqrstuvwxyz/getMe": context deadline exceeded`
+	got := telegram.SanitizeLogError(errors.New(errText))
+	if strings.Contains(got, "123456:abcdefghijklmnopqrstuvwxyz") {
+		t.Fatalf("fatal error sanitizer leaked token: %q", got)
+	}
+	if !strings.Contains(got, "bot<redacted>") {
+		t.Fatalf("fatal error sanitizer = %q, want redacted Telegram bot URL", got)
 	}
 }

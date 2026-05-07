@@ -12,7 +12,7 @@ Codex Telegram bot and remote UI for local OpenAI Codex App Server, built in Go.
 - Thread-first routing keeps replies, tools, Plan Mode, Details, and Final cards attached to the right run.
 - Built for long-running local coding-agent work from a phone.
 
-Current release: `v0.3.0`.
+Current release: `v0.4.0`.
 
 ![codex-tg Telegram Plan Mode demo](docs/assets/telegram-plan-mode-demo.png)
 
@@ -51,12 +51,13 @@ The demo flow is documented in [docs/demo/telegram-plan-mode-demo.md](docs/demo/
 - Final Card with Details pagination and on-demand Tools file export.
 - On-demand full log archive from Codex session JSONL.
 - SQLite-backed durable state for bindings, routes, callbacks, observer target, panels, and delivery metadata.
+- macOS service installer with friendly first-run setup, user LaunchAgent management, and menu bar tray control.
 - Cross-platform Go daemon foundation for Windows, macOS, and Linux.
 
 ## Platform Status
 
 - Windows: actively tested with the local Codex App Server, Telegram Bot API, observer flows, and live E2E demo.
-- macOS: `v0.3.0` is verified stable on macOS 26.3.1 arm64 with Go 1.26.2, LaunchAgent daemon startup, local build, Details binding validation, Telegram command-menu readback, real Chat folder creation, low-noise notification validation, Plan Mode reset validation, and live Telegram readback E2E. `v0.3.0` adds release binaries and first-run config without changing the Telegram runtime contract.
+- macOS: `v0.4.0` is verified stable on macOS 26.3.1 arm64 with Go 1.26.2, user LaunchAgent service setup, local build, package dry-run, Details binding validation, Telegram command-menu readback, real Chat folder creation, low-noise notification validation, Plan Mode reset validation, and live Telegram readback E2E.
 - Linux: CI runs tests/builds on Ubuntu; full local daemon/runtime validation is still pending.
 
 ## Quickstart
@@ -67,8 +68,24 @@ Prerequisites:
 - A Telegram bot token from BotFather.
 - Your Telegram numeric user id.
 
-Download the latest `ctr-go` archive for your OS from
+On macOS, download the latest `.pkg` from
 [GitHub Releases](https://github.com/mideco-tech/codex-tg/releases/latest),
+install it, then run:
+
+```powershell
+ctr-go service install --start --start-at-login
+ctr-go doctor
+```
+
+`ctr-go service install` starts a friendly first-run setup wizard when required.
+The same values can be passed with flags for scripted installs. It writes a
+private local config file at `~/.codex-tg/config.env` by default, creates a
+user LaunchAgent, and starts the daemon when `--start` is present.
+If your shell uses proxy variables such as `HTTPS_PROXY` or `NO_PROXY`, the
+installer preserves them in the private config so the LaunchAgent can reach the
+same network without putting secrets or user ids into the plist.
+
+For Linux, Windows, or manual macOS setup, download the latest `ctr-go` archive,
 unpack it, then run:
 
 ```powershell
@@ -77,9 +94,8 @@ ctr-go doctor
 ctr-go daemon run
 ```
 
-`ctr-go init` writes a private local config file at
-`~/.codex-tg/config.env` by default. Use `CTR_GO_CONFIG` to point at another
-file. Explicit environment variables still override config file values.
+Use `CTR_GO_CONFIG` to point at another config file. Explicit environment
+variables still override config file values.
 
 Build from source:
 
@@ -116,6 +132,11 @@ Set `CTR_GO_NOTIFY_NEW_RUN=off` to keep `New run` visible but silent. `[Plan]` p
 
 ```powershell
 ctr-go init
+ctr-go service install
+ctr-go service start
+ctr-go service stop
+ctr-go service restart
+ctr-go service status
 ctr-go doctor
 ctr-go status
 ctr-go repair
@@ -126,6 +147,7 @@ Source-build equivalents:
 
 ```powershell
 go run ./cmd/ctr-go init
+go run ./cmd/ctr-go service install
 go run ./cmd/ctr-go doctor
 go run ./cmd/ctr-go status
 go run ./cmd/ctr-go repair

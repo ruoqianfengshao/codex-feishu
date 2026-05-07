@@ -96,11 +96,15 @@ func (b *Bot) Run(ctx context.Context) error {
 	}
 }
 
-func sanitizeTelegramLogError(err error) string {
+func SanitizeLogError(err error) string {
 	if err == nil {
 		return ""
 	}
 	return telegramBotTokenURLPattern.ReplaceAllString(err.Error(), "bot<redacted>")
+}
+
+func sanitizeTelegramLogError(err error) string {
+	return SanitizeLogError(err)
 }
 
 func (b *Bot) SendMessage(ctx context.Context, chatID, topicID int64, text string, buttons [][]model.ButtonSpec, options model.SendOptions) (int64, error) {

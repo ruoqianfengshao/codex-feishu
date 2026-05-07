@@ -27,7 +27,7 @@ import (
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		log.SetOutput(os.Stderr)
-		log.Printf("ctr-go: %v", err)
+		log.Printf("ctr-go: %s", telegram.SanitizeLogError(err))
 		os.Exit(1)
 	}
 }
@@ -44,6 +44,8 @@ func runWithIO(args []string, in io.Reader, out io.Writer) error {
 	switch args[0] {
 	case "init":
 		return runInit(args[1:], in, out)
+	case "service":
+		return runService(args[1:], in, out)
 	case "daemon":
 		if len(args) < 2 || args[1] != "run" {
 			return errors.New("usage: ctr-go daemon run")
@@ -354,6 +356,8 @@ func writeConfigEnv(path string, values map[string]string, force bool) error {
 func printUsage(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "Usage:")
 	_, _ = fmt.Fprintln(out, "  ctr-go init [--force]")
+	_, _ = fmt.Fprintln(out, "  ctr-go service install [flags]")
+	_, _ = fmt.Fprintln(out, "  ctr-go service start|stop|restart|status|enable-login|disable-login|uninstall")
 	_, _ = fmt.Fprintln(out, "  ctr-go daemon run")
 	_, _ = fmt.Fprintln(out, "  ctr-go status")
 	_, _ = fmt.Fprintln(out, "  ctr-go doctor")

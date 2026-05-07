@@ -46,11 +46,16 @@ This file now serves two purposes:
 ## Local configuration and distribution
 
 - `ctr-go init` creates a private local config file at `~/.codex-tg/config.env` by default.
+- `ctr-go service install` is the macOS service-first setup path; it can prompt
+  interactively or receive all important values through flags.
+- macOS service lifecycle commands are `ctr-go service start|stop|restart|status|enable-login|disable-login|uninstall`.
 - `CTR_GO_CONFIG` points at an alternate config file.
 - Config precedence is explicit environment variables, then config file values, then built-in defaults.
 - Config files use simple `.env` style `KEY=VALUE` entries; comments and quoted values are supported, but shell expansion is not.
-- `status`, `doctor`, daemon logs, and init summaries must not print Telegram bot tokens in full.
-- Official GitHub Release assets include `ctr-go` archives for macOS, Linux, and Windows plus `SHA256SUMS`.
+- Runtime proxy env can be stored in the private config and applied after
+  startup; LaunchAgent plists still carry only `CTR_GO_CONFIG`.
+- `status`, `doctor`, daemon logs, init summaries, service summaries, LaunchAgent plists, and tray surfaces must not print Telegram bot tokens in full.
+- Official GitHub Release assets include `ctr-go` archives for macOS, Linux, and Windows, macOS `.pkg` artifacts, and `SHA256SUMS`.
 
 ## Target Telegram observer/UI v2 deltas
 

@@ -6,23 +6,41 @@ When behavior changes, update the relevant ADR first, then update or add the tes
 
 ## Distribution And Local Config
 
-ADR: `docs/adr/ADR-017-release-binaries-and-init.md`; feature brief is
-`docs/process/v0.3.0-distribution-brief.md`.
+ADR: `docs/adr/ADR-017-release-binaries-and-init.md` and
+`docs/adr/ADR-018-macos-service-installer.md`; feature briefs are
+`docs/process/v0.3.0-distribution-brief.md` and
+`docs/process/v0.4.0-macos-service-installer-brief.md`.
 
 Primary tests:
 
 - `internal/config/config_test.go::TestParseEnvFileSupportsCommentsAndQuotes`
 - `internal/config/config_test.go::TestParseEnvFileRejectsInvalidLine`
 - `internal/config/config_test.go::TestLoadReadsConfigFileAndEnvOverridesIt`
+- `internal/config/config_test.go::TestLoadAppliesRuntimeProxyEnvFromConfigFile`
+- `internal/config/config_test.go::TestLoadDoesNotOverrideExplicitRuntimeProxyEnv`
 - `cmd/ctr-go/main_test.go::TestRunInitWritesPrivateConfigAndRefusesOverwrite`
 - `cmd/ctr-go/main_test.go::TestRunInitForceOverwritesConfig`
 - `cmd/ctr-go/main_test.go::TestStatusAndDoctorDoNotLeakConfigFileToken`
+- `cmd/ctr-go/main_test.go::TestFatalErrorSanitizerRedactsTelegramBotURL`
+- `cmd/ctr-go/service_test.go::TestServiceInstallNonInteractiveWritesConfigAndLaunchAgent`
+- `cmd/ctr-go/service_test.go::TestServiceInstallCapturesRuntimeProxyEnvInConfig`
+- `cmd/ctr-go/service_test.go::TestServiceInstallInteractiveWizardRetriesInvalidValues`
+- `cmd/ctr-go/service_test.go::TestServiceInstallNonInteractiveReportsMissingFlags`
+- `cmd/ctr-go/service_test.go::TestRenderLaunchAgentPlistContainsOnlyConfigEnvironment`
+- `cmd/ctr-go/service_test.go::TestServiceLifecycleUsesLaunchctlRunner`
+- `cmd/ctr-go/service_test.go::TestServiceStartAcceptsKickstartFailureWhenServiceLoaded`
+- `internal/trayapp/actions_test.go::TestCTRGoArgs`
+- `internal/trayapp/actions_test.go::TestServiceSetupArgs`
 
 Contract notes:
 
 - `config.env` is local runtime state and must not be committed.
 - Explicit environment variables override config file values.
-- Release archives must not include local config, sessions, SQLite state, logs, or screenshots.
+- macOS LaunchAgent plists must carry only `CTR_GO_CONFIG`, never token/user/cwd env values.
+- Proxy env needed by the operator shell may be stored in the private config and
+  applied by the process after startup.
+- Tray control is not a settings editor in v0.4.0.
+- Release archives and packages must not include local config, sessions, SQLite state, logs, or screenshots.
 
 ## Plan Mode Routing
 

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## v0.4.0 - 2026-05-07
+
+- Added macOS user-level service installation through `ctr-go service install`, including friendly first-run prompts, non-interactive flags, LaunchAgent generation, start/stop/restart/status, login toggle, and uninstall.
+- Added a macOS menu bar tray app for service control, status, logs/config access, doctor, setup, and start-with-system toggling.
+- Added macOS `.pkg` packaging alongside the existing release archives.
+- Kept daemon secrets in local `config.env`; LaunchAgent receives only `CTR_GO_CONFIG` and never stores Telegram tokens in plist environment variables.
+- Preserved proxy runtime env in private config for LaunchAgent deployments and redacted Telegram bot URLs from fatal stderr output.
+- Added ADR-018, service installer docs, tray command tests, LaunchAgent unit coverage, and macOS package dry-run validation.
+
 ## v0.3.0 - 2026-05-07
 
 - Added official GitHub Release binaries for macOS, Linux, and Windows, with SHA-256 checksums.

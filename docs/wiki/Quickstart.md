@@ -6,9 +6,20 @@ Create a bot with BotFather and keep the token private.
 
 ## 2. Download And Initialize
 
-Download the latest `ctr-go` archive for your OS from
+On macOS, download the latest `.pkg` from
 [GitHub Releases](https://github.com/mideco-tech/codex-tg/releases/latest),
-unpack it, then run:
+install it, then run:
+
+```powershell
+ctr-go service install --start --start-at-login
+ctr-go doctor
+```
+
+`ctr-go service install` starts a friendly setup wizard when values are not
+provided through flags. It writes `~/.codex-tg/config.env`, creates a user
+LaunchAgent, and starts the daemon when `--start` is present.
+
+For archive/manual setup on any OS:
 
 ```powershell
 ctr-go init
@@ -16,9 +27,12 @@ ctr-go doctor
 ctr-go daemon run
 ```
 
-`ctr-go init` writes `~/.codex-tg/config.env` by default. Use
-`CTR_GO_CONFIG` when you want a different config path. Explicit environment
+Use `CTR_GO_CONFIG` when you want a different config path. Explicit environment
 variables override config file values.
+When your shell uses proxy env such as `HTTPS_PROXY` or `NO_PROXY`,
+`ctr-go service install` preserves those values in the private config so the
+macOS LaunchAgent can reach the same network while keeping the plist limited to
+`CTR_GO_CONFIG`.
 
 ## Environment-Only Setup
 

@@ -111,6 +111,50 @@ func TestLoadReadsConfigFileAndEnvOverridesIt(t *testing.T) {
 	}
 }
 
+func TestLoadAppliesRuntimeProxyEnvFromConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.env")
+	proxy := "http://127.0.0.1:18080"
+	if err := os.WriteFile(configPath, []byte(strings.Join([]string{
+		`CTR_GO_HOME="` + filepath.Join(dir, "home") + `"`,
+		`HTTPS_PROXY="` + proxy + `"`,
+		`NODE_USE_ENV_PROXY="1"`,
+		"",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	t.Setenv("CTR_GO_CONFIG", configPath)
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("NODE_USE_ENV_PROXY", "")
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if got := os.Getenv("HTTPS_PROXY"); got != proxy {
+		t.Fatalf("HTTPS_PROXY = %q, want %q", got, proxy)
+	}
+	if got := os.Getenv("NODE_USE_ENV_PROXY"); got != "1" {
+		t.Fatalf("NODE_USE_ENV_PROXY = %q, want 1", got)
+	}
+}
+
+func TestLoadDoesNotOverrideExplicitRuntimeProxyEnv(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.env")
+	if err := os.WriteFile(configPath, []byte(`HTTPS_PROXY="http://file-proxy"`+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	t.Setenv("CTR_GO_CONFIG", configPath)
+	t.Setenv("HTTPS_PROXY", "http://env-proxy")
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if got := os.Getenv("HTTPS_PROXY"); got != "http://env-proxy" {
+		t.Fatalf("HTTPS_PROXY = %q, want env value", got)
+	}
+}
+
 func TestConfigFilePathOverride(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "custom.env")
 	t.Setenv("CTR_GO_CONFIG", path)

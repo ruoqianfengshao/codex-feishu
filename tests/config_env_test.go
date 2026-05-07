@@ -1,13 +1,20 @@
 package tests
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/mideco-tech/codex-tg/internal/config"
 )
 
+func isolateLocalConfig(t *testing.T) {
+	t.Helper()
+	t.Setenv("CTR_GO_CONFIG", filepath.Join(t.TempDir(), "missing.env"))
+}
+
 func TestFromEnvPrefersGoScopedEnvVars(t *testing.T) {
+	isolateLocalConfig(t)
 	t.Setenv("CTR_GO_HOME", `C:\tmp\ctr-go`)
 	t.Setenv("CTR_GO_CODEX_BIN", `C:\tools\codex.exe`)
 	t.Setenv("CTR_GO_APP_SERVER_LISTEN", "stdio://")
@@ -89,6 +96,7 @@ func TestFromEnvPrefersGoScopedEnvVars(t *testing.T) {
 }
 
 func TestFromEnvProjectChatLimitsClampInvalidValues(t *testing.T) {
+	isolateLocalConfig(t)
 	t.Setenv("CTR_GO_PROJECTS_PROJECT_PREVIEW_LIMIT", "0")
 	t.Setenv("CTR_GO_PROJECTS_CHAT_PREVIEW_LIMIT", "-1")
 	t.Setenv("CTR_GO_CHATS_PAGE_SIZE", "wat")
@@ -107,6 +115,7 @@ func TestFromEnvProjectChatLimitsClampInvalidValues(t *testing.T) {
 }
 
 func TestFromEnvDefaultsLoggingOn(t *testing.T) {
+	isolateLocalConfig(t)
 	t.Setenv("CTR_GO_LOG_ENABLED", "")
 	t.Setenv("CTR_GO_DIAGNOSTIC_LOGS", "")
 	t.Setenv("CTR_GO_NOTIFY_NEW_RUN", "")
@@ -125,6 +134,7 @@ func TestFromEnvDefaultsLoggingOn(t *testing.T) {
 }
 
 func TestFromEnvInvalidLoggingFlagsFallBackToEnabled(t *testing.T) {
+	isolateLocalConfig(t)
 	t.Setenv("CTR_GO_LOG_ENABLED", "wat")
 	t.Setenv("CTR_GO_DIAGNOSTIC_LOGS", "maybe")
 	t.Setenv("CTR_GO_NOTIFY_NEW_RUN", "perhaps")
@@ -143,6 +153,7 @@ func TestFromEnvInvalidLoggingFlagsFallBackToEnabled(t *testing.T) {
 }
 
 func TestFromEnvFallsBackToLegacyTelegramVariables(t *testing.T) {
+	isolateLocalConfig(t)
 	t.Setenv("CTR_GO_TELEGRAM_BOT_TOKEN", "")
 	t.Setenv("CTR_TELEGRAM_BOT_TOKEN", "legacy-token")
 	t.Setenv("CTR_GO_ALLOWED_USER_IDS", "")
