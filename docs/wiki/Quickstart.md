@@ -4,7 +4,23 @@
 
 Create a bot with BotFather and keep the token private.
 
-## 2. Configure Environment
+## 2. Download And Initialize
+
+Download the latest `ctr-go` archive for your OS from
+[GitHub Releases](https://github.com/mideco-tech/codex-tg/releases/latest),
+unpack it, then run:
+
+```powershell
+ctr-go init
+ctr-go doctor
+ctr-go daemon run
+```
+
+`ctr-go init` writes `~/.codex-tg/config.env` by default. Use
+`CTR_GO_CONFIG` when you want a different config path. Explicit environment
+variables override config file values.
+
+## Environment-Only Setup
 
 ```powershell
 $env:CTR_GO_TELEGRAM_BOT_TOKEN = "<telegram-bot-token>"
@@ -15,13 +31,17 @@ $env:CTR_GO_CODEX_CHATS_ROOT = "C:\Users\you\Documents\Codex"
 $env:CTR_GO_NOTIFY_NEW_RUN = "on"
 ```
 
-## 3. Run
+## Build From Source
+
+Source builds require Go 1.26 or newer.
 
 ```powershell
+go run ./cmd/ctr-go init
+go run ./cmd/ctr-go doctor
 go run ./cmd/ctr-go daemon run
 ```
 
-## 4. Enable Observer
+## 3. Enable Observer
 
 In Telegram:
 

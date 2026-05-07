@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,7 +19,10 @@ type Paths struct {
 }
 
 func DefaultPaths() Paths {
-	home := os.Getenv("CTR_GO_HOME")
+	return defaultPaths(envSource{lookup: os.LookupEnv}.get("CTR_GO_HOME"))
+}
+
+func defaultPaths(home string) Paths {
 	if strings.TrimSpace(home) == "" {
 		userHome, _ := os.UserHomeDir()
 		home = filepath.Join(userHome, ".codex-tg")
@@ -64,46 +68,58 @@ type Config struct {
 	ChatsPageSize               int
 }
 
+func Load() (Config, error) {
+	values, err := LoadEnvFile(ConfigFilePath())
+	if err != nil {
+		return Config{}, err
+	}
+	return fromSource(envSource{lookup: os.LookupEnv, file: values}), nil
+}
+
 func FromEnv() Config {
-	paths := DefaultPaths()
+	cfg, err := Load()
+	if err == nil {
+		return cfg
+	}
+	return fromSource(envSource{lookup: os.LookupEnv})
+}
+
+func fromSource(source envSource) Config {
+	paths := defaultPaths(source.get("CTR_GO_HOME"))
 	cwd, err := os.Getwd()
 	if err != nil {
 		cwd = "."
 	}
-	codexBin := strings.TrimSpace(os.Getenv("CTR_GO_CODEX_BIN"))
+	codexBin := source.get("CTR_GO_CODEX_BIN")
 	if codexBin == "" {
 		codexBin = "codex"
 	}
-	listen := strings.TrimSpace(os.Getenv("CTR_GO_APP_SERVER_LISTEN"))
+	listen := source.get("CTR_GO_APP_SERVER_LISTEN")
 	if listen == "" {
 		listen = "stdio://"
-	}
-	token := strings.TrimSpace(os.Getenv("CTR_GO_TELEGRAM_BOT_TOKEN"))
-	if token == "" {
-		token = strings.TrimSpace(os.Getenv("CTR_TELEGRAM_BOT_TOKEN"))
 	}
 	return Config{
 		Paths:                       paths,
 		CodexBin:                    codexBin,
 		AppServerListen:             listen,
-		TelegramBotToken:            token,
-		AllowedUserIDs:              parseInt64List(envFirst("CTR_GO_ALLOWED_USER_IDS", "CTR_ALLOWED_USER_IDS")),
-		AllowedChatIDs:              parseInt64List(envFirst("CTR_GO_ALLOWED_CHAT_IDS", "CTR_ALLOWED_CHAT_IDS")),
-		DefaultCWD:                  envString("CTR_GO_DEFAULT_CWD", cwd),
-		CodexChatsRoot:              envPath("CTR_GO_CODEX_CHATS_ROOT", DefaultCodexChatsRoot()),
-		PanelMode:                   normalizePanelMode(envString("CTR_GO_PANEL_MODE", "per_run")),
-		LogEnabled:                  envBool("CTR_GO_LOG_ENABLED", true),
-		DiagnosticLogs:              envBool("CTR_GO_DIAGNOSTIC_LOGS", true),
-		NotifyNewRun:                envBool("CTR_GO_NOTIFY_NEW_RUN", true),
-		ObserverPollInterval:        envDurationSeconds("CTR_GO_OBSERVER_POLL_SECONDS", 5*time.Second),
-		RequestTimeout:              envDurationSeconds("CTR_GO_REQUEST_TIMEOUT_SECONDS", 30*time.Second),
-		IndexRefreshInterval:        envDurationSeconds("CTR_GO_INDEX_REFRESH_SECONDS", 45*time.Second),
-		AttachRefreshInterval:       envDurationSeconds("CTR_GO_ATTACH_REFRESH_SECONDS", 20*time.Second),
-		DeliveryRetryBase:           envDurationSeconds("CTR_GO_DELIVERY_RETRY_SECONDS", 5*time.Second),
-		DeliveryMaxAttempts:         envInt("CTR_GO_DELIVERY_MAX_ATTEMPTS", 5),
-		ProjectsProjectPreviewLimit: envPositiveInt("CTR_GO_PROJECTS_PROJECT_PREVIEW_LIMIT", 7),
-		ProjectsChatPreviewLimit:    envPositiveInt("CTR_GO_PROJECTS_CHAT_PREVIEW_LIMIT", 3),
-		ChatsPageSize:               envPositiveInt("CTR_GO_CHATS_PAGE_SIZE", 8),
+		TelegramBotToken:            source.first("CTR_GO_TELEGRAM_BOT_TOKEN", "CTR_TELEGRAM_BOT_TOKEN"),
+		AllowedUserIDs:              parseInt64List(source.first("CTR_GO_ALLOWED_USER_IDS", "CTR_ALLOWED_USER_IDS")),
+		AllowedChatIDs:              parseInt64List(source.first("CTR_GO_ALLOWED_CHAT_IDS", "CTR_ALLOWED_CHAT_IDS")),
+		DefaultCWD:                  source.string("CTR_GO_DEFAULT_CWD", cwd),
+		CodexChatsRoot:              source.path("CTR_GO_CODEX_CHATS_ROOT", DefaultCodexChatsRoot()),
+		PanelMode:                   normalizePanelMode(source.string("CTR_GO_PANEL_MODE", "per_run")),
+		LogEnabled:                  source.bool("CTR_GO_LOG_ENABLED", true),
+		DiagnosticLogs:              source.bool("CTR_GO_DIAGNOSTIC_LOGS", true),
+		NotifyNewRun:                source.bool("CTR_GO_NOTIFY_NEW_RUN", true),
+		ObserverPollInterval:        source.durationSeconds("CTR_GO_OBSERVER_POLL_SECONDS", 5*time.Second),
+		RequestTimeout:              source.durationSeconds("CTR_GO_REQUEST_TIMEOUT_SECONDS", 30*time.Second),
+		IndexRefreshInterval:        source.durationSeconds("CTR_GO_INDEX_REFRESH_SECONDS", 45*time.Second),
+		AttachRefreshInterval:       source.durationSeconds("CTR_GO_ATTACH_REFRESH_SECONDS", 20*time.Second),
+		DeliveryRetryBase:           source.durationSeconds("CTR_GO_DELIVERY_RETRY_SECONDS", 5*time.Second),
+		DeliveryMaxAttempts:         source.int("CTR_GO_DELIVERY_MAX_ATTEMPTS", 5),
+		ProjectsProjectPreviewLimit: source.positiveInt("CTR_GO_PROJECTS_PROJECT_PREVIEW_LIMIT", 7),
+		ProjectsChatPreviewLimit:    source.positiveInt("CTR_GO_PROJECTS_CHAT_PREVIEW_LIMIT", 3),
+		ChatsPageSize:               source.positiveInt("CTR_GO_CHATS_PAGE_SIZE", 8),
 	}
 }
 
@@ -161,34 +177,130 @@ func DefaultCodexChatsRoot() string {
 	return filepath.Join(userHome, "Documents", "Codex")
 }
 
-func envString(key, fallback string) string {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
+func ConfigFilePath() string {
+	if value := strings.TrimSpace(os.Getenv("CTR_GO_CONFIG")); value != "" {
+		return filepath.Clean(value)
+	}
+	return filepath.Join(DefaultPaths().Home, "config.env")
+}
+
+func LoadEnvFile(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return ParseEnvFile(data, path)
+}
+
+func ParseEnvFile(data []byte, name string) (map[string]string, error) {
+	values := make(map[string]string)
+	lines := strings.Split(string(data), "\n")
+	for i, rawLine := range lines {
+		line := strings.TrimSpace(strings.TrimSuffix(rawLine, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			return nil, fmt.Errorf("%s:%d: expected KEY=VALUE", name, i+1)
+		}
+		key = strings.TrimSpace(key)
+		if !validEnvKey(key) {
+			return nil, fmt.Errorf("%s:%d: invalid key %q", name, i+1, key)
+		}
+		parsed, err := parseEnvFileValue(value)
+		if err != nil {
+			return nil, fmt.Errorf("%s:%d: %w", name, i+1, err)
+		}
+		values[key] = parsed
+	}
+	return values, nil
+}
+
+func parseEnvFileValue(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		return strconv.Unquote(value)
+	}
+	if len(value) >= 2 && value[0] == '\'' && value[len(value)-1] == '\'' {
+		return value[1 : len(value)-1], nil
+	}
+	return value, nil
+}
+
+func validEnvKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	first := key[0]
+	if !(first == '_' || first >= 'A' && first <= 'Z' || first >= 'a' && first <= 'z') {
+		return false
+	}
+	for i := 1; i < len(key); i++ {
+		ch := key[i]
+		if !(ch == '_' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func positiveOrDefault(value, fallback int) int {
+	if value <= 0 {
 		return fallback
 	}
 	return value
 }
 
-func envPath(key, fallback string) string {
-	value := envString(key, fallback)
-	if strings.TrimSpace(value) == "" {
-		return ""
-	}
-	return filepath.Clean(value)
+type envSource struct {
+	lookup func(string) (string, bool)
+	file   map[string]string
 }
 
-func envFirst(keys ...string) string {
+func (s envSource) get(key string) string {
+	if s.lookup != nil {
+		if value, ok := s.lookup(key); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	if s.file != nil {
+		if value, ok := s.file[key]; ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func (s envSource) first(keys ...string) string {
 	for _, key := range keys {
-		value := strings.TrimSpace(os.Getenv(key))
-		if value != "" {
+		if value := s.get(key); value != "" {
 			return value
 		}
 	}
 	return ""
 }
 
-func envInt(key string, fallback int) int {
-	value := strings.TrimSpace(os.Getenv(key))
+func (s envSource) string(key, fallback string) string {
+	value := s.get(key)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func (s envSource) path(key, fallback string) string {
+	value := s.string(key, fallback)
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return filepath.Clean(value)
+}
+
+func (s envSource) int(key string, fallback int) int {
+	value := s.get(key)
 	if value == "" {
 		return fallback
 	}
@@ -199,19 +311,12 @@ func envInt(key string, fallback int) int {
 	return parsed
 }
 
-func envPositiveInt(key string, fallback int) int {
-	return positiveOrDefault(envInt(key, fallback), fallback)
+func (s envSource) positiveInt(key string, fallback int) int {
+	return positiveOrDefault(s.int(key, fallback), fallback)
 }
 
-func positiveOrDefault(value, fallback int) int {
-	if value <= 0 {
-		return fallback
-	}
-	return value
-}
-
-func envBool(key string, fallback bool) bool {
-	value := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+func (s envSource) bool(key string, fallback bool) bool {
+	value := strings.TrimSpace(strings.ToLower(s.get(key)))
 	if value == "" {
 		return fallback
 	}
@@ -225,8 +330,8 @@ func envBool(key string, fallback bool) bool {
 	}
 }
 
-func envDurationSeconds(key string, fallback time.Duration) time.Duration {
-	value := strings.TrimSpace(os.Getenv(key))
+func (s envSource) durationSeconds(key string, fallback time.Duration) time.Duration {
+	value := s.get(key)
 	if value == "" {
 		return fallback
 	}

@@ -4,6 +4,26 @@ This map is the handoff index for agents changing Telegram routing, observer pan
 
 When behavior changes, update the relevant ADR first, then update or add the tests named here. The tests are part of the architecture: they describe the contract that must survive App Server drift and daemon restarts.
 
+## Distribution And Local Config
+
+ADR: `docs/adr/ADR-017-release-binaries-and-init.md`; feature brief is
+`docs/process/v0.3.0-distribution-brief.md`.
+
+Primary tests:
+
+- `internal/config/config_test.go::TestParseEnvFileSupportsCommentsAndQuotes`
+- `internal/config/config_test.go::TestParseEnvFileRejectsInvalidLine`
+- `internal/config/config_test.go::TestLoadReadsConfigFileAndEnvOverridesIt`
+- `cmd/ctr-go/main_test.go::TestRunInitWritesPrivateConfigAndRefusesOverwrite`
+- `cmd/ctr-go/main_test.go::TestRunInitForceOverwritesConfig`
+- `cmd/ctr-go/main_test.go::TestStatusAndDoctorDoNotLeakConfigFileToken`
+
+Contract notes:
+
+- `config.env` is local runtime state and must not be committed.
+- Explicit environment variables override config file values.
+- Release archives must not include local config, sessions, SQLite state, logs, or screenshots.
+
 ## Plan Mode Routing
 
 ADR: `docs/adr/ADR-006-plan-prompt-mode.md`; reset addendum:

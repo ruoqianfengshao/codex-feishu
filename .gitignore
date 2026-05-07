@@ -2,6 +2,7 @@
 .env.local
 .env.*
 !.env.example
+config.env
 
 # Local Telegram/MTProto live-E2E credentials and session state.
 *.session

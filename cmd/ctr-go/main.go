@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,8 +9,11 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -29,28 +33,49 @@ func main() {
 }
 
 func run(args []string) error {
+	return runWithIO(args, os.Stdin, os.Stdout)
+}
+
+func runWithIO(args []string, in io.Reader, out io.Writer) error {
 	if len(args) == 0 {
-		printUsage(os.Stdout)
+		printUsage(out)
 		return nil
 	}
-	cfg := config.FromEnv()
 	switch args[0] {
+	case "init":
+		return runInit(args[1:], in, out)
 	case "daemon":
 		if len(args) < 2 || args[1] != "run" {
 			return errors.New("usage: ctr-go daemon run")
 		}
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
 		return runDaemon(cfg)
 	case "status":
-		return runStatus(cfg)
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		return runStatus(cfg, out)
 	case "doctor":
-		return runDoctor(cfg)
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		return runDoctor(cfg, out)
 	case "repair":
-		return runRepair(cfg)
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		return runRepair(cfg, out)
 	case "version":
-		_, _ = fmt.Fprintf(os.Stdout, "ctr-go v%s\n", version.Version)
+		_, _ = fmt.Fprintf(out, "ctr-go v%s\n", version.Version)
 		return nil
 	case "help", "--help", "-h":
-		printUsage(os.Stdout)
+		printUsage(out)
 		return nil
 	default:
 		return fmt.Errorf("unknown command: %s", strings.Join(args, " "))
@@ -105,7 +130,7 @@ func diagnosticLogger(cfg config.Config, logger *log.Logger) *log.Logger {
 	return logger
 }
 
-func runStatus(cfg config.Config) error {
+func runStatus(cfg config.Config, out io.Writer) error {
 	service, err := daemon.New(cfg)
 	if err != nil {
 		return err
@@ -147,11 +172,11 @@ func runStatus(cfg config.Config) error {
 			lines = append(lines, fmt.Sprintf("%s = %s", key, state[key]))
 		}
 	}
-	_, _ = fmt.Fprintln(os.Stdout, strings.Join(lines, "\n"))
+	_, _ = fmt.Fprintln(out, strings.Join(lines, "\n"))
 	return nil
 }
 
-func runDoctor(cfg config.Config) error {
+func runDoctor(cfg config.Config, out io.Writer) error {
 	service, err := daemon.New(cfg)
 	if err != nil {
 		return err
@@ -168,11 +193,11 @@ func runDoctor(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintln(os.Stdout, string(encoded))
+	_, _ = fmt.Fprintln(out, string(encoded))
 	return nil
 }
 
-func runRepair(cfg config.Config) error {
+func runRepair(cfg config.Config, out io.Writer) error {
 	service, err := daemon.New(cfg)
 	if err != nil {
 		return err
@@ -184,17 +209,164 @@ func runRepair(cfg config.Config) error {
 	if err := service.RequestRepair(ctx, "cli"); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintln(os.Stdout, "Repair requested.")
+	_, _ = fmt.Fprintln(out, "Repair requested.")
 	return nil
 }
 
-func printUsage(out *os.File) {
+func runInit(args []string, in io.Reader, out io.Writer) error {
+	force := false
+	for _, arg := range args {
+		switch arg {
+		case "--force":
+			force = true
+		case "help", "--help", "-h":
+			printInitUsage(out)
+			return nil
+		default:
+			return fmt.Errorf("usage: ctr-go init [--force]")
+		}
+	}
+
+	path := config.ConfigFilePath()
+	if _, err := os.Stat(path); err == nil && !force {
+		return fmt.Errorf("%s already exists; rerun with --force to overwrite it", path)
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	codexBin := "codex"
+	if found, err := exec.LookPath("codex"); err == nil && strings.TrimSpace(found) != "" {
+		codexBin = found
+	}
+
+	reader := bufio.NewReader(in)
+	_, _ = fmt.Fprintln(out, "This writes a local codex-tg config file. Keep it private.")
+	token, err := promptRequired(reader, out, "Telegram bot token")
+	if err != nil {
+		return err
+	}
+	allowedUsers, err := promptRequired(reader, out, "Allowed Telegram user id(s)")
+	if err != nil {
+		return err
+	}
+	allowedChats, err := prompt(reader, out, "Allowed Telegram chat id(s), optional", "")
+	if err != nil {
+		return err
+	}
+	defaultCWD, err := prompt(reader, out, "Default cwd", cwd)
+	if err != nil {
+		return err
+	}
+	chatsRoot, err := prompt(reader, out, "Codex Chats root", config.DefaultCodexChatsRoot())
+	if err != nil {
+		return err
+	}
+	selectedCodexBin, err := prompt(reader, out, "Codex binary", codexBin)
+	if err != nil {
+		return err
+	}
+	notifyNewRun, err := prompt(reader, out, "Notify on New run", "true")
+	if err != nil {
+		return err
+	}
+
+	values := map[string]string{
+		"CTR_GO_TELEGRAM_BOT_TOKEN": token,
+		"CTR_GO_ALLOWED_USER_IDS":   allowedUsers,
+		"CTR_GO_DEFAULT_CWD":        defaultCWD,
+		"CTR_GO_CODEX_CHATS_ROOT":   chatsRoot,
+		"CTR_GO_CODEX_BIN":          selectedCodexBin,
+		"CTR_GO_NOTIFY_NEW_RUN":     notifyNewRun,
+	}
+	if strings.TrimSpace(allowedChats) != "" {
+		values["CTR_GO_ALLOWED_CHAT_IDS"] = allowedChats
+	}
+	if err := writeConfigEnv(path, values, force); err != nil {
+		return err
+	}
+
+	_, _ = fmt.Fprintf(out, "\nWrote %s\n", path)
+	_, _ = fmt.Fprintln(out, "Next steps:")
+	_, _ = fmt.Fprintln(out, "  ctr-go doctor")
+	_, _ = fmt.Fprintln(out, "  ctr-go daemon run")
+	return nil
+}
+
+func promptRequired(reader *bufio.Reader, out io.Writer, label string) (string, error) {
+	value, err := prompt(reader, out, label, "")
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("%s is required", label)
+	}
+	return value, nil
+}
+
+func prompt(reader *bufio.Reader, out io.Writer, label, fallback string) (string, error) {
+	if fallback == "" {
+		_, _ = fmt.Fprintf(out, "%s: ", label)
+	} else {
+		_, _ = fmt.Fprintf(out, "%s [%s]: ", label, fallback)
+	}
+	line, err := reader.ReadString('\n')
+	if err != nil && !(errors.Is(err, io.EOF) && line != "") {
+		return "", err
+	}
+	value := strings.TrimSpace(line)
+	if value == "" {
+		return fallback, nil
+	}
+	return value, nil
+}
+
+func writeConfigEnv(path string, values map[string]string, force bool) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	flag := os.O_WRONLY | os.O_CREATE | os.O_EXCL
+	if force {
+		flag = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	}
+	file, err := os.OpenFile(path, flag, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	_, _ = fmt.Fprintln(file, "# codex-tg local configuration")
+	_, _ = fmt.Fprintln(file, "# Keep this file private. It contains Telegram credentials.")
+	for _, key := range keys {
+		_, _ = fmt.Fprintf(file, "%s=%s\n", key, strconv.Quote(values[key]))
+	}
+	return file.Chmod(0o600)
+}
+
+func printUsage(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "Usage:")
+	_, _ = fmt.Fprintln(out, "  ctr-go init [--force]")
 	_, _ = fmt.Fprintln(out, "  ctr-go daemon run")
 	_, _ = fmt.Fprintln(out, "  ctr-go status")
 	_, _ = fmt.Fprintln(out, "  ctr-go doctor")
 	_, _ = fmt.Fprintln(out, "  ctr-go repair")
 	_, _ = fmt.Fprintln(out, "  ctr-go version")
+}
+
+func printInitUsage(out io.Writer) {
+	_, _ = fmt.Fprintln(out, "Usage:")
+	_, _ = fmt.Fprintln(out, "  ctr-go init [--force]")
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "Creates a private local config.env for codex-tg.")
+	_, _ = fmt.Fprintln(out, "Set CTR_GO_CONFIG to choose a custom config path.")
 }
 
 func formatIDs(values []int64) string {

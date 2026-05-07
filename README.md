@@ -12,7 +12,7 @@ Codex Telegram bot and remote UI for local OpenAI Codex App Server, built in Go.
 - Thread-first routing keeps replies, tools, Plan Mode, Details, and Final cards attached to the right run.
 - Built for long-running local coding-agent work from a phone.
 
-Current release: `v0.2.7`.
+Current release: `v0.3.0`.
 
 ![codex-tg Telegram Plan Mode demo](docs/assets/telegram-plan-mode-demo.png)
 
@@ -56,27 +56,47 @@ The demo flow is documented in [docs/demo/telegram-plan-mode-demo.md](docs/demo/
 ## Platform Status
 
 - Windows: actively tested with the local Codex App Server, Telegram Bot API, observer flows, and live E2E demo.
-- macOS: `v0.2.7` is verified stable on macOS 26.3.1 arm64 with Go 1.26.2, LaunchAgent daemon startup, local build, Details binding validation, Telegram command-menu readback, real Chat folder creation, low-noise notification validation, Plan Mode reset validation, and live Telegram readback E2E. `v0.2.7` is a documentation hotfix on top of the same runtime.
+- macOS: `v0.3.0` is verified stable on macOS 26.3.1 arm64 with Go 1.26.2, LaunchAgent daemon startup, local build, Details binding validation, Telegram command-menu readback, real Chat folder creation, low-noise notification validation, Plan Mode reset validation, and live Telegram readback E2E. `v0.3.0` adds release binaries and first-run config without changing the Telegram runtime contract.
 - Linux: CI runs tests/builds on Ubuntu; full local daemon/runtime validation is still pending.
 
 ## Quickstart
 
 Prerequisites:
 
-- Go 1.26 or newer.
 - OpenAI Codex CLI with `codex app-server`.
 - A Telegram bot token from BotFather.
 - Your Telegram numeric user id.
 
+Download the latest `ctr-go` archive for your OS from
+[GitHub Releases](https://github.com/mideco-tech/codex-tg/releases/latest),
+unpack it, then run:
+
+```powershell
+ctr-go init
+ctr-go doctor
+ctr-go daemon run
+```
+
+`ctr-go init` writes a private local config file at
+`~/.codex-tg/config.env` by default. Use `CTR_GO_CONFIG` to point at another
+file. Explicit environment variables still override config file values.
+
+Build from source:
+
 ```powershell
 git clone https://github.com/mideco-tech/codex-tg.git
 cd codex-tg
+go run ./cmd/ctr-go init
+go run ./cmd/ctr-go doctor
+go run ./cmd/ctr-go daemon run
+```
 
+Environment-only setup remains supported:
+
+```powershell
 $env:CTR_GO_TELEGRAM_BOT_TOKEN = "<telegram-bot-token>"
 $env:CTR_GO_ALLOWED_USER_IDS = "<telegram-user-id>"
 $env:CTR_GO_DEFAULT_CWD = "C:\Users\you\Projects\Codex"
-
-go run ./cmd/ctr-go daemon run
 ```
 
 In Telegram:
@@ -95,6 +115,17 @@ Set `CTR_GO_NOTIFY_NEW_RUN=off` to keep `New run` visible but silent. `[Plan]` p
 ## Runtime Commands
 
 ```powershell
+ctr-go init
+ctr-go doctor
+ctr-go status
+ctr-go repair
+ctr-go daemon run
+```
+
+Source-build equivalents:
+
+```powershell
+go run ./cmd/ctr-go init
 go run ./cmd/ctr-go doctor
 go run ./cmd/ctr-go status
 go run ./cmd/ctr-go repair
@@ -125,6 +156,7 @@ still attach the daemon default cwd.
 Primary environment variables:
 
 - `CTR_GO_HOME`
+- `CTR_GO_CONFIG` (`~/.codex-tg/config.env` by default)
 - `CTR_GO_CODEX_BIN`
 - `CTR_GO_APP_SERVER_LISTEN`
 - `CTR_GO_TELEGRAM_BOT_TOKEN`

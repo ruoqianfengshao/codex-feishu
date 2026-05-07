@@ -7,11 +7,13 @@
 - Codex App Server runs locally over stdio.
 - Telegram access is restricted by allowed user/chat ids.
 - SQLite state stays on the operator machine.
+- `ctr-go init` stores local configuration in `~/.codex-tg/config.env` by default.
 
 ## Never Commit
 
 - `.env`
 - Bot tokens
+- `config.env`
 - Telegram user sessions
 - Chat ids from private deployments
 - SQLite databases
@@ -21,4 +23,3 @@
 ## Network Boundary
 
 Do not expose Codex App Server on a public interface. Telegram is the remote surface; App Server stays local.
-

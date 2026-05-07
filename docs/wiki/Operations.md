@@ -3,7 +3,7 @@
 ## Status
 
 ```powershell
-go run ./cmd/ctr-go status
+ctr-go status
 ```
 
 In Telegram:
@@ -16,7 +16,7 @@ In Telegram:
 ## Repair
 
 ```powershell
-go run ./cmd/ctr-go repair
+ctr-go repair
 ```
 
 In Telegram:
@@ -41,3 +41,10 @@ Future restart work should implement a drain/guard path that refuses or delays r
 ## Common Issue
 
 Telegram `409 Conflict` means another process is polling the same bot token. Stop the other consumer before starting `codex-tg`.
+
+## Local Config
+
+`ctr-go init` writes `~/.codex-tg/config.env` by default. Set
+`CTR_GO_CONFIG` to use another path. Environment variables override values from
+the config file, which lets LaunchAgent/systemd/manual deployments keep their
+existing overrides.

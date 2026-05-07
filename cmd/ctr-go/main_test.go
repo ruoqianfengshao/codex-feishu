@@ -1,8 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"log"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/mideco-tech/codex-tg/internal/config"
@@ -28,5 +33,114 @@ func TestDiagnosticLoggerHonorsFlags(t *testing.T) {
 	}
 	if got := diagnosticLogger(config.Config{LogEnabled: true, DiagnosticLogs: false}, logger); got != nil {
 		t.Fatal("diagnosticLogger(diagnostics disabled) returned logger, want nil")
+	}
+}
+
+func TestRunInitWritesPrivateConfigAndRefusesOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.env")
+	t.Setenv("CTR_GO_CONFIG", configPath)
+	token := "123456:abcdefghijklmnopqrstuvwxyz"
+	input := strings.Join([]string{
+		token,
+		"42",
+		"",
+		filepath.Join(dir, "project"),
+		filepath.Join(dir, "chats"),
+		"codex",
+		"false",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+
+	if err := runWithIO([]string{"init"}, strings.NewReader(input), &out); err != nil {
+		t.Fatalf("run init failed: %v", err)
+	}
+	if strings.Contains(out.String(), token) {
+		t.Fatal("init output leaked Telegram bot token")
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		`CTR_GO_TELEGRAM_BOT_TOKEN="` + token + `"`,
+		`CTR_GO_ALLOWED_USER_IDS="42"`,
+		`CTR_GO_CODEX_BIN="codex"`,
+		`CTR_GO_NOTIFY_NEW_RUN="false"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("config file missing %q:\n%s", want, text)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(configPath)
+		if err != nil {
+			t.Fatalf("Stat failed: %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("config mode = %o, want 0600", got)
+		}
+	}
+	if err := runWithIO([]string{"init"}, strings.NewReader(input), io.Discard); err == nil {
+		t.Fatal("second init succeeded, want overwrite refusal")
+	}
+}
+
+func TestRunInitForceOverwritesConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.env")
+	t.Setenv("CTR_GO_CONFIG", configPath)
+	if err := os.WriteFile(configPath, []byte("old=true\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	input := strings.Join([]string{
+		"token",
+		"42",
+		"",
+		filepath.Join(dir, "project"),
+		filepath.Join(dir, "chats"),
+		"codex",
+		"true",
+		"",
+	}, "\n")
+
+	if err := runWithIO([]string{"init", "--force"}, strings.NewReader(input), io.Discard); err != nil {
+		t.Fatalf("run init --force failed: %v", err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if strings.Contains(string(data), "old=true") {
+		t.Fatalf("config was not overwritten:\n%s", data)
+	}
+}
+
+func TestStatusAndDoctorDoNotLeakConfigFileToken(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.env")
+	home := filepath.Join(dir, "home")
+	token := "123456:abcdefghijklmnopqrstuvwxyz"
+	if err := os.WriteFile(configPath, []byte(strings.Join([]string{
+		`CTR_GO_HOME="` + home + `"`,
+		`CTR_GO_TELEGRAM_BOT_TOKEN="` + token + `"`,
+		`CTR_GO_ALLOWED_USER_IDS="42"`,
+		`CTR_GO_DEFAULT_CWD="` + dir + `"`,
+		"",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	t.Setenv("CTR_GO_CONFIG", configPath)
+
+	for _, command := range [][]string{{"status"}, {"doctor"}} {
+		var out bytes.Buffer
+		if err := runWithIO(command, strings.NewReader(""), &out); err != nil {
+			t.Fatalf("%v failed: %v", command, err)
+		}
+		if strings.Contains(out.String(), token) {
+			t.Fatalf("%v leaked token:\n%s", command, out.String())
+		}
 	}
 }

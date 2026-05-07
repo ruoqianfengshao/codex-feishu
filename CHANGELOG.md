@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v0.3.0 - 2026-05-07
+
+- Added official GitHub Release binaries for macOS, Linux, and Windows, with SHA-256 checksums.
+- Added `ctr-go init` to create a private local `config.env` for first-run setup.
+- Added config file loading from `~/.codex-tg/config.env` or `CTR_GO_CONFIG`, while preserving explicit environment variables as the highest-priority source.
+- Kept Telegram bot tokens out of `status`, `doctor`, daemon logs, and init summaries.
+- Added ADR-017, a distribution brief, release workflow, release packaging script, and CLI/config unit coverage.
+
 ## v0.2.7 - 2026-05-06
 
 - Replaced the operator-specific Russian-language agent instruction in `AGENTS.md` with language-neutral guidance for future contributors.

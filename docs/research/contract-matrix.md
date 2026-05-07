@@ -43,6 +43,15 @@ This file now serves two purposes:
 - `/codex_settings` is an alias of `/settings`
 - `/away` and `/back` exist in the Python product surface but are not part of the minimal Go cutover slice yet
 
+## Local configuration and distribution
+
+- `ctr-go init` creates a private local config file at `~/.codex-tg/config.env` by default.
+- `CTR_GO_CONFIG` points at an alternate config file.
+- Config precedence is explicit environment variables, then config file values, then built-in defaults.
+- Config files use simple `.env` style `KEY=VALUE` entries; comments and quoted values are supported, but shell expansion is not.
+- `status`, `doctor`, daemon logs, and init summaries must not print Telegram bot tokens in full.
+- Official GitHub Release assets include `ctr-go` archives for macOS, Linux, and Windows plus `SHA256SUMS`.
+
 ## Target Telegram observer/UI v2 deltas
 
 - Global observer monitoring is default-on when an operator target can be resolved automatically.

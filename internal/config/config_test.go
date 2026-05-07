@@ -2,12 +2,16 @@ package config
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
 
 func TestFromEnvReadsCodexChatsRoot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "Codex")
+	t.Setenv("CTR_GO_CONFIG", filepath.Join(t.TempDir(), "missing.env"))
 	t.Setenv("CTR_GO_CODEX_CHATS_ROOT", root)
 
 	cfg := FromEnv()
@@ -30,5 +34,88 @@ func TestMarshalJSONIncludesNotifyNewRun(t *testing.T) {
 	}
 	if got["notify_new_run"] != true {
 		t.Fatalf("notify_new_run = %#v, want true", got["notify_new_run"])
+	}
+}
+
+func TestParseEnvFileSupportsCommentsAndQuotes(t *testing.T) {
+	t.Parallel()
+
+	values, err := ParseEnvFile([]byte(`
+# comment
+CTR_GO_TELEGRAM_BOT_TOKEN="token with spaces"
+CTR_GO_ALLOWED_USER_IDS='123,456'
+CTR_GO_NOTIFY_NEW_RUN=off
+`), "test.env")
+	if err != nil {
+		t.Fatalf("ParseEnvFile failed: %v", err)
+	}
+	want := map[string]string{
+		"CTR_GO_TELEGRAM_BOT_TOKEN": "token with spaces",
+		"CTR_GO_ALLOWED_USER_IDS":   "123,456",
+		"CTR_GO_NOTIFY_NEW_RUN":     "off",
+	}
+	if !reflect.DeepEqual(values, want) {
+		t.Fatalf("values = %#v, want %#v", values, want)
+	}
+}
+
+func TestParseEnvFileRejectsInvalidLine(t *testing.T) {
+	t.Parallel()
+
+	_, err := ParseEnvFile([]byte("not-an-assignment\n"), "bad.env")
+	if err == nil {
+		t.Fatal("ParseEnvFile succeeded, want invalid line error")
+	}
+	if !strings.Contains(err.Error(), "expected KEY=VALUE") {
+		t.Fatalf("error = %v, want KEY=VALUE message", err)
+	}
+}
+
+func TestLoadReadsConfigFileAndEnvOverridesIt(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.env")
+	fileDefaultCWD := filepath.Join(dir, "from-file")
+	envDefaultCWD := filepath.Join(dir, "from-env")
+	home := filepath.Join(dir, "home")
+	if err := os.WriteFile(configPath, []byte(strings.Join([]string{
+		`CTR_GO_HOME="` + home + `"`,
+		`CTR_GO_TELEGRAM_BOT_TOKEN="file-token"`,
+		`CTR_GO_ALLOWED_USER_IDS="101 202"`,
+		`CTR_GO_DEFAULT_CWD="` + fileDefaultCWD + `"`,
+		`CTR_GO_NOTIFY_NEW_RUN="off"`,
+		"",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	t.Setenv("CTR_GO_CONFIG", configPath)
+	t.Setenv("CTR_GO_DEFAULT_CWD", envDefaultCWD)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.TelegramBotToken != "file-token" {
+		t.Fatalf("TelegramBotToken = %q, want file-token", cfg.TelegramBotToken)
+	}
+	if !reflect.DeepEqual(cfg.AllowedUserIDs, []int64{101, 202}) {
+		t.Fatalf("AllowedUserIDs = %#v, want 101,202", cfg.AllowedUserIDs)
+	}
+	if cfg.DefaultCWD != envDefaultCWD {
+		t.Fatalf("DefaultCWD = %q, want env override %q", cfg.DefaultCWD, envDefaultCWD)
+	}
+	if cfg.Paths.Home != home {
+		t.Fatalf("Home = %q, want %q", cfg.Paths.Home, home)
+	}
+	if cfg.NotifyNewRun {
+		t.Fatal("NotifyNewRun = true, want false from config file")
+	}
+}
+
+func TestConfigFilePathOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "custom.env")
+	t.Setenv("CTR_GO_CONFIG", path)
+
+	if got := ConfigFilePath(); got != path {
+		t.Fatalf("ConfigFilePath = %q, want %q", got, path)
 	}
 }
