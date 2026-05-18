@@ -19,7 +19,7 @@ and other private adapters.
 - Thread-first routing keeps replies, tools, Plan Mode, Details, and Final cards attached to the right run.
 - Built toward long-running local coding-agent orchestration and future router-agent workflows.
 
-Current release: `v0.4.0`.
+Current release: `v0.5.0`.
 
 ![codex-tg Telegram Plan Mode demo](docs/assets/telegram-plan-mode-demo.png)
 
@@ -73,7 +73,7 @@ future adapters can consume the same Codex control core.
 ## Platform Status
 
 - Windows: actively tested with the local Codex App Server, Telegram Bot API, observer flows, and live E2E demo.
-- macOS: `v0.4.0` is verified stable on macOS 26.3.1 arm64 with Go 1.26.2, user LaunchAgent service setup, local build, package dry-run, Details binding validation, Telegram command-menu readback, real Chat folder creation, low-noise notification validation, Plan Mode reset validation, and live Telegram readback E2E.
+- macOS: `v0.5.0` preserves the `v0.4.0` verified service/runtime path on macOS 26.3.1 arm64 with Go 1.26.2, and adds validated Codex Control Plane architecture, internal control interfaces, capability mapping, normalized event contracts, and notification severity policy.
 - Linux: CI runs tests/builds on Ubuntu; full local daemon/runtime validation is still pending.
 
 ## Quickstart

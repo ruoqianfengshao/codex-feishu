@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## v0.5.0 - 2026-05-18
+
+- Repositioned the project from a Telegram-first remote UI to a local Codex Control Plane with Telegram as the first production adapter.
+- Added ADR-019, Control Plane wiki docs, v0.5 feature brief, roadmap, research notes, and theory log.
+- Added `internal/control` with adapter-independent runtime/control interfaces for App Server-backed threads, turns, events, approvals, models, ecosystem discovery, diagnostics, and notifications.
+- Added App Server wrappers for thread fork/name/archive/unarchive/compact/rollback plus skills, hooks, MCP status, app list, config, and plugin skill discovery.
+- Added a schema-backed App Server capability map for installed Codex method detection, including future goal API drift handling.
+- Moved normalized event and notification severity contracts into the control layer while preserving existing Telegram adapter behavior.
+- Added `.DS_Store` ignore rules to keep macOS metadata out of future commits.
+
 ## v0.4.0 - 2026-05-07
 
 - Added macOS user-level service installation through `ctr-go service install`, including friendly first-run prompts, non-interactive flags, LaunchAgent generation, start/stop/restart/status, login toggle, and uninstall.

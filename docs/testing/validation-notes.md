@@ -4,6 +4,10 @@ This file captures validation nuances that are useful for agents and maintainers
 
 For feature-to-test ownership, see `docs/testing/regression-map.md`.
 
+## v0.5.0 control-plane architecture
+
+2026-05-18 PDT: v0.5.0 control-plane architecture validation added ADR-019, Control Plane docs, internal control interfaces, App Server capability mapping, normalized event contracts, and notification severity policy. The slice was validated with targeted `internal/control`, `internal/appserver`, and `internal/daemon` tests, full `go test ./...`, `go build -buildvcs=false ./...`, `git diff --check`, and targeted secret/local scans. Live Telegram E2E was not required because Telegram-visible behavior was not changed.
+
 ## Runtime and documented UX contract
 
 The public docs describe the intended observer/UI contract:
