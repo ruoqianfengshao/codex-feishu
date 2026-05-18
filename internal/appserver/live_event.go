@@ -4,43 +4,26 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mideco-tech/codex-tg/internal/control"
 	"github.com/mideco-tech/codex-tg/internal/model"
 )
 
-type LiveEventKind string
+type LiveEventKind = control.EventKind
+type NormalizedLiveEvent control.NormalizedEvent
 
 const (
-	LiveEventTurnStarted        LiveEventKind = "turn_started"
-	LiveEventTurnCompleted      LiveEventKind = "turn_completed"
-	LiveEventThreadStatus       LiveEventKind = "thread_status"
-	LiveEventToolStarted        LiveEventKind = "tool_started"
-	LiveEventToolUpdated        LiveEventKind = "tool_updated"
-	LiveEventToolCompleted      LiveEventKind = "tool_completed"
-	LiveEventAgentMessage       LiveEventKind = "agent_message"
-	LiveEventApprovalRequest    LiveEventKind = "approval_request"
-	LiveEventInputRequest       LiveEventKind = "input_request"
-	LiveEventLegacyTaskStarted  LiveEventKind = "legacy_task_started"
-	LiveEventLegacyTaskComplete LiveEventKind = "legacy_task_complete"
+	LiveEventTurnStarted        = control.EventTurnStarted
+	LiveEventTurnCompleted      = control.EventTurnCompleted
+	LiveEventThreadStatus       = control.EventThreadStatus
+	LiveEventToolStarted        = control.EventToolStarted
+	LiveEventToolUpdated        = control.EventToolUpdated
+	LiveEventToolCompleted      = control.EventToolCompleted
+	LiveEventAgentMessage       = control.EventAgentMessage
+	LiveEventApprovalRequest    = control.EventApprovalRequest
+	LiveEventInputRequest       = control.EventInputRequest
+	LiveEventLegacyTaskStarted  = control.EventLegacyTaskStarted
+	LiveEventLegacyTaskComplete = control.EventLegacyTaskComplete
 )
-
-type NormalizedLiveEvent struct {
-	Kind        LiveEventKind
-	Method      string
-	ThreadID    string
-	ThreadTitle string
-	ProjectName string
-	TurnID      string
-	TurnStatus  string
-	ItemID      string
-	ItemKind    string
-	Label       string
-	Status      string
-	Output      string
-	Text        string
-	Phase       string
-	RequestID   string
-	Raw         Event
-}
 
 func NormalizeAppServerLiveEvent(event Event, thread model.Thread) (NormalizedLiveEvent, bool) {
 	normalized := NormalizedLiveEvent{
