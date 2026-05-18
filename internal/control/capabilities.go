@@ -2,6 +2,7 @@ package control
 
 import (
 	"encoding/json"
+	"os"
 	"sort"
 )
 
@@ -64,6 +65,14 @@ func CapabilitiesFromClientRequestSchema(data []byte) (CapabilityMap, error) {
 		methods = append(methods, option.Properties.Method.Enum...)
 	}
 	return CapabilitiesFromMethods(methods), nil
+}
+
+func CapabilitiesFromClientRequestSchemaFile(path string) (CapabilityMap, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return CapabilityMap{}, err
+	}
+	return CapabilitiesFromClientRequestSchema(data)
 }
 
 func (m CapabilityMap) SupportsMethod(method string) bool {

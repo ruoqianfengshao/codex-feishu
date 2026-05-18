@@ -1,6 +1,8 @@
 package control
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -61,5 +63,27 @@ func TestCapabilitiesFromClientRequestSchema(t *testing.T) {
 func TestCapabilitiesFromClientRequestSchemaRejectsInvalidJSON(t *testing.T) {
 	if _, err := CapabilitiesFromClientRequestSchema([]byte(`{`)); err == nil {
 		t.Fatal("invalid JSON succeeded")
+	}
+}
+
+func TestCapabilitiesFromClientRequestSchemaFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ClientRequest.json")
+	if err := os.WriteFile(path, []byte(`{
+	  "oneOf": [
+	    {"properties": {"method": {"enum": ["app/list"]}}},
+	    {"properties": {"method": {"enum": ["hooks/list"]}}}
+	  ]
+	}`), 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	capabilities, err := CapabilitiesFromClientRequestSchemaFile(path)
+	if err != nil {
+		t.Fatalf("CapabilitiesFromClientRequestSchemaFile failed: %v", err)
+	}
+	if !capabilities.Supports(CapabilityAppList) {
+		t.Fatal("app list capability should be supported")
+	}
+	if !capabilities.Supports(CapabilityHooksList) {
+		t.Fatal("hooks list capability should be supported")
 	}
 }
