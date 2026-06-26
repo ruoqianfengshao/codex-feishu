@@ -1,7 +1,7 @@
 # codex-tg Wiki
 
-`codex-tg` is a local Codex Control Plane with Telegram as its first production
-adapter.
+`codex-tg` is a local Codex Control Plane with Telegram and Feishu/Lark chat
+adapters.
 
 ## Start Here
 
@@ -20,7 +20,8 @@ adapter.
 Keep Codex local, but make its threads observable and controllable through
 stable private adapters.
 
-The daemon currently owns Telegram polling, Codex App Server connectivity,
-SQLite state, observer polling, and route/callback handling. The v0.5 direction
-extracts the Codex control layer so future router agents, voice assistants, and
-local APIs can reuse it without copying Telegram-specific behavior.
+The daemon currently owns chat adapter connectivity, Codex App Server
+connectivity, SQLite state, observer polling, and route/callback handling. The
+v0.5 direction extracts the Codex control layer so future router agents, voice
+assistants, and local APIs can reuse it without copying adapter-specific
+behavior.

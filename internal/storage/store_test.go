@@ -137,6 +137,93 @@ func TestBindingAndGlobalObserverCanCoexist(t *testing.T) {
 	}
 }
 
+func TestResolveExternalIDIsStableAndDistinctByNamespace(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	first, err := store.ResolveExternalID(ctx, "feishu.chat", "oc_1")
+	if err != nil {
+		t.Fatalf("ResolveExternalID first failed: %v", err)
+	}
+	second, err := store.ResolveExternalID(ctx, "feishu.chat", "oc_1")
+	if err != nil {
+		t.Fatalf("ResolveExternalID second failed: %v", err)
+	}
+	otherNamespace, err := store.ResolveExternalID(ctx, "feishu.user", "oc_1")
+	if err != nil {
+		t.Fatalf("ResolveExternalID other namespace failed: %v", err)
+	}
+	if first == 0 || second != first {
+		t.Fatalf("stable ids = %d/%d, want same non-zero", first, second)
+	}
+	if otherNamespace == first {
+		t.Fatalf("namespace id collision = %d", first)
+	}
+	external, err := store.ExternalIDForNumeric(ctx, "feishu.chat", first)
+	if err != nil {
+		t.Fatalf("ExternalIDForNumeric failed: %v", err)
+	}
+	if external != "oc_1" {
+		t.Fatalf("external = %q, want oc_1", external)
+	}
+}
+
+func TestFeishuMessageMapRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	if err := store.PutFeishuMessageMap(ctx, 101, "om_1", 202, "oc_1"); err != nil {
+		t.Fatalf("PutFeishuMessageMap failed: %v", err)
+	}
+	byNumeric, err := store.GetFeishuMessageByNumericID(ctx, 101)
+	if err != nil {
+		t.Fatalf("GetFeishuMessageByNumericID failed: %v", err)
+	}
+	if byNumeric == nil || byNumeric.OpenMessageID != "om_1" || byNumeric.OpenChatID != "oc_1" {
+		t.Fatalf("byNumeric = %#v", byNumeric)
+	}
+	byOpen, err := store.GetFeishuMessageByOpenID(ctx, "om_1")
+	if err != nil {
+		t.Fatalf("GetFeishuMessageByOpenID failed: %v", err)
+	}
+	if byOpen == nil || byOpen.MessageID != 101 || byOpen.ChatID != 202 {
+		t.Fatalf("byOpen = %#v", byOpen)
+	}
+}
+
+func TestSetStateIfAbsentClaimsOnlyOnce(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	claimed, err := store.SetStateIfAbsent(ctx, "feishu.inbound.test", "first")
+	if err != nil {
+		t.Fatalf("SetStateIfAbsent(first) failed: %v", err)
+	}
+	if !claimed {
+		t.Fatal("SetStateIfAbsent(first) claimed = false, want true")
+	}
+	claimed, err = store.SetStateIfAbsent(ctx, "feishu.inbound.test", "second")
+	if err != nil {
+		t.Fatalf("SetStateIfAbsent(second) failed: %v", err)
+	}
+	if claimed {
+		t.Fatal("SetStateIfAbsent(second) claimed = true, want false")
+	}
+	value, err := store.GetState(ctx, "feishu.inbound.test")
+	if err != nil {
+		t.Fatalf("GetState failed: %v", err)
+	}
+	if value != "first" {
+		t.Fatalf("state value = %q, want first", value)
+	}
+}
+
 func TestListThreadsFiltersInternalAppServerThreads(t *testing.T) {
 	t.Parallel()
 
@@ -357,6 +444,88 @@ func TestThreadPanelLifecycleKeepsSingleCurrentPanelPerChatThread(t *testing.T) 
 	}
 	if secondLoaded.PlanPromptMessageID != 260 || secondLoaded.LastPlanPromptFP != "plan-fp-2" {
 		t.Fatalf("second plan prompt state = id %d fp %q, want 260/plan-fp-2", secondLoaded.PlanPromptMessageID, secondLoaded.LastPlanPromptFP)
+	}
+}
+
+func TestGetLatestCurrentPanelForChat(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	if err := store.UpsertThread(ctx, model.Thread{
+		ID:           "thread-1",
+		Title:        "First",
+		ProjectName:  "Codex",
+		ActiveTurnID: "turn-old",
+	}); err != nil {
+		t.Fatalf("UpsertThread(thread-1) failed: %v", err)
+	}
+	if err := store.UpsertThread(ctx, model.Thread{
+		ID:           "thread-2",
+		Title:        "Second",
+		ProjectName:  "Codex",
+		ActiveTurnID: "turn-2",
+	}); err != nil {
+		t.Fatalf("UpsertThread(thread-2) failed: %v", err)
+	}
+	if err := store.UpsertThread(ctx, model.Thread{
+		ID:           "thread-other",
+		Title:        "Other",
+		ProjectName:  "Codex",
+		ActiveTurnID: "turn-other",
+	}); err != nil {
+		t.Fatalf("UpsertThread(thread-other) failed: %v", err)
+	}
+
+	first, err := store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:        123456789,
+		TopicID:       0,
+		ProjectName:   "Codex",
+		ThreadID:      "thread-1",
+		SourceMode:    model.PanelSourceExplicit,
+		CurrentTurnID: "turn-1",
+		Status:        "completed",
+	})
+	if err != nil {
+		t.Fatalf("CreateThreadPanel(first) failed: %v", err)
+	}
+	second, err := store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:        123456789,
+		TopicID:       0,
+		ProjectName:   "Codex",
+		ThreadID:      "thread-2",
+		SourceMode:    model.PanelSourceFeishuInput,
+		CurrentTurnID: "turn-2",
+		Status:        "inProgress",
+	})
+	if err != nil {
+		t.Fatalf("CreateThreadPanel(second) failed: %v", err)
+	}
+	otherChat, err := store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:      987654321,
+		TopicID:     0,
+		ProjectName: "Codex",
+		ThreadID:    "thread-other",
+		SourceMode:  model.PanelSourceExplicit,
+		Status:      "inProgress",
+	})
+	if err != nil {
+		t.Fatalf("CreateThreadPanel(otherChat) failed: %v", err)
+	}
+	if err := store.UpdateThreadPanelState(ctx, first.ID, "turn-1", "inProgress", "summary-newer", "", "", ""); err != nil {
+		t.Fatalf("UpdateThreadPanelState(first) failed: %v", err)
+	}
+
+	current, err := store.GetLatestCurrentPanelForChat(ctx, 123456789, 0)
+	if err != nil {
+		t.Fatalf("GetLatestCurrentPanelForChat failed: %v", err)
+	}
+	if current == nil || current.ID != second.ID || current.ThreadID != "thread-2" {
+		t.Fatalf("latest current panel = %#v, want second panel %#v", current, second)
+	}
+	if current.ID == first.ID || current.ID == otherChat.ID {
+		t.Fatalf("latest current panel selected wrong chat/thread: %#v", current)
 	}
 }
 

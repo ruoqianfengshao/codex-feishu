@@ -5,11 +5,14 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mideco-tech/codex-tg/internal/config"
 	"github.com/mideco-tech/codex-tg/internal/telegram"
@@ -38,18 +41,65 @@ func TestDiagnosticLoggerHonorsFlags(t *testing.T) {
 	}
 }
 
+func TestSelectedAdapterPrefersExplicitValueThenAutoCredentials(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.Config
+		want string
+	}{
+		{
+			name: "explicit feishu",
+			cfg: config.Config{
+				Adapter:          "feishu",
+				TelegramBotToken: "123456:abcdefghijklmnopqrstuvwxyz",
+			},
+			want: "feishu",
+		},
+		{
+			name: "auto feishu",
+			cfg: config.Config{
+				Adapter:         "auto",
+				FeishuAppID:     "cli_app",
+				FeishuAppSecret: "secret",
+			},
+			want: "feishu",
+		},
+		{
+			name: "auto telegram",
+			cfg: config.Config{
+				TelegramBotToken: "123456:abcdefghijklmnopqrstuvwxyz",
+			},
+			want: "telegram",
+		},
+		{
+			name: "not configured",
+			cfg:  config.Config{Adapter: "auto"},
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := selectedAdapter(tt.cfg); got != tt.want {
+				t.Fatalf("selectedAdapter() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunInitWritesPrivateConfigAndRefusesOverwrite(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.env")
 	t.Setenv("CTR_GO_CONFIG", configPath)
 	token := "123456:abcdefghijklmnopqrstuvwxyz"
 	input := strings.Join([]string{
+		"",
 		token,
 		"42",
 		"",
 		filepath.Join(dir, "project"),
 		filepath.Join(dir, "chats"),
 		"codex",
+		"false",
 		"false",
 		"",
 	}, "\n")
@@ -71,6 +121,7 @@ func TestRunInitWritesPrivateConfigAndRefusesOverwrite(t *testing.T) {
 		`CTR_GO_ALLOWED_USER_IDS="42"`,
 		`CTR_GO_CODEX_BIN="codex"`,
 		`CTR_GO_NOTIFY_NEW_RUN="false"`,
+		`CTR_GO_NOTIFY_SYSTEM="false"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("config file missing %q:\n%s", want, text)
@@ -90,6 +141,53 @@ func TestRunInitWritesPrivateConfigAndRefusesOverwrite(t *testing.T) {
 	}
 }
 
+func TestRunInitWritesFeishuConfigWithoutLeakingSecret(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.env")
+	t.Setenv("CTR_GO_CONFIG", configPath)
+	secret := "feishu-secret-value"
+	input := strings.Join([]string{
+		"feishu",
+		"cli_app_id",
+		secret,
+		"ou_1,ou_2",
+		"oc_chat",
+		filepath.Join(dir, "project"),
+		filepath.Join(dir, "chats"),
+		"codex",
+		"true",
+		"true",
+		"",
+	}, "\n")
+	var out bytes.Buffer
+
+	if err := runWithIO([]string{"init"}, strings.NewReader(input), &out); err != nil {
+		t.Fatalf("run init failed: %v", err)
+	}
+	if strings.Contains(out.String(), secret) {
+		t.Fatal("init output leaked Feishu app secret")
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		`CTR_GO_ADAPTER="feishu"`,
+		`CTR_GO_FEISHU_APP_ID="cli_app_id"`,
+		`CTR_GO_FEISHU_APP_SECRET="` + secret + `"`,
+		`CTR_GO_FEISHU_ALLOWED_OPEN_IDS="ou_1,ou_2"`,
+		`CTR_GO_FEISHU_ALLOWED_CHAT_IDS="oc_chat"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("config file missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "CTR_GO_TELEGRAM_BOT_TOKEN") {
+		t.Fatalf("Feishu config included Telegram token key:\n%s", text)
+	}
+}
+
 func TestRunInitForceOverwritesConfig(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.env")
@@ -98,12 +196,14 @@ func TestRunInitForceOverwritesConfig(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 	input := strings.Join([]string{
+		"",
 		"token",
 		"42",
 		"",
 		filepath.Join(dir, "project"),
 		filepath.Join(dir, "chats"),
 		"codex",
+		"true",
 		"true",
 		"",
 	}, "\n")
@@ -118,6 +218,104 @@ func TestRunInitForceOverwritesConfig(t *testing.T) {
 	if strings.Contains(string(data), "old=true") {
 		t.Fatalf("config was not overwritten:\n%s", data)
 	}
+}
+
+func TestRunFeishuSetupWritesConfigFromScanRegistration(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.env")
+	t.Setenv("CTR_GO_CONFIG", configPath)
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:18080")
+	binary := os.Args[0]
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/oauth/v1/app/registration" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm failed: %v", err)
+		}
+		switch r.Form.Get("action") {
+		case "begin":
+			_, _ = w.Write([]byte(`{"device_code":"device-1","verification_uri_complete":"` + serverURL(r) + `/scan?code=1","expires_in":60,"interval":1}`))
+		case "poll":
+			_, _ = w.Write([]byte(`{"client_id":"cli_app","client_secret":"feishu-secret-value","user_info":{"open_id":"ou_creator","tenant_brand":"feishu"}}`))
+		default:
+			t.Fatalf("unexpected action %q", r.Form.Get("action"))
+		}
+	}))
+	defer server.Close()
+	var out bytes.Buffer
+
+	err := runFeishuSetupWithOptions(feishuSetupOptions{
+		Force:          false,
+		NoQR:           true,
+		ConfigPath:     configPath,
+		Domain:         server.URL,
+		DefaultCWD:     dir,
+		CodexChatsRoot: filepath.Join(dir, "Codex"),
+		CodexBin:       binary,
+		NotifyNewRun:   "false",
+		NotifySystem:   "false",
+		RequestTimeout: time.Minute,
+	}, strings.NewReader(""), &out)
+	if err != nil {
+		t.Fatalf("feishu setup failed: %v", err)
+	}
+	output := out.String()
+	if strings.Contains(output, "feishu-secret-value") {
+		t.Fatalf("setup output leaked secret:\n%s", output)
+	}
+	if !strings.Contains(output, "Setup link:") || strings.Contains(output, "█") {
+		t.Fatalf("setup output did not honor no-qr:\n%s", output)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile config failed: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		`CTR_GO_ADAPTER="feishu"`,
+		`CTR_GO_FEISHU_APP_ID="cli_app"`,
+		`CTR_GO_FEISHU_APP_SECRET="feishu-secret-value"`,
+		`CTR_GO_FEISHU_ALLOWED_OPEN_IDS="ou_creator"`,
+		`CTR_GO_NOTIFY_NEW_RUN="false"`,
+		`CTR_GO_NOTIFY_SYSTEM="false"`,
+		`CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU="true"`,
+		`HTTPS_PROXY="http://127.0.0.1:18080"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("config missing %q:\n%s", want, text)
+		}
+	}
+	for _, bad := range []string{"CTR_GO_TELEGRAM_BOT_TOKEN", "CTR_GO_ALLOWED_USER_IDS"} {
+		if strings.Contains(text, bad) {
+			t.Fatalf("config contains Telegram-only key %q:\n%s", bad, text)
+		}
+	}
+}
+
+func TestRunFeishuSetupRefusesOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.env")
+	if err := os.WriteFile(configPath, []byte("CTR_GO_ADAPTER=telegram\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	err := runFeishuSetupWithOptions(feishuSetupOptions{
+		ConfigPath:     configPath,
+		DefaultCWD:     dir,
+		CodexChatsRoot: filepath.Join(dir, "Codex"),
+		CodexBin:       os.Args[0],
+		RequestTimeout: time.Millisecond,
+	}, strings.NewReader(""), io.Discard)
+	if err == nil {
+		t.Fatal("feishu setup succeeded, want overwrite refusal")
+	}
+	if !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("error = %v, want --force hint", err)
+	}
+}
+
+func serverURL(r *http.Request) string {
+	return "http://" + r.Host
 }
 
 func TestStatusAndDoctorDoNotLeakConfigFileToken(t *testing.T) {

@@ -2,7 +2,9 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -215,6 +217,25 @@ func (s *Store) initialize(ctx context.Context) error {
 		updated_at TEXT NOT NULL
 	);
 
+	CREATE TABLE IF NOT EXISTS external_id_maps (
+		namespace TEXT NOT NULL,
+		external_id TEXT NOT NULL,
+		numeric_id INTEGER NOT NULL,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY(namespace, external_id),
+		UNIQUE(namespace, numeric_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS feishu_message_maps (
+		message_id INTEGER PRIMARY KEY,
+		open_message_id TEXT NOT NULL UNIQUE,
+		chat_id INTEGER NOT NULL,
+		open_chat_id TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_threads_updated_at ON threads(updated_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_threads_project_updated_at ON threads(project_name, updated_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_bindings_thread_id ON thread_bindings(thread_id);
@@ -223,6 +244,7 @@ func (s *Store) initialize(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_pending_approvals_status_updated_at ON pending_approvals(status, updated_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_thread_panels_thread_current ON thread_panels(chat_id, topic_id, thread_id, is_current, updated_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_chat_steer_expires_at ON chat_steer_state(expires_at);
+	CREATE INDEX IF NOT EXISTS idx_feishu_message_maps_open_chat_id ON feishu_message_maps(open_chat_id);
 	`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return err
@@ -581,6 +603,118 @@ func (s *Store) ResolveMessageRoute(ctx context.Context, chatID, topicID, messag
 	return &route, nil
 }
 
+func (s *Store) ResolveExternalID(ctx context.Context, namespace, externalID string) (int64, error) {
+	namespace = strings.TrimSpace(namespace)
+	externalID = strings.TrimSpace(externalID)
+	if namespace == "" || externalID == "" {
+		return 0, nil
+	}
+	row := s.db.QueryRowContext(ctx, `
+	SELECT numeric_id FROM external_id_maps WHERE namespace = ? AND external_id = ?`, namespace, externalID)
+	var numericID int64
+	err := row.Scan(&numericID)
+	if err == nil {
+		return numericID, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+
+	now := string(model.NowString())
+	for attempt := uint64(0); attempt < 1024; attempt++ {
+		numericID = stableExternalNumericID(namespace, externalID, attempt)
+		_, err := s.db.ExecContext(ctx, `
+		INSERT INTO external_id_maps(namespace, external_id, numeric_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?)`, namespace, externalID, numericID, now, now)
+		if err == nil {
+			return numericID, nil
+		}
+		existing, lookupErr := s.externalIDForNumeric(ctx, namespace, numericID)
+		if lookupErr != nil {
+			return 0, errors.Join(err, lookupErr)
+		}
+		if existing == externalID {
+			return numericID, nil
+		}
+		if existing != "" {
+			continue
+		}
+		return 0, err
+	}
+	return 0, fmt.Errorf("external id mapping collision exhausted for %s:%s", namespace, externalID)
+}
+
+func (s *Store) externalIDForNumeric(ctx context.Context, namespace string, numericID int64) (string, error) {
+	row := s.db.QueryRowContext(ctx, `
+	SELECT external_id FROM external_id_maps WHERE namespace = ? AND numeric_id = ?`, namespace, numericID)
+	var externalID string
+	err := row.Scan(&externalID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return externalID, err
+}
+
+func stableExternalNumericID(namespace, externalID string, attempt uint64) int64 {
+	var attemptBytes [8]byte
+	binary.BigEndian.PutUint64(attemptBytes[:], attempt)
+	sum := sha256.Sum256([]byte(namespace + "\x00" + externalID + "\x00" + string(attemptBytes[:])))
+	value := int64(binary.BigEndian.Uint64(sum[:8]) & 0x7fffffffffffffff)
+	if value == 0 {
+		return 1
+	}
+	return value
+}
+
+func (s *Store) ExternalIDForNumeric(ctx context.Context, namespace string, numericID int64) (string, error) {
+	return s.externalIDForNumeric(ctx, strings.TrimSpace(namespace), numericID)
+}
+
+func (s *Store) PutFeishuMessageMap(ctx context.Context, messageID int64, openMessageID string, chatID int64, openChatID string) error {
+	openMessageID = strings.TrimSpace(openMessageID)
+	openChatID = strings.TrimSpace(openChatID)
+	if messageID == 0 || openMessageID == "" {
+		return nil
+	}
+	now := string(model.NowString())
+	_, err := s.db.ExecContext(ctx, `
+	INSERT INTO feishu_message_maps(message_id, open_message_id, chat_id, open_chat_id, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?)
+	ON CONFLICT(message_id) DO UPDATE SET
+		open_message_id = excluded.open_message_id,
+		chat_id = excluded.chat_id,
+		open_chat_id = excluded.open_chat_id,
+		updated_at = excluded.updated_at`,
+		messageID, openMessageID, chatID, openChatID, now, now)
+	return err
+}
+
+func (s *Store) GetFeishuMessageByNumericID(ctx context.Context, messageID int64) (*model.FeishuMessageMap, error) {
+	row := s.db.QueryRowContext(ctx, `
+	SELECT message_id, open_message_id, chat_id, open_chat_id, created_at, updated_at
+	FROM feishu_message_maps WHERE message_id = ?`, messageID)
+	return scanFeishuMessageMap(row)
+}
+
+func (s *Store) GetFeishuMessageByOpenID(ctx context.Context, openMessageID string) (*model.FeishuMessageMap, error) {
+	row := s.db.QueryRowContext(ctx, `
+	SELECT message_id, open_message_id, chat_id, open_chat_id, created_at, updated_at
+	FROM feishu_message_maps WHERE open_message_id = ?`, strings.TrimSpace(openMessageID))
+	return scanFeishuMessageMap(row)
+}
+
+func scanFeishuMessageMap(scanner interface{ Scan(...any) error }) (*model.FeishuMessageMap, error) {
+	var item model.FeishuMessageMap
+	err := scanner.Scan(&item.MessageID, &item.OpenMessageID, &item.ChatID, &item.OpenChatID, &item.CreatedAt, &item.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
 func (s *Store) PutCallbackRoute(ctx context.Context, route model.CallbackRoute) error {
 	_, err := s.db.ExecContext(ctx, `
 	INSERT OR REPLACE INTO callback_routes(route_token, action, thread_id, turn_id, request_id, telegram_message_id, status, expires_at, payload_json, created_at)
@@ -752,6 +886,22 @@ func (s *Store) SetState(ctx context.Context, key, value string) error {
 		key, value, string(model.NowString()),
 	)
 	return err
+}
+
+func (s *Store) SetStateIfAbsent(ctx context.Context, key, value string) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `
+	INSERT INTO daemon_state(key, value, updated_at) VALUES (?, ?, ?)
+	ON CONFLICT(key) DO NOTHING`,
+		key, value, string(model.NowString()),
+	)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
 }
 
 func (s *Store) GetState(ctx context.Context, key string) (string, error) {

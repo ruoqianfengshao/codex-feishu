@@ -3,9 +3,14 @@ package appserver
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"crypto/sha1"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"os/exec"
@@ -44,6 +49,7 @@ type Client struct {
 	stdin          io.WriteCloser
 	stdout         io.ReadCloser
 	stderr         io.ReadCloser
+	ws             *webSocketProxyTransport
 	pending        map[uint64]chan rpcResponse
 	subscribers    []chan Event
 	nextID         uint64
@@ -68,6 +74,268 @@ func NewClient(codexBin, listenURL, cwd string, requestTimeout time.Duration) *C
 	}
 }
 
+type webSocketProxyTransport struct {
+	stdin  io.WriteCloser
+	reader *bufio.Reader
+	mu     sync.Mutex
+}
+
+func newWebSocketProxyTransport(ctx context.Context, stdin io.WriteCloser, stdout io.Reader) (*webSocketProxyTransport, error) {
+	reader := bufio.NewReader(stdout)
+	keyBytes := make([]byte, 16)
+	if _, err := rand.Read(keyBytes); err != nil {
+		return nil, err
+	}
+	key := base64.StdEncoding.EncodeToString(keyBytes)
+	request := "GET / HTTP/1.1\r\n" +
+		"Host: codex-app-server\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Sec-WebSocket-Key: " + key + "\r\n" +
+		"Sec-WebSocket-Version: 13\r\n" +
+		"\r\n"
+	if err := writeWithContext(ctx, stdin, []byte(request)); err != nil {
+		return nil, err
+	}
+	if err := readWebSocketHandshake(ctx, reader, key); err != nil {
+		return nil, err
+	}
+	return &webSocketProxyTransport{stdin: stdin, reader: reader}, nil
+}
+
+func writeWithContext(ctx context.Context, writer io.Writer, data []byte) error {
+	type result struct {
+		n   int
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		n, err := writer.Write(data)
+		done <- result{n: n, err: err}
+	}()
+	select {
+	case outcome := <-done:
+		if outcome.err != nil {
+			return outcome.err
+		}
+		if outcome.n != len(data) {
+			return io.ErrShortWrite
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func readWebSocketHandshake(ctx context.Context, reader *bufio.Reader, key string) error {
+	type result struct {
+		headers map[string]string
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		headers, err := readWebSocketHandshakeHeaders(reader)
+		done <- result{headers: headers, err: err}
+	}()
+	select {
+	case outcome := <-done:
+		if outcome.err != nil {
+			return outcome.err
+		}
+		status := strings.ToLower(outcome.headers[":status"])
+		if !strings.Contains(status, "101") {
+			return fmt.Errorf("websocket upgrade failed: %s", outcome.headers[":status"])
+		}
+		if !strings.EqualFold(outcome.headers["upgrade"], "websocket") {
+			return fmt.Errorf("websocket upgrade missing Upgrade header")
+		}
+		if !headerContainsToken(outcome.headers["connection"], "upgrade") {
+			return fmt.Errorf("websocket upgrade missing Connection header")
+		}
+		if got, want := outcome.headers["sec-websocket-accept"], webSocketAcceptKey(key); got != want {
+			return fmt.Errorf("websocket upgrade accept mismatch")
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func readWebSocketHandshakeHeaders(reader *bufio.Reader) (map[string]string, error) {
+	status, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	headers := map[string]string{":status": strings.TrimSpace(status)}
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			return headers, nil
+		}
+		name, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		headers[strings.ToLower(strings.TrimSpace(name))] = strings.TrimSpace(value)
+	}
+}
+
+func headerContainsToken(value, token string) bool {
+	for _, part := range strings.Split(value, ",") {
+		if strings.EqualFold(strings.TrimSpace(part), token) {
+			return true
+		}
+	}
+	return false
+}
+
+func webSocketAcceptKey(key string) string {
+	sum := sha1Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+	return base64.StdEncoding.EncodeToString(sum)
+}
+
+func sha1Sum(data []byte) []byte {
+	h := sha1New()
+	_, _ = h.Write(data)
+	return h.Sum(nil)
+}
+
+func sha1New() hash.Hash {
+	return sha1.New()
+}
+
+func (ws *webSocketProxyTransport) Write(payload []byte) (int, error) {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	if err := writeWebSocketFrame(ws.stdin, 0x1, payload, true); err != nil {
+		return 0, err
+	}
+	return len(payload), nil
+}
+
+func (ws *webSocketProxyTransport) Close() error {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	_ = writeWebSocketFrame(ws.stdin, 0x8, nil, true)
+	return ws.stdin.Close()
+}
+
+func (ws *webSocketProxyTransport) ReadText() ([]byte, error) {
+	for {
+		opcode, payload, err := readWebSocketFrame(ws.reader)
+		if err != nil {
+			return nil, err
+		}
+		switch opcode {
+		case 0x1:
+			return payload, nil
+		case 0x8:
+			return nil, io.EOF
+		case 0x9:
+			ws.mu.Lock()
+			err := writeWebSocketFrame(ws.stdin, 0xA, payload, true)
+			ws.mu.Unlock()
+			if err != nil {
+				return nil, err
+			}
+		case 0xA:
+			continue
+		default:
+			continue
+		}
+	}
+}
+
+func writeWebSocketFrame(writer io.Writer, opcode byte, payload []byte, mask bool) error {
+	header := []byte{0x80 | opcode}
+	payloadLen := len(payload)
+	switch {
+	case payloadLen <= 125:
+		header = append(header, byte(payloadLen))
+	case payloadLen <= 0xFFFF:
+		header = append(header, 126, byte(payloadLen>>8), byte(payloadLen))
+	default:
+		header = append(header, 127)
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(payloadLen))
+		header = append(header, length[:]...)
+	}
+	if mask {
+		header[1] |= 0x80
+		var maskKey [4]byte
+		if _, err := rand.Read(maskKey[:]); err != nil {
+			return err
+		}
+		header = append(header, maskKey[:]...)
+		masked := make([]byte, payloadLen)
+		for i, b := range payload {
+			masked[i] = b ^ maskKey[i%4]
+		}
+		payload = masked
+	}
+	if _, err := writer.Write(header); err != nil {
+		return err
+	}
+	if payloadLen == 0 {
+		return nil
+	}
+	_, err := writer.Write(payload)
+	return err
+}
+
+func readWebSocketFrame(reader io.Reader) (byte, []byte, error) {
+	var header [2]byte
+	if _, err := io.ReadFull(reader, header[:]); err != nil {
+		return 0, nil, err
+	}
+	fin := header[0]&0x80 != 0
+	opcode := header[0] & 0x0F
+	if !fin {
+		return 0, nil, errors.New("fragmented websocket frames are not supported")
+	}
+	masked := header[1]&0x80 != 0
+	payloadLen := uint64(header[1] & 0x7F)
+	switch payloadLen {
+	case 126:
+		var length [2]byte
+		if _, err := io.ReadFull(reader, length[:]); err != nil {
+			return 0, nil, err
+		}
+		payloadLen = uint64(binary.BigEndian.Uint16(length[:]))
+	case 127:
+		var length [8]byte
+		if _, err := io.ReadFull(reader, length[:]); err != nil {
+			return 0, nil, err
+		}
+		payloadLen = binary.BigEndian.Uint64(length[:])
+	}
+	if payloadLen > 16*1024*1024 {
+		return 0, nil, fmt.Errorf("websocket frame too large: %d", payloadLen)
+	}
+	var maskKey [4]byte
+	if masked {
+		if _, err := io.ReadFull(reader, maskKey[:]); err != nil {
+			return 0, nil, err
+		}
+	}
+	payload := make([]byte, int(payloadLen))
+	if payloadLen > 0 {
+		if _, err := io.ReadFull(reader, payload); err != nil {
+			return 0, nil, err
+		}
+	}
+	if masked {
+		for i, b := range payload {
+			payload[i] = b ^ maskKey[i%4]
+		}
+	}
+	return opcode, payload, nil
+}
+
 func (c *Client) Start(ctx context.Context) error {
 	c.startMu.Lock()
 	defer c.startMu.Unlock()
@@ -77,34 +345,51 @@ func (c *Client) Start(ctx context.Context) error {
 		c.mu.Unlock()
 		return nil
 	}
+	c.mu.Unlock()
+
 	cmd, err := c.buildCommand()
 	if err != nil {
-		c.mu.Unlock()
 		return err
 	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		c.mu.Unlock()
 		return err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		c.mu.Unlock()
 		return err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		c.mu.Unlock()
 		return err
 	}
 	if err := cmd.Start(); err != nil {
-		c.mu.Unlock()
 		return err
 	}
+
+	writeCloser := io.WriteCloser(stdin)
+	var ws *webSocketProxyTransport
+	if proxy, _ := appServerProxyTarget(c.listenURL); proxy {
+		ws, err = newWebSocketProxyTransport(ctx, stdin, stdout)
+		if err != nil {
+			_ = stdin.Close()
+			_ = stdout.Close()
+			_ = stderr.Close()
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+				_, _ = cmd.Process.Wait()
+			}
+			return err
+		}
+		writeCloser = ws
+	}
+
+	c.mu.Lock()
 	c.cmd = cmd
-	c.stdin = stdin
+	c.stdin = writeCloser
 	c.stdout = stdout
 	c.stderr = stderr
+	c.ws = ws
 	c.started = true
 	c.generation++
 	generation := c.generation
@@ -154,6 +439,7 @@ func (c *Client) closeRunning() error {
 	c.stdin = nil
 	c.stdout = nil
 	c.stderr = nil
+	c.ws = nil
 	c.mu.Unlock()
 
 	if stdin != nil {
@@ -402,6 +688,10 @@ func (c *Client) TurnStart(ctx context.Context, threadID, message, cwd string, o
 		return nil, err
 	}
 	return asMap(result), nil
+}
+
+func TurnStartParams(threadID, message, cwd string, options TurnStartOptions) (map[string]any, error) {
+	return turnStartParams(threadID, message, cwd, options)
 }
 
 func turnStartParams(threadID, message, cwd string, options TurnStartOptions) (map[string]any, error) {
@@ -766,6 +1056,15 @@ func (c *Client) buildCommand() (*exec.Cmd, error) {
 	if err != nil {
 		executable = c.codexBin
 	}
+	if proxy, sock := appServerProxyTarget(c.listenURL); proxy {
+		args := []string{"app-server", "proxy"}
+		if sock != "" {
+			args = append(args, "--sock", sock)
+		}
+		cmd := exec.Command(executable, args...)
+		cmd.Dir = c.cwd
+		return cmd, nil
+	}
 	if runtime.GOOS == "windows" {
 		ext := strings.ToLower(filepath.Ext(executable))
 		if ext == ".cmd" || ext == ".bat" {
@@ -780,11 +1079,28 @@ func (c *Client) buildCommand() (*exec.Cmd, error) {
 	return cmd, nil
 }
 
+func appServerProxyTarget(listenURL string) (bool, string) {
+	listenURL = strings.TrimSpace(listenURL)
+	switch {
+	case listenURL == "proxy", listenURL == "proxy://":
+		return true, ""
+	case strings.HasPrefix(listenURL, "proxy://"):
+		return true, strings.TrimPrefix(listenURL, "proxy://")
+	default:
+		return false, ""
+	}
+}
+
 func (c *Client) readStdout(generation uint64) {
 	defer close(c.readerDone)
 	c.mu.Lock()
 	stdout := c.stdout
+	ws := c.ws
 	c.mu.Unlock()
+	if ws != nil {
+		c.readWebSocket(ws, generation)
+		return
+	}
 	if stdout == nil {
 		return
 	}
@@ -810,6 +1126,32 @@ func (c *Client) readStdout(generation uint64) {
 		return
 	}
 	c.broadcast(Event{Channel: "transport_closed", Params: map[string]any{"stream": "stdout", "generation": generation, "reason": "eof", "stderr_tail": c.StderrTail()}})
+}
+
+func (c *Client) readWebSocket(ws *webSocketProxyTransport, generation uint64) {
+	for {
+		if !c.isStartedGeneration(generation) {
+			return
+		}
+		message, err := ws.ReadText()
+		if err != nil {
+			if !c.isStartedGeneration(generation) {
+				return
+			}
+			if errors.Is(err, io.EOF) {
+				c.broadcast(Event{Channel: "transport_closed", Params: map[string]any{"stream": "websocket", "generation": generation, "reason": "eof", "stderr_tail": c.StderrTail()}})
+			} else {
+				c.broadcast(Event{Channel: "transport_error", Params: map[string]any{"stream": "websocket", "generation": generation, "error": err.Error(), "stderr_tail": c.StderrTail()}})
+			}
+			return
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(message, &payload); err != nil {
+			c.broadcast(Event{Channel: "transport_error", Params: map[string]any{"stream": "websocket", "generation": generation, "error": err.Error(), "line_len": len(message), "stderr_tail": c.StderrTail()}})
+			continue
+		}
+		c.handlePayload(payload, generation)
+	}
 }
 
 func (c *Client) isStartedGeneration(generation uint64) bool {

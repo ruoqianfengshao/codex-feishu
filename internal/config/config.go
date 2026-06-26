@@ -46,17 +46,24 @@ func (p Paths) Ensure() error {
 
 type Config struct {
 	Paths                       Paths
+	Adapter                     string
 	CodexBin                    string
 	AppServerListen             string
 	TelegramBotToken            string
 	AllowedUserIDs              []int64
 	AllowedChatIDs              []int64
+	FeishuAppID                 string
+	FeishuAppSecret             string
+	FeishuAllowedOpenIDs        []string
+	FeishuAllowedChatIDs        []string
 	DefaultCWD                  string
 	CodexChatsRoot              string
 	PanelMode                   string
 	LogEnabled                  bool
 	DiagnosticLogs              bool
 	NotifyNewRun                bool
+	NotifySystem                bool
+	OpenCodexDesktopOnFeishu    bool
 	ObserverPollInterval        time.Duration
 	RequestTimeout              time.Duration
 	IndexRefreshInterval        time.Duration
@@ -130,17 +137,24 @@ func fromSource(source envSource) Config {
 	}
 	return Config{
 		Paths:                       paths,
+		Adapter:                     normalizeAdapter(source.string("CTR_GO_ADAPTER", "auto")),
 		CodexBin:                    codexBin,
 		AppServerListen:             listen,
 		TelegramBotToken:            source.first("CTR_GO_TELEGRAM_BOT_TOKEN", "CTR_TELEGRAM_BOT_TOKEN"),
 		AllowedUserIDs:              parseInt64List(source.first("CTR_GO_ALLOWED_USER_IDS", "CTR_ALLOWED_USER_IDS")),
 		AllowedChatIDs:              parseInt64List(source.first("CTR_GO_ALLOWED_CHAT_IDS", "CTR_ALLOWED_CHAT_IDS")),
+		FeishuAppID:                 source.get("CTR_GO_FEISHU_APP_ID"),
+		FeishuAppSecret:             source.get("CTR_GO_FEISHU_APP_SECRET"),
+		FeishuAllowedOpenIDs:        parseStringList(source.get("CTR_GO_FEISHU_ALLOWED_OPEN_IDS")),
+		FeishuAllowedChatIDs:        parseStringList(source.get("CTR_GO_FEISHU_ALLOWED_CHAT_IDS")),
 		DefaultCWD:                  source.string("CTR_GO_DEFAULT_CWD", cwd),
 		CodexChatsRoot:              source.path("CTR_GO_CODEX_CHATS_ROOT", DefaultCodexChatsRoot()),
 		PanelMode:                   normalizePanelMode(source.string("CTR_GO_PANEL_MODE", "per_run")),
 		LogEnabled:                  source.bool("CTR_GO_LOG_ENABLED", true),
 		DiagnosticLogs:              source.bool("CTR_GO_DIAGNOSTIC_LOGS", true),
 		NotifyNewRun:                source.bool("CTR_GO_NOTIFY_NEW_RUN", true),
+		NotifySystem:                source.bool("CTR_GO_NOTIFY_SYSTEM", true),
+		OpenCodexDesktopOnFeishu:    source.bool("CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU", false),
 		ObserverPollInterval:        source.durationSeconds("CTR_GO_OBSERVER_POLL_SECONDS", 5*time.Second),
 		RequestTimeout:              source.durationSeconds("CTR_GO_REQUEST_TIMEOUT_SECONDS", 30*time.Second),
 		IndexRefreshInterval:        source.durationSeconds("CTR_GO_INDEX_REFRESH_SECONDS", 45*time.Second),
@@ -155,40 +169,52 @@ func fromSource(source envSource) Config {
 
 func (c Config) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Home                        string  `json:"home"`
-		DBPath                      string  `json:"db_path"`
-		CodexBin                    string  `json:"codex_bin"`
-		AppServerListen             string  `json:"app_server_listen"`
-		HasTelegramToken            bool    `json:"telegram_configured"`
-		AllowedUserIDs              []int64 `json:"allowed_user_ids"`
-		AllowedChatIDs              []int64 `json:"allowed_chat_ids"`
-		DefaultCWD                  string  `json:"default_cwd"`
-		CodexChatsRoot              string  `json:"codex_chats_root"`
-		PanelMode                   string  `json:"panel_mode"`
-		LogEnabled                  bool    `json:"log_enabled"`
-		DiagnosticLogs              bool    `json:"diagnostic_logs"`
-		NotifyNewRun                bool    `json:"notify_new_run"`
-		ObserverPollSeconds         float64 `json:"observer_poll_seconds"`
-		RequestTimeoutSeconds       float64 `json:"request_timeout_seconds"`
-		ProjectsProjectPreviewLimit int     `json:"projects_project_preview_limit"`
-		ProjectsChatPreviewLimit    int     `json:"projects_chat_preview_limit"`
-		ChatsPageSize               int     `json:"chats_page_size"`
-		GoOS                        string  `json:"goos"`
-		GoArch                      string  `json:"goarch"`
+		Home                        string   `json:"home"`
+		DBPath                      string   `json:"db_path"`
+		CodexBin                    string   `json:"codex_bin"`
+		AppServerListen             string   `json:"app_server_listen"`
+		Adapter                     string   `json:"adapter"`
+		HasTelegramToken            bool     `json:"telegram_configured"`
+		HasFeishuCredentials        bool     `json:"feishu_configured"`
+		AllowedUserIDs              []int64  `json:"allowed_user_ids"`
+		AllowedChatIDs              []int64  `json:"allowed_chat_ids"`
+		FeishuAllowedOpenIDs        []string `json:"feishu_allowed_open_ids"`
+		FeishuAllowedChatIDs        []string `json:"feishu_allowed_chat_ids"`
+		DefaultCWD                  string   `json:"default_cwd"`
+		CodexChatsRoot              string   `json:"codex_chats_root"`
+		PanelMode                   string   `json:"panel_mode"`
+		LogEnabled                  bool     `json:"log_enabled"`
+		DiagnosticLogs              bool     `json:"diagnostic_logs"`
+		NotifyNewRun                bool     `json:"notify_new_run"`
+		NotifySystem                bool     `json:"notify_system"`
+		OpenCodexDesktopOnFeishu    bool     `json:"open_codex_desktop_on_feishu"`
+		ObserverPollSeconds         float64  `json:"observer_poll_seconds"`
+		RequestTimeoutSeconds       float64  `json:"request_timeout_seconds"`
+		ProjectsProjectPreviewLimit int      `json:"projects_project_preview_limit"`
+		ProjectsChatPreviewLimit    int      `json:"projects_chat_preview_limit"`
+		ChatsPageSize               int      `json:"chats_page_size"`
+		GoOS                        string   `json:"goos"`
+		GoArch                      string   `json:"goarch"`
 	}{
 		Home:                        c.Paths.Home,
 		DBPath:                      c.Paths.DBPath,
 		CodexBin:                    c.CodexBin,
 		AppServerListen:             c.AppServerListen,
+		Adapter:                     normalizeAdapter(c.Adapter),
 		HasTelegramToken:            c.TelegramBotToken != "",
+		HasFeishuCredentials:        c.FeishuAppID != "" && c.FeishuAppSecret != "",
 		AllowedUserIDs:              c.AllowedUserIDs,
 		AllowedChatIDs:              c.AllowedChatIDs,
+		FeishuAllowedOpenIDs:        c.FeishuAllowedOpenIDs,
+		FeishuAllowedChatIDs:        c.FeishuAllowedChatIDs,
 		DefaultCWD:                  c.DefaultCWD,
 		CodexChatsRoot:              c.CodexChatsRoot,
 		PanelMode:                   normalizePanelMode(c.PanelMode),
 		LogEnabled:                  c.LogEnabled,
 		DiagnosticLogs:              c.DiagnosticLogs,
 		NotifyNewRun:                c.NotifyNewRun,
+		NotifySystem:                c.NotifySystem,
+		OpenCodexDesktopOnFeishu:    c.OpenCodexDesktopOnFeishu,
 		ObserverPollSeconds:         c.ObserverPollInterval.Seconds(),
 		RequestTimeoutSeconds:       c.RequestTimeout.Seconds(),
 		ProjectsProjectPreviewLimit: positiveOrDefault(c.ProjectsProjectPreviewLimit, 7),
@@ -394,11 +420,42 @@ func parseInt64List(raw string) []int64 {
 	return out
 }
 
+func parseStringList(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\n' || r == '\t'
+	})
+	out := make([]string, 0, len(parts))
+	seen := map[string]bool{}
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" || seen[part] {
+			continue
+		}
+		seen[part] = true
+		out = append(out, part)
+	}
+	return out
+}
+
 func normalizePanelMode(value string) string {
 	switch strings.TrimSpace(strings.ToLower(value)) {
 	case "stable":
 		return "stable"
 	default:
 		return "per_run"
+	}
+}
+
+func normalizeAdapter(value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "telegram", "tg":
+		return "telegram"
+	case "feishu", "lark":
+		return "feishu"
+	default:
+		return "auto"
 	}
 }

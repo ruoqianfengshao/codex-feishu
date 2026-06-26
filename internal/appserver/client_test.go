@@ -1,7 +1,11 @@
 package appserver
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/base64"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -263,6 +267,41 @@ sleep 5
 	if _, requestErr := client.Request(context.Background(), "thread/list", nil); requestErr == nil || !strings.Contains(requestErr.Error(), "not running") {
 		t.Fatalf("Request after failed Start error = %v, want not running", requestErr)
 	}
+}
+
+func TestWebSocketHandshakeHeaders(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString([]byte("1234567890123456"))
+	response := "HTTP/1.1 101 Switching Protocols\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: keep-alive, Upgrade\r\n" +
+		"Sec-WebSocket-Accept: " + webSocketAcceptKey(key) + "\r\n" +
+		"\r\n"
+	err := readWebSocketHandshake(context.Background(), bufioReader(response), key)
+	if err != nil {
+		t.Fatalf("readWebSocketHandshake failed: %v", err)
+	}
+}
+
+func TestWebSocketFrameRoundTrip(t *testing.T) {
+	var network bytes.Buffer
+	payload := []byte(`{"jsonrpc":"2.0","method":"test"}`)
+	if err := writeWebSocketFrame(&network, 0x1, payload, true); err != nil {
+		t.Fatalf("writeWebSocketFrame failed: %v", err)
+	}
+	opcode, got, err := readWebSocketFrame(&network)
+	if err != nil {
+		t.Fatalf("readWebSocketFrame failed: %v", err)
+	}
+	if opcode != 0x1 {
+		t.Fatalf("opcode = %d, want text", opcode)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("payload = %q, want %q", got, payload)
+	}
+}
+
+func bufioReader(text string) *bufio.Reader {
+	return bufio.NewReader(io.NopCloser(strings.NewReader(text)))
 }
 
 func writeFakeAppServer(t *testing.T, root, body string) string {

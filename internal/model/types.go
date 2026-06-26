@@ -18,6 +18,7 @@ const (
 	PanelSourceExplicit       = "explicit"
 	PanelSourceGlobalObserver = "global_observer"
 	PanelSourceTelegramInput  = "telegram_input"
+	PanelSourceFeishuInput    = "feishu_input"
 
 	PromptSourceServerRequest = "server_request"
 	PromptSourceSyntheticPoll = "synthetic_poll"
@@ -48,6 +49,16 @@ type TimeString string
 type SendOptions struct {
 	Silent bool
 }
+
+const (
+	AdapterAuto     = "auto"
+	AdapterTelegram = "telegram"
+	AdapterFeishu   = "feishu"
+)
+
+const (
+	MessageStyleDesktopUser = "desktop_user"
+)
 
 func NowString() TimeString {
 	return TimeString(time.Now().UTC().Format(time.RFC3339Nano))
@@ -230,20 +241,38 @@ type MessageRoute struct {
 	CreatedAt TimeString
 }
 
+type ExternalIDMap struct {
+	Namespace  string
+	ExternalID string
+	NumericID  int64
+	CreatedAt  TimeString
+	UpdatedAt  TimeString
+}
+
+type FeishuMessageMap struct {
+	MessageID     int64
+	OpenMessageID string
+	ChatID        int64
+	OpenChatID    string
+	CreatedAt     TimeString
+	UpdatedAt     TimeString
+}
+
 type DeliveryPayload struct {
-	Mode      string         `json:"mode,omitempty"`
-	Text      string         `json:"text,omitempty"`
-	ThreadID  string         `json:"thread_id,omitempty"`
-	TurnID    string         `json:"turn_id,omitempty"`
-	ItemID    string         `json:"item_id,omitempty"`
-	EventID   string         `json:"event_id,omitempty"`
-	MessageID int64          `json:"message_id,omitempty"`
-	FileName  string         `json:"file_name,omitempty"`
-	FilePath  string         `json:"file_path,omitempty"`
-	Caption   string         `json:"caption,omitempty"`
-	PanelID   int64          `json:"panel_id,omitempty"`
-	PanelRole string         `json:"panel_role,omitempty"`
-	Buttons   [][]ButtonSpec `json:"buttons,omitempty"`
+	Mode      string           `json:"mode,omitempty"`
+	Text      string           `json:"text,omitempty"`
+	Sections  []MessageSection `json:"sections,omitempty"`
+	ThreadID  string           `json:"thread_id,omitempty"`
+	TurnID    string           `json:"turn_id,omitempty"`
+	ItemID    string           `json:"item_id,omitempty"`
+	EventID   string           `json:"event_id,omitempty"`
+	MessageID int64            `json:"message_id,omitempty"`
+	FileName  string           `json:"file_name,omitempty"`
+	FilePath  string           `json:"file_path,omitempty"`
+	Caption   string           `json:"caption,omitempty"`
+	PanelID   int64            `json:"panel_id,omitempty"`
+	PanelRole string           `json:"panel_role,omitempty"`
+	Buttons   [][]ButtonSpec   `json:"buttons,omitempty"`
 }
 
 type DeliveryQueueItem struct {
@@ -277,6 +306,11 @@ type ButtonSpec struct {
 	CallbackData string `json:"callback_data,omitempty"`
 }
 
+type MessageSection struct {
+	Text    string         `json:"text,omitempty"`
+	Buttons [][]ButtonSpec `json:"buttons,omitempty"`
+}
+
 type MessageEntity struct {
 	Type     string `json:"type"`
 	Offset   int    `json:"offset"`
@@ -288,6 +322,7 @@ type MessageEntity struct {
 type RenderedMessage struct {
 	Text     string          `json:"text"`
 	Entities []MessageEntity `json:"entities,omitempty"`
+	Style    string          `json:"style,omitempty"`
 }
 
 type DetailItem struct {
@@ -379,6 +414,7 @@ const (
 	RouteSourceExplicit RouteSource = "explicit"
 	RouteSourceReply    RouteSource = "reply"
 	RouteSourceSteer    RouteSource = "steer"
+	RouteSourcePanel    RouteSource = "panel"
 	RouteSourceBinding  RouteSource = "binding"
 	RouteSourceNone     RouteSource = "none"
 )

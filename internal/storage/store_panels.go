@@ -155,6 +155,35 @@ func (s *Store) GetCurrentThreadPanel(ctx context.Context, chatID, topicID int64
 	return scanThreadPanel(row)
 }
 
+func (s *Store) GetLatestCurrentPanelForChat(ctx context.Context, chatID, topicID int64) (*model.ThreadPanel, error) {
+	row := s.db.QueryRowContext(ctx, `
+	SELECT panel.id, panel.chat_id, panel.topic_id, panel.project_name, panel.thread_id, coalesce(panel.source_mode,'explicit'),
+		panel.summary_message_id, panel.tool_message_id, panel.output_message_id,
+		coalesce(panel.current_turn_id,''), coalesce(panel.status,''), panel.archive_enabled,
+		coalesce(panel.last_summary_hash,''), coalesce(panel.last_tool_hash,''), coalesce(panel.last_output_hash,''), coalesce(panel.last_final_notice_fp,''),
+		coalesce(panel.run_notice_message_id,0), coalesce(panel.last_run_notice_fp,''),
+		coalesce(panel.user_message_id,0), coalesce(panel.last_user_notice_fp,''),
+		coalesce(panel.plan_prompt_message_id,0), coalesce(panel.last_plan_prompt_fp,''),
+		coalesce(panel.details_view_json,''), coalesce(panel.last_final_card_hash,''),
+		panel.is_current, panel.created_at, panel.updated_at
+	FROM thread_panels AS panel
+	LEFT JOIN threads AS thread ON thread.thread_id = panel.thread_id
+	WHERE panel.chat_id = ? AND panel.topic_id = ? AND panel.is_current = 1
+	ORDER BY
+		CASE
+			WHEN coalesce(thread.active_turn_id, '') != ''
+				AND coalesce(panel.current_turn_id, '') = coalesce(thread.active_turn_id, '')
+			THEN 0
+			ELSE 1
+		END,
+		panel.updated_at DESC,
+		panel.id DESC
+	LIMIT 1`,
+		chatID, topicID,
+	)
+	return scanThreadPanel(row)
+}
+
 func (s *Store) ListCurrentPanelsForThread(ctx context.Context, threadID string) ([]model.ThreadPanel, error) {
 	rows, err := s.db.QueryContext(ctx, `
 	SELECT id, chat_id, topic_id, project_name, thread_id, coalesce(source_mode,'explicit'),

@@ -1,8 +1,22 @@
 # Quickstart
 
-## 1. Create a Telegram Bot
+## 1. Choose an Adapter
 
-Create a bot with BotFather and keep the token private.
+Telegram: create a bot with BotFather and keep the token private.
+
+Feishu/Lark: run `ctr-go feishu setup` to create an app by QR scan. It uses the
+official OAuth device registration flow, waits for approval in the mobile app,
+and writes the returned app id and secret to the private local config. If you
+already have an enterprise self-built app, you can still configure its app id
+and secret manually.
+
+For input-box shortcuts in Feishu/Lark, enable the bot custom menu in the
+developer console and publish a new app version. The menu is a Feishu one-on-one
+bot chat feature. Prefer menu items that use "send text message" with existing
+commands such as `/help`, `/threads`, `/projects`, `/settings`, `/status`, and
+`/repair`. If a menu item uses "push event", subscribe to
+`application.bot.menu_v6` and set event keys such as `help`, `threads`,
+`projects`, `settings`, `status`, `observe_all`, `observe_off`, or `repair`.
 
 ## 2. Download And Initialize
 
@@ -34,15 +48,40 @@ When your shell uses proxy env such as `HTTPS_PROXY` or `NO_PROXY`,
 macOS LaunchAgent can reach the same network while keeping the plist limited to
 `CTR_GO_CONFIG`.
 
+For Feishu/Lark, use the QR setup instead of `ctr-go init` when creating a new
+app:
+
+```powershell
+ctr-go feishu setup
+ctr-go doctor
+ctr-go daemon run
+```
+
+Use `ctr-go feishu setup --no-qr` when the terminal cannot render QR codes, and
+`ctr-go feishu setup --force` to overwrite an existing config.
+
 ## Environment-Only Setup
 
 ```powershell
+$env:CTR_GO_ADAPTER = "telegram"
 $env:CTR_GO_TELEGRAM_BOT_TOKEN = "<telegram-bot-token>"
 $env:CTR_GO_ALLOWED_USER_IDS = "<telegram-user-id>"
 $env:CTR_GO_DEFAULT_CWD = "C:\Users\you\Projects\Codex"
 $env:CTR_GO_CODEX_CHATS_ROOT = "C:\Users\you\Documents\Codex"
 # Optional: set to "off" to keep New run visible but silent.
 $env:CTR_GO_NOTIFY_NEW_RUN = "on"
+```
+
+For Feishu/Lark, environment-only setup remains available when you already have
+an app:
+
+```powershell
+$env:CTR_GO_ADAPTER = "feishu"
+$env:CTR_GO_FEISHU_APP_ID = "<feishu-app-id>"
+$env:CTR_GO_FEISHU_APP_SECRET = "<feishu-app-secret>"
+# Optional allowlists:
+$env:CTR_GO_FEISHU_ALLOWED_OPEN_IDS = "<feishu-open-id>"
+$env:CTR_GO_FEISHU_ALLOWED_CHAT_IDS = "<feishu-chat-id>"
 ```
 
 ## Build From Source
@@ -57,7 +96,7 @@ go run ./cmd/ctr-go daemon run
 
 ## 3. Enable Observer
 
-In Telegram:
+In Telegram or Feishu/Lark:
 
 ```text
 /start
@@ -66,8 +105,10 @@ In Telegram:
 /projects
 ```
 
-Start or continue a Codex thread from GUI/CLI. The bot should render the run in Telegram.
-Only `New run`, `[Plan]`, and `[Final]` use normal Telegram notifications. Live progress cards, menus, and exports are sent silently.
+Start or continue a Codex thread from GUI/CLI. The bot should render the run in
+the selected adapter chat. Telegram only uses normal notifications for
+`New run`, `[Plan]`, and `[Final]`; Feishu/Lark delivery follows the platform's
+chat notification behavior.
 
 Use `/plan` or `/reply --plan` for Plan Mode. If a thread remains in Plan Mode,
 press `Turn off Plan` on the Plan Final Card, or use `/stop <thread>`, then send

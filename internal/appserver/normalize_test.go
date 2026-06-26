@@ -54,6 +54,112 @@ func TestThreadsFromListSkipsInternalSubAgentThreads(t *testing.T) {
 	}
 }
 
+func TestSnapshotFromThreadReadUsesLatestUserMessageForStaleThreadPreview(t *testing.T) {
+	t.Parallel()
+
+	snapshot := SnapshotFromThreadRead(map[string]any{
+		"id":        "thread-1",
+		"name":      "Initial title",
+		"cwd":       "/Users/example/work",
+		"updatedAt": float64(100),
+		"preview":   "old first prompt",
+		"turns": []any{
+			map[string]any{
+				"id":        "turn-1",
+				"status":    "completed",
+				"updatedAt": float64(100),
+				"items": []any{
+					map[string]any{
+						"id":   "user-old",
+						"type": "userMessage",
+						"content": []any{
+							map[string]any{"type": "text", "text": "old first prompt"},
+						},
+					},
+				},
+			},
+			map[string]any{
+				"id":        "turn-2",
+				"status":    "inProgress",
+				"updatedAt": float64(200),
+				"items": []any{
+					map[string]any{
+						"id":   "user-new",
+						"type": "userMessage",
+						"content": []any{
+							map[string]any{"type": "text", "text": "latest Feishu prompt"},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	if got, want := snapshot.Thread.LastPreview, "latest Feishu prompt"; got != want {
+		t.Fatalf("LastPreview = %q, want %q", got, want)
+	}
+	if got, want := snapshot.Thread.UpdatedAt, int64(200); got != want {
+		t.Fatalf("UpdatedAt = %d, want %d", got, want)
+	}
+	if got, want := snapshot.LatestUserMessageText, "latest Feishu prompt"; got != want {
+		t.Fatalf("LatestUserMessageText = %q, want %q", got, want)
+	}
+}
+
+func TestSnapshotFromThreadReadUsesRecencyAtWhenUpdatedAtIsStale(t *testing.T) {
+	t.Parallel()
+
+	snapshot := SnapshotFromThreadRead(map[string]any{
+		"thread": map[string]any{
+			"id":        "thread-1",
+			"name":      "Initial title",
+			"cwd":       "/Users/example/work",
+			"updatedAt": float64(100),
+			"recencyAt": float64(300),
+			"preview":   "old first prompt",
+			"turns": []any{
+				map[string]any{
+					"id":        "turn-1",
+					"status":    "completed",
+					"updatedAt": float64(100),
+					"items": []any{
+						map[string]any{
+							"id":   "user-old",
+							"type": "userMessage",
+							"text": "old first prompt",
+						},
+					},
+				},
+				map[string]any{
+					"id":        "turn-2",
+					"status":    "interrupted",
+					"updatedAt": float64(100),
+					"recencyAt": float64(300),
+					"items": []any{
+						map[string]any{
+							"id":   "user-new",
+							"type": "userMessage",
+							"content": []any{
+								map[string]any{"type": "text", "text": "latest Feishu prompt"},
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	if got, want := snapshot.Thread.UpdatedAt, int64(300); got != want {
+		t.Fatalf("UpdatedAt = %d, want %d", got, want)
+	}
+	if got, want := snapshot.Thread.LastPreview, "latest Feishu prompt"; got != want {
+		t.Fatalf("LastPreview = %q, want %q", got, want)
+	}
+	if got, want := snapshot.LatestUserMessageText, "latest Feishu prompt"; got != want {
+		t.Fatalf("LatestUserMessageText = %q, want %q", got, want)
+	}
+}
+
 func TestDiffSnapshotEmitsCompletionForNewTerminalTurn(t *testing.T) {
 	previous := &model.ThreadSnapshotState{
 		LastSeenTurnID:     "old-turn",

@@ -88,6 +88,7 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 	if err != nil || thread == nil || snapshot == nil {
 		return
 	}
+	s.notifyTerminalSnapshot(ctx, *thread, snapshot)
 	pending, _ := s.store.GetLatestPendingApprovalForThread(ctx, threadID)
 	pending = pendingForSnapshot(pending, snapshot)
 
@@ -96,21 +97,22 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 
 	existingPanel, _ := s.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
 	panelMode := s.panelMode(ctx)
+	renderSourceMode := s.effectivePanelRenderSourceMode(ctx, existingPanel, thread.ID, snapshot.LatestTurnID, sourceMode)
 	effectiveForceNew := forceNew && panelMode != model.PanelModeStable
-	if sourceMode == model.PanelSourceTelegramInput && samePanelTurn(existingPanel, snapshot.LatestTurnID) {
+	if isDirectInputSourceMode(sourceMode) && samePanelTurn(existingPanel, snapshot.LatestTurnID) {
 		effectiveForceNew = false
 	}
 	protectTelegramOriginPanel := sourceMode == model.PanelSourceGlobalObserver &&
 		existingPanel != nil &&
-		existingPanel.SourceMode == model.PanelSourceTelegramInput &&
+		isDirectInputSourceMode(existingPanel.SourceMode) &&
 		samePanelTurn(existingPanel, snapshot.LatestTurnID) &&
-		s.isTelegramOriginTurn(ctx, thread.ID, snapshot.LatestTurnID)
-	panel, err := s.ensureCurrentPanel(ctx, sender, target, *thread, snapshot, pending, effectiveForceNew, sourceMode, panelMode)
+		s.isDirectInputOriginTurn(ctx, thread.ID, snapshot.LatestTurnID)
+	panel, err := s.ensureCurrentPanel(ctx, sender, target, *thread, snapshot, pending, effectiveForceNew, sourceMode, renderSourceMode, panelMode)
 	if err != nil || panel == nil {
 		return
 	}
-	if sourceMode == model.PanelSourceTelegramInput && panel.SourceMode != model.PanelSourceTelegramInput && samePanelTurn(panel, snapshot.LatestTurnID) {
-		panel.SourceMode = model.PanelSourceTelegramInput
+	if isDirectInputSourceMode(sourceMode) && panel.SourceMode != sourceMode && samePanelTurn(panel, snapshot.LatestTurnID) {
+		panel.SourceMode = sourceMode
 		_ = s.store.UpdateThreadPanelSourceMode(ctx, panel.ID, panel.SourceMode)
 	}
 	legacyTerminalReplay := existingPanel != nil && existingPanel.CurrentTurnID == strings.TrimSpace(snapshot.LatestTurnID) && isLegacyTerminalReplay(panel, snapshot)
@@ -125,7 +127,7 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 		return
 	}
 	if shouldRenderFinalCardNow(panel, snapshot) {
-		if err := s.maybeSendUserRequestNotice(ctx, sender, panel, *thread, snapshot); err != nil {
+		if err := s.maybeSendUserRequestNotice(ctx, sender, panel, *thread, snapshot, renderSourceMode); err != nil {
 			s.setError(ctx, err)
 			return
 		}
@@ -134,18 +136,18 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 		}
 		return
 	}
-	if err := s.updateCurrentPanel(ctx, sender, panel, *thread, snapshot, pending); err != nil {
+	if err := s.updateCurrentPanel(ctx, sender, panel, *thread, snapshot, pending, renderSourceMode); err != nil {
 		if protectTelegramOriginPanel {
 			s.setError(ctx, err)
 			return
 		}
-		panel, recreateErr := s.createCurrentPanel(ctx, sender, target, *thread, snapshot, pending, sourceMode)
+		panel, recreateErr := s.createCurrentPanel(ctx, sender, target, *thread, snapshot, pending, sourceMode, renderSourceMode)
 		if recreateErr != nil || panel == nil {
 			s.setError(ctx, err)
 			return
 		}
 		legacyTerminalReplay = false
-		if err := s.updateCurrentPanel(ctx, sender, panel, *thread, snapshot, pending); err != nil {
+		if err := s.updateCurrentPanel(ctx, sender, panel, *thread, snapshot, pending, renderSourceMode); err != nil {
 			s.setError(ctx, err)
 			return
 		}
@@ -174,7 +176,7 @@ func (s *Service) loadThreadPanelSnapshot(ctx context.Context, threadID string) 
 	return thread, &snapshot, nil
 }
 
-func (s *Service) ensureCurrentPanel(ctx context.Context, sender Sender, target model.ObserverTarget, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, pending *model.PendingApproval, forceNew bool, sourceMode, panelMode string) (*model.ThreadPanel, error) {
+func (s *Service) ensureCurrentPanel(ctx context.Context, sender Sender, target model.ObserverTarget, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, pending *model.PendingApproval, forceNew bool, sourceMode, renderSourceMode, panelMode string) (*model.ThreadPanel, error) {
 	panel, err := s.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
 	if err != nil {
 		return nil, err
@@ -182,7 +184,7 @@ func (s *Service) ensureCurrentPanel(ctx context.Context, sender Sender, target 
 	turnID := strings.TrimSpace(snapshot.LatestTurnID)
 	status := strings.TrimSpace(snapshot.LatestTurnStatus)
 	if panel == nil &&
-		sourceMode == model.PanelSourceGlobalObserver &&
+		renderSourceMode == model.PanelSourceGlobalObserver &&
 		isTerminalStatus(status) &&
 		!snapshot.WaitingOnApproval &&
 		!snapshot.WaitingOnReply &&
@@ -190,12 +192,26 @@ func (s *Service) ensureCurrentPanel(ctx context.Context, sender Sender, target 
 		return nil, nil
 	}
 	if forceNew || panel == nil || panelNeedsRefresh(panel, turnID, status, panelMode) {
-		panel, err = s.createCurrentPanel(ctx, sender, target, thread, snapshot, pending, sourceMode)
+		panel, err = s.createCurrentPanel(ctx, sender, target, thread, snapshot, pending, sourceMode, renderSourceMode)
 		if err != nil {
 			return nil, err
 		}
 	}
 	return panel, nil
+}
+
+func (s *Service) effectivePanelRenderSourceMode(ctx context.Context, existingPanel *model.ThreadPanel, threadID, turnID, sourceMode string) string {
+	origin := s.inputOriginTurnSource(ctx, threadID, turnID)
+	if isDirectInputSourceMode(origin) {
+		return origin
+	}
+	if isDirectInputSourceMode(sourceMode) {
+		if existingPanel == nil || samePanelTurn(existingPanel, turnID) {
+			return sourceMode
+		}
+		return model.PanelSourceGlobalObserver
+	}
+	return sourceMode
 }
 
 func (s *Service) allowRecentTerminalObserverCreate(ctx context.Context, thread model.Thread) bool {
@@ -272,12 +288,12 @@ func shouldRenderFinalCardNow(panel *model.ThreadPanel, snapshot *appserver.Thre
 	return finalFP != "" && finalFP != strings.TrimSpace(panel.LastFinalNoticeFP)
 }
 
-func (s *Service) createCurrentPanel(ctx context.Context, sender Sender, target model.ObserverTarget, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, pending *model.PendingApproval, sourceMode string) (*model.ThreadPanel, error) {
-	runNoticeMessageID, runNoticeFP, err := s.sendRunNotice(ctx, sender, target, thread, snapshot, sourceMode)
+func (s *Service) createCurrentPanel(ctx context.Context, sender Sender, target model.ObserverTarget, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, pending *model.PendingApproval, sourceMode, renderSourceMode string) (*model.ThreadPanel, error) {
+	runNoticeMessageID, runNoticeFP, err := s.sendRunNotice(ctx, sender, target, thread, snapshot, renderSourceMode)
 	if err != nil {
 		return nil, err
 	}
-	userMessageID, userNoticeFP, err := s.sendInitialUserRequestNotice(ctx, sender, target, thread, snapshot, sourceMode)
+	userMessageID, userNoticeFP, err := s.sendInitialUserRequestNotice(ctx, sender, target, thread, snapshot, renderSourceMode)
 	if err != nil {
 		return nil, err
 	}
@@ -337,21 +353,21 @@ func (s *Service) createCurrentPanel(ctx context.Context, sender Sender, target 
 	return panel, nil
 }
 
-func (s *Service) maybeSendUserRequestNotice(ctx context.Context, sender Sender, panel *model.ThreadPanel, thread model.Thread, snapshot *appserver.ThreadReadSnapshot) error {
+func (s *Service) maybeSendUserRequestNotice(ctx context.Context, sender Sender, panel *model.ThreadPanel, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, renderSourceMode string) error {
 	if panel == nil || strings.TrimSpace(snapshot.LatestUserMessageFP) == "" {
 		return nil
 	}
 	if snapshot.LatestUserMessageFP == panel.LastUserNoticeFP {
 		return nil
 	}
-	if !shouldSendUserRequestNotice(panel.SourceMode, snapshot) || s.isTelegramOriginTurn(ctx, thread.ID, snapshot.LatestTurnID) {
+	if !shouldSendUserRequestNotice(renderSourceMode, snapshot) || s.isDirectInputOriginTurn(ctx, thread.ID, snapshot.LatestTurnID) {
 		return nil
 	}
 	if panel.SourceMode == model.PanelSourceGlobalObserver && panel.UserMessageID == 0 {
 		return nil
 	}
 	if panel.UserMessageID != 0 {
-		message := firstRenderedMessage(s.renderUserRequestNoticeCard(ctx, thread, snapshot))
+		message := firstRenderedMessage(s.renderUserRequestNoticeCard(ctx, thread, snapshot, renderSourceMode))
 		s.logTelegramRenderedMessagesContainsNil(thread.ID, snapshot.LatestTurnID, "user", panel.UserMessageID, []model.RenderedMessage{message})
 		if err := sender.EditRenderedMessage(ctx, panel.ChatID, panel.TopicID, panel.UserMessageID, message, nil); err != nil {
 			s.setError(ctx, fmt.Errorf("edit user notice card: %w", err))
@@ -376,7 +392,7 @@ func (s *Service) maybeSendUserRequestNotice(ctx context.Context, sender Sender,
 		TopicID: panel.TopicID,
 		Enabled: true,
 	}
-	messageID, noticeFP, err := s.sendUserRequestNotice(ctx, sender, target, thread, snapshot, panel.SourceMode)
+	messageID, noticeFP, err := s.sendUserRequestNotice(ctx, sender, target, thread, snapshot, renderSourceMode)
 	if err != nil {
 		return err
 	}
@@ -389,10 +405,10 @@ func (s *Service) maybeSendUserRequestNotice(ctx context.Context, sender Sender,
 }
 
 func (s *Service) sendInitialUserRequestNotice(ctx context.Context, sender Sender, target model.ObserverTarget, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) (int64, string, error) {
-	if shouldSendUserRequestNotice(sourceMode, snapshot) && !s.isTelegramOriginTurn(ctx, thread.ID, snapshot.LatestTurnID) {
+	if shouldSendUserRequestNotice(sourceMode, snapshot) && !s.isDirectInputOriginTurn(ctx, thread.ID, snapshot.LatestTurnID) {
 		return s.sendUserRequestNotice(ctx, sender, target, thread, snapshot, sourceMode)
 	}
-	if shouldSendUserPlaceholder(sourceMode, snapshot) && !s.isTelegramOriginTurn(ctx, thread.ID, snapshot.LatestTurnID) {
+	if shouldSendUserPlaceholder(sourceMode, snapshot) && !s.isDirectInputOriginTurn(ctx, thread.ID, snapshot.LatestTurnID) {
 		return s.sendUserPlaceholderNotice(ctx, sender, target, thread, snapshot)
 	}
 	return 0, "", nil
@@ -427,6 +443,8 @@ func (s *Service) renderRunNotice(ctx context.Context, thread model.Thread, snap
 		source = "GUI/CLI observer"
 	case model.PanelSourceTelegramInput:
 		source = "Telegram"
+	case model.PanelSourceFeishuInput:
+		source = "Feishu"
 	}
 	text := strings.Join([]string{
 		s.visualDividerText(ctx, thread, snapshot.LatestTurnID),
@@ -486,7 +504,7 @@ func shouldSendRunNotice(sourceMode string, snapshot *appserver.ThreadReadSnapsh
 		return false
 	}
 	switch strings.TrimSpace(sourceMode) {
-	case model.PanelSourceTelegramInput:
+	case model.PanelSourceTelegramInput, model.PanelSourceFeishuInput:
 		return true
 	case model.PanelSourceGlobalObserver:
 	default:
@@ -526,10 +544,10 @@ func planPromptRouteEventID(prompt *model.PlanPrompt) string {
 }
 
 func (s *Service) sendUserRequestNotice(ctx context.Context, sender Sender, target model.ObserverTarget, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) (int64, string, error) {
-	if !shouldSendUserRequestNotice(sourceMode, snapshot) || s.isTelegramOriginTurn(ctx, thread.ID, snapshot.LatestTurnID) {
+	if !shouldSendUserRequestNotice(sourceMode, snapshot) || s.isDirectInputOriginTurn(ctx, thread.ID, snapshot.LatestTurnID) {
 		return 0, "", nil
 	}
-	messages := s.renderUserRequestNoticeCard(ctx, thread, snapshot)
+	messages := s.renderUserRequestNoticeCard(ctx, thread, snapshot, sourceMode)
 	s.logTelegramRenderedMessagesContainsNil(thread.ID, snapshot.LatestTurnID, "user", 0, messages)
 	messageIDs, err := sender.SendRenderedMessages(ctx, target.ChatID, target.TopicID, messages, nil, silentSendOptions())
 	if err != nil {
@@ -571,8 +589,14 @@ func (s *Service) sendUserPlaceholderNotice(ctx context.Context, sender Sender, 
 	return messageID, "", nil
 }
 
-func (s *Service) renderUserRequestNoticeCard(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot) []model.RenderedMessage {
-	return tgformat.RenderMarkdownWithHeader(s.visualHeader(ctx, "User", thread, snapshot.LatestTurnID), snapshot.LatestUserMessageText)
+func (s *Service) renderUserRequestNoticeCard(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, renderSourceMode string) []model.RenderedMessage {
+	messages := tgformat.RenderMarkdownWithHeader(s.visualHeader(ctx, "User", thread, snapshot.LatestTurnID), snapshot.LatestUserMessageText)
+	if renderSourceMode == model.PanelSourceGlobalObserver {
+		for index := range messages {
+			messages[index].Style = model.MessageStyleDesktopUser
+		}
+	}
+	return messages
 }
 
 func (s *Service) renderUserPlaceholderCard(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot) model.RenderedMessage {
@@ -583,7 +607,7 @@ func shouldSendUserRequestNotice(sourceMode string, snapshot *appserver.ThreadRe
 	if snapshot == nil || strings.TrimSpace(snapshot.LatestUserMessageText) == "" || strings.TrimSpace(snapshot.LatestUserMessageFP) == "" {
 		return false
 	}
-	return strings.TrimSpace(sourceMode) != model.PanelSourceTelegramInput
+	return !isDirectInputSourceMode(sourceMode)
 }
 
 func runNoticeEventID(target model.ObserverTarget, threadID, turnID string) string {
@@ -605,31 +629,48 @@ func userPlaceholderEventID(target model.ObserverTarget, threadID, turnID string
 }
 
 func (s *Service) markTelegramOriginTurn(ctx context.Context, threadID, turnID string) error {
+	return s.markInputOriginTurn(ctx, threadID, turnID, model.PanelSourceTelegramInput, 0, 0)
+}
+
+func (s *Service) markTelegramOriginTurnFromTelegram(ctx context.Context, threadID, turnID string, chatID, topicID int64) error {
+	return s.markInputOriginTurn(ctx, threadID, turnID, model.PanelSourceTelegramInput, chatID, topicID)
+}
+
+func (s *Service) isTelegramOriginTurn(ctx context.Context, threadID, turnID string) bool {
+	return s.inputOriginTurnSource(ctx, threadID, turnID) == model.PanelSourceTelegramInput
+}
+
+func (s *Service) markInputOriginTurn(ctx context.Context, threadID, turnID, sourceMode string, chatID, topicID int64) error {
+	sourceMode = normalizeInputSourceMode(sourceMode)
 	key := telegramOriginTurnKey(threadID, turnID)
 	if key == "" {
 		return nil
 	}
-	return s.store.SetState(ctx, key, model.PanelSourceTelegramInput)
-}
-
-func (s *Service) markTelegramOriginTurnFromTelegram(ctx context.Context, threadID, turnID string, chatID, topicID int64) error {
-	err := s.markTelegramOriginTurn(ctx, threadID, turnID)
+	err := s.store.SetState(ctx, key, sourceMode)
 	s.logLifecycle("telegram_origin_turn_marked", lifecycleFields{
-		"chat_key":  model.ChatKey(chatID, topicID),
-		"thread_id": threadID,
-		"turn_id":   turnID,
-		"error":     err,
+		"chat_key":    model.ChatKey(chatID, topicID),
+		"source_mode": sourceMode,
+		"thread_id":   threadID,
+		"turn_id":     turnID,
+		"error":       err,
 	})
 	return err
 }
 
-func (s *Service) isTelegramOriginTurn(ctx context.Context, threadID, turnID string) bool {
+func (s *Service) isDirectInputOriginTurn(ctx context.Context, threadID, turnID string) bool {
+	return isDirectInputSourceMode(s.inputOriginTurnSource(ctx, threadID, turnID))
+}
+
+func (s *Service) inputOriginTurnSource(ctx context.Context, threadID, turnID string) string {
 	key := telegramOriginTurnKey(threadID, turnID)
 	if key == "" {
-		return false
+		return ""
 	}
 	value, err := s.store.GetState(ctx, key)
-	return err == nil && strings.TrimSpace(value) == model.PanelSourceTelegramInput
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(value)
 }
 
 func telegramOriginTurnKey(threadID, turnID string) string {
@@ -641,11 +682,29 @@ func telegramOriginTurnKey(threadID, turnID string) string {
 	return "turn_origin.telegram." + threadID + "." + turnID
 }
 
-func (s *Service) updateCurrentPanel(ctx context.Context, sender Sender, panel *model.ThreadPanel, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, pending *model.PendingApproval) error {
-	if err := s.maybeUpdateRunNotice(ctx, sender, panel, thread, snapshot); err != nil {
+func normalizeInputSourceMode(sourceMode string) string {
+	switch strings.TrimSpace(sourceMode) {
+	case model.PanelSourceFeishuInput:
+		return model.PanelSourceFeishuInput
+	default:
+		return model.PanelSourceTelegramInput
+	}
+}
+
+func isDirectInputSourceMode(sourceMode string) bool {
+	switch strings.TrimSpace(sourceMode) {
+	case model.PanelSourceTelegramInput, model.PanelSourceFeishuInput:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) updateCurrentPanel(ctx context.Context, sender Sender, panel *model.ThreadPanel, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, pending *model.PendingApproval, renderSourceMode string) error {
+	if err := s.maybeUpdateRunNotice(ctx, sender, panel, thread, snapshot, renderSourceMode); err != nil {
 		return err
 	}
-	if err := s.maybeSendUserRequestNotice(ctx, sender, panel, thread, snapshot); err != nil {
+	if err := s.maybeSendUserRequestNotice(ctx, sender, panel, thread, snapshot, renderSourceMode); err != nil {
 		return err
 	}
 	if err := s.maybeSendPlanPromptNotice(ctx, sender, panel, thread, effectivePlanPrompt(pending, snapshot)); err != nil {
@@ -683,14 +742,14 @@ func (s *Service) updateCurrentPanel(ctx context.Context, sender Sender, panel *
 	return s.store.UpdateThreadPanelState(ctx, panel.ID, panel.CurrentTurnID, panel.Status, panel.LastSummaryHash, panel.LastToolHash, panel.LastOutputHash, panel.LastFinalNoticeFP)
 }
 
-func (s *Service) maybeUpdateRunNotice(ctx context.Context, sender Sender, panel *model.ThreadPanel, thread model.Thread, snapshot *appserver.ThreadReadSnapshot) error {
-	if panel == nil || panel.RunNoticeMessageID == 0 || !shouldSendRunNotice(panel.SourceMode, snapshot) {
+func (s *Service) maybeUpdateRunNotice(ctx context.Context, sender Sender, panel *model.ThreadPanel, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, renderSourceMode string) error {
+	if panel == nil || panel.RunNoticeMessageID == 0 || !shouldSendRunNotice(renderSourceMode, snapshot) {
 		return nil
 	}
 	if isTerminalStatus(snapshot.LatestTurnStatus) {
 		return nil
 	}
-	text, fp := s.renderRunNotice(ctx, thread, snapshot, panel.SourceMode)
+	text, fp := s.renderRunNotice(ctx, thread, snapshot, renderSourceMode)
 	if fp == panel.LastRunNoticeFP {
 		return nil
 	}
@@ -875,7 +934,7 @@ func (s *Service) currentTelegramOriginTool(ctx context.Context, thread model.Th
 		return completedToolView{}, false
 	}
 	threadID := firstNonEmpty(strings.TrimSpace(thread.ID), strings.TrimSpace(snapshot.Thread.ID))
-	if threadID == "" || !s.isTelegramOriginTurn(ctx, threadID, turnID) {
+	if threadID == "" || !s.isDirectInputOriginTurn(ctx, threadID, turnID) {
 		return completedToolView{}, false
 	}
 	label := strings.TrimSpace(cleanTelegramNilLiteral(snapshot.LatestToolLabel))

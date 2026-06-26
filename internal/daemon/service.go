@@ -17,6 +17,7 @@ import (
 	"github.com/mideco-tech/codex-tg/internal/appserver"
 	"github.com/mideco-tech/codex-tg/internal/config"
 	"github.com/mideco-tech/codex-tg/internal/control"
+	"github.com/mideco-tech/codex-tg/internal/desktopipc"
 	"github.com/mideco-tech/codex-tg/internal/model"
 	"github.com/mideco-tech/codex-tg/internal/storage"
 )
@@ -34,6 +35,7 @@ type Sender interface {
 
 type DirectResponse struct {
 	Text         string
+	Sections     []model.MessageSection
 	CallbackText string
 	Buttons      [][]model.ButtonSpec
 	ThreadID     string
@@ -64,31 +66,36 @@ type Service struct {
 	liveFactory func() Session
 	pollFactory func() Session
 
-	sessionMu      sync.Mutex
-	mu             sync.RWMutex
-	live           Session
-	poll           Session
-	liveEvents     <-chan appserver.Event
-	liveGeneration uint64
-	pollGeneration uint64
-	cancel         context.CancelFunc
-	wg             sync.WaitGroup
-	panelMu        sync.Mutex
-	sender         Sender
-	logger         *log.Logger
-	diagnosticMu   sync.Mutex
-	diagnosticWin  time.Time
-	diagnosticN    int
-	diagnosticBy   map[string]int
-	diagnosticLast map[string]time.Time
-	now            func() time.Time
-	started        bool
-	startedAt      time.Time
-	ready          bool
-	phase          string
-	lastError      string
-	liveConnected  bool
-	pollConnected  bool
+	appServerListen        string
+	sessionMu              sync.Mutex
+	mu                     sync.RWMutex
+	live                   Session
+	poll                   Session
+	liveEvents             <-chan appserver.Event
+	liveGeneration         uint64
+	pollGeneration         uint64
+	cancel                 context.CancelFunc
+	wg                     sync.WaitGroup
+	panelMu                sync.Mutex
+	sender                 Sender
+	notifier               Notifier
+	desktopOpener          func(context.Context, string) error
+	desktopInputDispatcher desktopInputDispatcher
+	notificationMu         sync.Mutex
+	logger                 *log.Logger
+	diagnosticMu           sync.Mutex
+	diagnosticWin          time.Time
+	diagnosticN            int
+	diagnosticBy           map[string]int
+	diagnosticLast         map[string]time.Time
+	now                    func() time.Time
+	started                bool
+	startedAt              time.Time
+	ready                  bool
+	phase                  string
+	lastError              string
+	liveConnected          bool
+	pollConnected          bool
 }
 
 const (
@@ -99,6 +106,7 @@ const (
 	codexReasoningStateKey    = "codex.reasoning_effort"
 	telegramOriginHotPollMax  = 75 * time.Second
 	telegramOriginHotPollTick = 3 * time.Second
+	appServerStdioListen      = "stdio://"
 )
 
 var (
@@ -115,23 +123,35 @@ func New(cfg config.Config) (*Service, error) {
 		return nil, err
 	}
 	service := &Service{
-		cfg:            cfg,
-		store:          store,
-		logger:         discardDiagnosticLogger(),
-		diagnosticBy:   map[string]int{},
-		diagnosticLast: map[string]time.Time{},
-		now:            time.Now,
-		phase:          "created",
+		cfg:                    cfg,
+		store:                  store,
+		appServerListen:        cfg.AppServerListen,
+		notifier:               newSystemNotifier(),
+		desktopOpener:          openCodexDesktopThread,
+		desktopInputDispatcher: desktopipc.New("", cfg.RequestTimeout),
+		logger:                 discardDiagnosticLogger(),
+		diagnosticBy:           map[string]int{},
+		diagnosticLast:         map[string]time.Time{},
+		now:                    time.Now,
+		phase:                  "created",
 	}
 	service.liveFactory = func() Session {
-		return appserver.NewClient(cfg.CodexBin, cfg.AppServerListen, cfg.DefaultCWD, cfg.RequestTimeout)
+		return service.newAppServerSession()
 	}
 	service.pollFactory = func() Session {
-		return appserver.NewClient(cfg.CodexBin, cfg.AppServerListen, cfg.DefaultCWD, cfg.RequestTimeout)
+		return service.newAppServerSession()
 	}
 	service.live = service.liveFactory()
 	service.poll = service.pollFactory()
 	return service, nil
+}
+
+func (s *Service) newAppServerSession() Session {
+	codexBin := s.cfg.CodexBin
+	listen := s.appServerListen
+	cwd := s.cfg.DefaultCWD
+	timeout := s.cfg.RequestTimeout
+	return appserver.NewClient(codexBin, listen, cwd, timeout)
 }
 
 func (s *Service) Close() error {
@@ -149,6 +169,7 @@ func (s *Service) Close() error {
 	s.mu.Lock()
 	live := s.live
 	poll := s.poll
+	desktopInputDispatcher := s.desktopInputDispatcher
 	s.live = nil
 	s.poll = nil
 	s.liveEvents = nil
@@ -164,6 +185,9 @@ func (s *Service) Close() error {
 	if poll != nil {
 		_ = poll.Close()
 	}
+	if closeable, ok := desktopInputDispatcher.(closeableDesktopInputDispatcher); ok {
+		_ = closeable.Close()
+	}
 	return s.store.Close()
 }
 
@@ -171,6 +195,10 @@ func (s *Service) SetSender(sender Sender) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sender = sender
+}
+
+func (s *Service) Store() *storage.Store {
+	return s.store
 }
 
 func (s *Service) Start(ctx context.Context) error {
@@ -282,6 +310,10 @@ func (s *Service) StatusSnapshot(ctx context.Context, chatID, topicID int64) (st
 }
 
 func (s *Service) HandleMessage(ctx context.Context, chatID, topicID, userID int64, text string, replyToMessageID int64) (*DirectResponse, error) {
+	return s.HandleMessageFromSource(ctx, chatID, topicID, userID, text, replyToMessageID, model.PanelSourceTelegramInput)
+}
+
+func (s *Service) HandleMessageFromSource(ctx context.Context, chatID, topicID, userID int64, text string, replyToMessageID int64, sourceMode string) (*DirectResponse, error) {
 	if !s.IsAllowed(userID, chatID) {
 		return nil, nil
 	}
@@ -290,12 +322,16 @@ func (s *Service) HandleMessage(ctx context.Context, chatID, topicID, userID int
 		return &DirectResponse{Text: "Plain text messages only right now. Send text, or use /context for routing help."}, nil
 	}
 	if strings.HasPrefix(text, "/") {
-		return s.handleCommand(ctx, chatID, topicID, text, replyToMessageID)
+		return s.handleCommandFromSource(ctx, chatID, topicID, text, replyToMessageID, sourceMode)
 	}
-	return s.handlePlainText(ctx, chatID, topicID, text, replyToMessageID)
+	return s.handlePlainTextFromSource(ctx, chatID, topicID, text, replyToMessageID, sourceMode)
 }
 
 func (s *Service) HandleCallback(ctx context.Context, chatID, topicID, messageID, userID int64, token string) (*DirectResponse, error) {
+	return s.HandleCallbackFromSource(ctx, chatID, topicID, messageID, userID, token, model.PanelSourceTelegramInput)
+}
+
+func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID, messageID, userID int64, token, sourceMode string) (*DirectResponse, error) {
 	if !s.IsAllowed(userID, chatID) {
 		return nil, nil
 	}
@@ -392,7 +428,7 @@ func (s *Service) HandleCallback(ctx context.Context, chatID, topicID, messageID
 		}
 		return s.approve(ctx, route.RequestID, decision)
 	case "answer_choice":
-		return s.answerChoice(ctx, chatID, topicID, route)
+		return s.answerChoice(ctx, chatID, topicID, route, sourceMode)
 	case "get_full_log":
 		return s.sendFullLogArchive(ctx, chatID, topicID, route.ThreadID)
 	default:
@@ -477,6 +513,9 @@ func (s *Service) ensureLiveSessionLocked(ctx context.Context) {
 			"stderr_tail": sanitizedStderrTail(client),
 		})
 		s.setError(ctx, err)
+		if s.fallbackProxyAppServerToStdioLocked(ctx, "live", err) {
+			s.ensureLiveSessionLocked(ctx)
+		}
 		return
 	}
 	events := client.Subscribe()
@@ -527,6 +566,9 @@ func (s *Service) ensurePollSessionLocked(ctx context.Context) {
 			"stderr_tail": sanitizedStderrTail(client),
 		})
 		s.setError(ctx, err)
+		if s.fallbackProxyAppServerToStdioLocked(ctx, "poll", err) {
+			s.ensurePollSessionLocked(ctx)
+		}
 		return
 	}
 	s.mu.Lock()
@@ -543,6 +585,63 @@ func (s *Service) ensurePollSessionLocked(ctx context.Context) {
 		"generation":  generation,
 		"duration_ms": time.Since(started).Milliseconds(),
 	})
+}
+
+func (s *Service) fallbackProxyAppServerToStdioLocked(ctx context.Context, role string, cause error) bool {
+	if s == nil || !strings.HasPrefix(strings.TrimSpace(s.appServerListen), "proxy") {
+		return false
+	}
+	causeText := ""
+	if cause != nil {
+		causeText = cause.Error()
+	}
+	s.mu.Lock()
+	oldLive := s.live
+	oldPoll := s.poll
+	s.appServerListen = appServerStdioListen
+	s.liveConnected = false
+	s.pollConnected = false
+	s.live = nil
+	s.poll = nil
+	s.liveEvents = nil
+	s.liveGeneration++
+	liveGeneration := s.liveGeneration
+	s.pollGeneration++
+	pollGeneration := s.pollGeneration
+	s.lastError = ""
+	s.mu.Unlock()
+	newLive := s.liveFactory()
+	newPoll := s.pollFactory()
+	s.mu.Lock()
+	if s.live == nil {
+		s.live = newLive
+	} else if newLive != nil {
+		_ = newLive.Close()
+	}
+	if s.poll == nil {
+		s.poll = newPoll
+	} else if newPoll != nil {
+		_ = newPoll.Close()
+	}
+	s.mu.Unlock()
+	s.logLifecycle("appserver_proxy_fallback_to_stdio", lifecycleFields{
+		"role":            role,
+		"cause":           sanitizeDiagnosticString(causeText),
+		"live_generation": liveGeneration,
+		"poll_generation": pollGeneration,
+	})
+	_ = s.store.SetState(ctx, "appserver.listen_effective", appServerStdioListen)
+	_ = s.store.SetState(ctx, "appserver.proxy_fallback_at", time.Now().UTC().Format(time.RFC3339Nano))
+	_ = s.store.SetState(ctx, "appserver.proxy_fallback_reason", sanitizeDiagnosticString(causeText))
+	_ = s.store.SetState(ctx, "appserver.live_connected", "false")
+	_ = s.store.SetState(ctx, "appserver.poll_connected", "false")
+	if oldLive != nil {
+		_ = oldLive.Close()
+	}
+	if oldPoll != nil && oldPoll != oldLive {
+		_ = oldPoll.Close()
+	}
+	return true
 }
 
 func (s *Service) ensureSessionLifecycle(ctx context.Context) {
@@ -645,6 +744,7 @@ func (s *Service) handleLiveEvent(ctx context.Context, live Session, event appse
 	liveToolSnapshot, hasLiveToolSnapshot := appserver.ToolSnapshotFromLiveNotification(event, model.Thread{ID: threadID})
 	if approval, ok := appserver.PendingApprovalFromServerRequest(event); ok {
 		_ = s.store.SavePendingApproval(ctx, *approval)
+		s.notifyPendingApproval(ctx, *approval)
 		if approval.ThreadID != "" {
 			if refreshed, err := s.refreshThread(ctx, live, approval.ThreadID); err == nil && refreshed != nil {
 				_ = refreshed
@@ -774,7 +874,7 @@ func (s *Service) preserveTelegramOriginLiveCurrentTool(ctx context.Context, cur
 		return
 	}
 	threadID := strings.TrimSpace(firstNonEmpty(current.Thread.ID, prev.Thread.ID))
-	if threadID == "" || !s.isTelegramOriginTurn(ctx, threadID, turnID) {
+	if threadID == "" || !s.isDirectInputOriginTurn(ctx, threadID, turnID) {
 		return
 	}
 	label := strings.TrimSpace(cleanTelegramNilLiteral(prev.LatestToolLabel))
@@ -1259,6 +1359,10 @@ func (s *Service) processDeliveryBatch(ctx context.Context) {
 }
 
 func (s *Service) handleCommand(ctx context.Context, chatID, topicID int64, raw string, replyToMessageID int64) (*DirectResponse, error) {
+	return s.handleCommandFromSource(ctx, chatID, topicID, raw, replyToMessageID, model.PanelSourceTelegramInput)
+}
+
+func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID int64, raw string, replyToMessageID int64, sourceMode string) (*DirectResponse, error) {
 	parts := strings.SplitN(strings.TrimSpace(raw), " ", 2)
 	command := strings.ToLower(strings.SplitN(parts[0], "@", 2)[0])
 	rest := ""
@@ -1321,11 +1425,11 @@ func (s *Service) handleCommand(ctx context.Context, chatID, topicID int64, raw 
 	case "/projects":
 		return s.projectsOverview(ctx)
 	case "/new":
-		return s.newThreadCommand(ctx, chatID, topicID, rest)
+		return s.newThreadCommandFromSource(ctx, chatID, topicID, rest, sourceMode)
 	case "/newchat":
-		return s.newChatCommand(ctx, chatID, topicID, rest)
+		return s.newChatCommandFromSource(ctx, chatID, topicID, rest, sourceMode)
 	case "/newthread":
-		return s.newThreadWithoutCWDCommand(ctx, chatID, topicID, rest)
+		return s.newThreadWithoutCWDCommandFromSource(ctx, chatID, topicID, rest, sourceMode)
 	case "/show":
 		decision, err := s.resolveRoute(ctx, chatID, topicID, rest, replyToMessageID)
 		if err != nil {
@@ -1356,8 +1460,8 @@ func (s *Service) handleCommand(ctx context.Context, chatID, topicID int64, raw 
 		if !ok || decision.ThreadID == "" {
 			return &DirectResponse{Text: "Usage: /reply [--plan] <thread> <text>"}, nil
 		}
-		s.logTelegramInbound("command_reply", chatID, topicID, replyToMessageID, decision, text, collaborationMode)
-		return s.sendInputToThreadTurn(ctx, chatID, topicID, decision.ThreadID, decision.TurnID, text, collaborationMode)
+		s.logInputInbound(sourceMode, "command_reply", chatID, topicID, replyToMessageID, decision, text, collaborationMode)
+		return s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, decision.ThreadID, decision.TurnID, text, collaborationMode, sourceMode)
 	case "/default", "/default_mode":
 		decision, text, _, ok, err := s.resolveInputCommand(ctx, chatID, topicID, rest, replyToMessageID, collaborationModeDefault, false, true)
 		if err != nil {
@@ -1366,8 +1470,8 @@ func (s *Service) handleCommand(ctx context.Context, chatID, topicID int64, raw 
 		if !ok || decision.ThreadID == "" {
 			return &DirectResponse{Text: "Usage: /default <text>, /default <thread_id> <text>, or reply with /default <text>."}, nil
 		}
-		s.logTelegramInbound("command_default", chatID, topicID, replyToMessageID, decision, text, collaborationModeDefault)
-		return s.sendInputToThreadTurn(ctx, chatID, topicID, decision.ThreadID, decision.TurnID, text, collaborationModeDefault)
+		s.logInputInbound(sourceMode, "command_default", chatID, topicID, replyToMessageID, decision, text, collaborationModeDefault)
+		return s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, decision.ThreadID, decision.TurnID, text, collaborationModeDefault, sourceMode)
 	case "/plan", "/plan_mode":
 		decision, text, _, ok, err := s.resolveInputCommand(ctx, chatID, topicID, rest, replyToMessageID, collaborationModePlan, false, true)
 		if err != nil {
@@ -1376,8 +1480,8 @@ func (s *Service) handleCommand(ctx context.Context, chatID, topicID int64, raw 
 		if !ok || decision.ThreadID == "" {
 			return &DirectResponse{Text: "Usage: /plan <text>, /plan <thread_id> <text>, or reply with /plan <text>."}, nil
 		}
-		s.logTelegramInbound("command_plan", chatID, topicID, replyToMessageID, decision, text, collaborationModePlan)
-		return s.sendInputToThreadTurn(ctx, chatID, topicID, decision.ThreadID, decision.TurnID, text, collaborationModePlan)
+		s.logInputInbound(sourceMode, "command_plan", chatID, topicID, replyToMessageID, decision, text, collaborationModePlan)
+		return s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, decision.ThreadID, decision.TurnID, text, collaborationModePlan, sourceMode)
 	case "/repair":
 		if err := s.RequestRepair(ctx, "telegram"); err != nil {
 			return nil, err
@@ -1401,21 +1505,25 @@ func (s *Service) handleCommand(ctx context.Context, chatID, topicID int64, raw 
 }
 
 func (s *Service) handlePlainText(ctx context.Context, chatID, topicID int64, text string, replyToMessageID int64) (*DirectResponse, error) {
-	if response, consumed, err := s.maybeConsumeNewThreadPrompt(ctx, chatID, topicID, text); consumed {
+	return s.handlePlainTextFromSource(ctx, chatID, topicID, text, replyToMessageID, model.PanelSourceTelegramInput)
+}
+
+func (s *Service) handlePlainTextFromSource(ctx context.Context, chatID, topicID int64, text string, replyToMessageID int64, sourceMode string) (*DirectResponse, error) {
+	if response, consumed, err := s.maybeConsumeNewThreadPromptFromSource(ctx, chatID, topicID, text, sourceMode); consumed {
 		return response, err
 	}
-	decision, err := s.resolveRoute(ctx, chatID, topicID, "", replyToMessageID)
+	decision, err := s.resolveRouteFromSource(ctx, chatID, topicID, "", replyToMessageID, sourceMode)
 	if err != nil {
 		return nil, err
 	}
 	if decision.ThreadID == "" {
 		return &DirectResponse{Text: "No bound thread. Use /threads, /projects, /bind <thread>, or reply to a thread card."}, nil
 	}
-	s.logTelegramInbound("plain_text", chatID, topicID, replyToMessageID, decision, text, "")
+	s.logInputInbound(sourceMode, "plain_text", chatID, topicID, replyToMessageID, decision, text, "")
 	if strings.TrimSpace(decision.RequestID) != "" {
 		return s.respondUserInputRequest(ctx, decision.RequestID, text)
 	}
-	return s.sendInputToThreadTurn(ctx, chatID, topicID, decision.ThreadID, decision.TurnID, text, "")
+	return s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, decision.ThreadID, decision.TurnID, text, "", sourceMode)
 }
 
 func (s *Service) codexSettingsOverview(ctx context.Context) (*DirectResponse, error) {
@@ -1744,8 +1852,66 @@ func (s *Service) sendInputToThread(ctx context.Context, chatID, topicID int64, 
 }
 
 func (s *Service) sendInputToThreadTurn(ctx context.Context, chatID, topicID int64, threadID, routeTurnID, text, collaborationMode string) (*DirectResponse, error) {
+	return s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, threadID, routeTurnID, text, collaborationMode, model.PanelSourceTelegramInput)
+}
+
+func (s *Service) desktopInputHandledResponse(ctx context.Context, chatID, topicID int64, live Session, liveConnected bool, thread *model.Thread, routeTurnID, sourceMode string, desktopResult map[string]any, startedNewTurn bool, desktopCollaborationMode string) *DirectResponse {
+	if thread == nil {
+		return nil
+	}
+	threadID := thread.ID
+	turn := appserverThreadTurnID(desktopResult)
+	if strings.TrimSpace(turn) == "" && strings.TrimSpace(routeTurnID) != "" {
+		turn = routeTurnID
+	}
+	if startedNewTurn {
+		switch desktopCollaborationMode {
+		case collaborationModePlan:
+			_ = s.setThreadCollaborationMarker(ctx, threadID, "", collaborationModePlan)
+		case collaborationModeDefault:
+			_ = s.clearThreadCollaborationMarker(ctx, threadID)
+		}
+	}
+	if strings.TrimSpace(turn) != "" {
+		_ = s.markInputOriginTurn(ctx, threadID, turn, sourceMode, chatID, topicID)
+	}
+	if liveConnected && live != nil {
+		if _, refreshErr := s.refreshThreadForOperation(ctx, live, threadID, "refresh_thread_after_desktop_input"); refreshErr != nil {
+			s.logLifecycle("thread_refresh_failed", lifecycleFields{
+				"operation": "refresh_thread_after_desktop_input",
+				"thread_id": threadID,
+				"turn_id":   turn,
+				"error":     refreshErr,
+			})
+		}
+	}
+	if strings.TrimSpace(turn) != "" {
+		s.ensureStartedTurnSnapshot(ctx, thread, turn)
+	}
+	explicitTarget := model.ObserverTarget{
+		ChatKey: model.ChatKey(chatID, topicID),
+		ChatID:  chatID,
+		TopicID: topicID,
+		Enabled: true,
+	}
+	s.syncThreadPanelToTarget(ctx, explicitTarget, threadID, true, sourceMode)
+	s.logLifecycle("codex_desktop_input_dispatched", lifecycleFields{
+		"chat_key":    model.ChatKey(chatID, topicID),
+		"source_mode": sourceMode,
+		"thread_id":   threadID,
+		"turn_id":     turn,
+	})
+	if strings.TrimSpace(turn) != "" {
+		s.startTelegramOriginHotPoll(ctx, threadID, turn)
+	}
+	return &DirectResponse{ThreadID: threadID, TurnID: turn}
+}
+
+func (s *Service) sendInputToThreadTurnFromSource(ctx context.Context, chatID, topicID int64, threadID, routeTurnID, text, collaborationMode, sourceMode string) (*DirectResponse, error) {
+	sourceMode = normalizeInputSourceMode(sourceMode)
 	s.logLifecycle("telegram_turn_input_start", lifecycleFields{
 		"chat_key":           model.ChatKey(chatID, topicID),
+		"source_mode":        sourceMode,
 		"thread_id":          threadID,
 		"route_turn_id":      routeTurnID,
 		"text_len":           len([]rune(text)),
@@ -1760,6 +1926,22 @@ func (s *Service) sendInputToThreadTurn(ctx context.Context, chatID, topicID int
 	live := s.live
 	connected := s.liveConnected
 	s.mu.RUnlock()
+	if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
+		desktopResult, handled, startedNewTurn, desktopCollaborationMode, desktopErr := s.maybeSendFeishuInputViaDesktop(ctx, chatID, topicID, thread, routeTurnID, text, collaborationMode)
+		if desktopErr != nil {
+			s.logLifecycle("codex_desktop_input_failed", lifecycleFields{
+				"thread_id": threadID,
+				"error":     sanitizeDiagnosticString(desktopErr.Error()),
+			})
+			if threadLooksActiveForInput(thread) || steerFailureImpliesActive(desktopErr) {
+				return &DirectResponse{Text: activeThreadReplyText(thread, desktopErr), ThreadID: threadID, TurnID: thread.ActiveTurnID}, nil
+			}
+			return nil, desktopErr
+		}
+		if handled {
+			return s.desktopInputHandledResponse(ctx, chatID, topicID, live, connected, thread, routeTurnID, sourceMode, desktopResult, startedNewTurn, desktopCollaborationMode), nil
+		}
+	}
 	if !connected || live == nil {
 		s.logLifecycle("telegram_turn_input_rejected", lifecycleFields{
 			"thread_id": threadID,
@@ -1895,7 +2077,7 @@ func (s *Service) sendInputToThreadTurn(ctx context.Context, chatID, topicID int
 		}
 	}
 	if strings.TrimSpace(turn) != "" {
-		_ = s.markTelegramOriginTurnFromTelegram(ctx, threadID, turn, chatID, topicID)
+		_ = s.markInputOriginTurn(ctx, threadID, turn, sourceMode, chatID, topicID)
 	}
 	if _, refreshErr := s.refreshThreadForOperation(ctx, live, threadID, "refresh_thread_after_start"); refreshErr != nil {
 		s.logLifecycle("thread_refresh_failed", lifecycleFields{
@@ -1914,16 +2096,44 @@ func (s *Service) sendInputToThreadTurn(ctx context.Context, chatID, topicID int
 		TopicID: topicID,
 		Enabled: true,
 	}
-	s.syncThreadPanelToTarget(ctx, explicitTarget, threadID, true, model.PanelSourceTelegramInput)
+	s.syncThreadPanelToTarget(ctx, explicitTarget, threadID, true, sourceMode)
 	s.logLifecycle("telegram_turn_input_dispatched", lifecycleFields{
-		"chat_key":  model.ChatKey(chatID, topicID),
-		"thread_id": threadID,
-		"turn_id":   turn,
+		"chat_key":    model.ChatKey(chatID, topicID),
+		"source_mode": sourceMode,
+		"thread_id":   threadID,
+		"turn_id":     turn,
 	})
 	if strings.TrimSpace(turn) != "" {
 		s.startTelegramOriginHotPoll(ctx, threadID, turn)
 	}
 	return &DirectResponse{ThreadID: threadID, TurnID: turn}, nil
+}
+
+func (s *Service) maybeOpenCodexDesktopForInput(ctx context.Context, threadID, sourceMode string) bool {
+	if s == nil || !s.cfg.OpenCodexDesktopOnFeishu || normalizeInputSourceMode(sourceMode) != model.PanelSourceFeishuInput {
+		return false
+	}
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return false
+	}
+	s.mu.RLock()
+	opener := s.desktopOpener
+	s.mu.RUnlock()
+	if opener == nil {
+		opener = openCodexDesktopThread
+	}
+	if err := opener(ctx, threadID); err != nil {
+		s.logLifecycle("codex_desktop_open_failed", lifecycleFields{
+			"thread_id": threadID,
+			"error":     sanitizeDiagnosticString(err.Error()),
+		})
+		return false
+	}
+	s.logLifecycle("codex_desktop_opened", lifecycleFields{
+		"thread_id": threadID,
+	})
+	return true
 }
 
 func (s *Service) turnStartOptions(ctx context.Context, collaborationMode string, thread *model.Thread) appserver.TurnStartOptions {
@@ -2220,7 +2430,7 @@ func (s *Service) approve(ctx context.Context, requestID, decision string) (*Dir
 	return &DirectResponse{CallbackText: fmt.Sprintf("Approval %s resolved.", requestID), ThreadID: approval.ThreadID}, nil
 }
 
-func (s *Service) answerChoice(ctx context.Context, chatID, topicID int64, route *model.CallbackRoute) (*DirectResponse, error) {
+func (s *Service) answerChoice(ctx context.Context, chatID, topicID int64, route *model.CallbackRoute, sourceMode string) (*DirectResponse, error) {
 	if route == nil {
 		return &DirectResponse{CallbackText: "No pending question for this button."}, nil
 	}
@@ -2233,7 +2443,7 @@ func (s *Service) answerChoice(ctx context.Context, chatID, topicID int64, route
 		return &DirectResponse{CallbackText: "Answer option is empty."}, nil
 	}
 	if strings.TrimSpace(route.RequestID) == "" {
-		response, err := s.sendInputToThreadTurn(ctx, chatID, topicID, route.ThreadID, route.TurnID, text, "")
+		response, err := s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, route.ThreadID, route.TurnID, text, "", sourceMode)
 		if err != nil {
 			return nil, err
 		}
@@ -2274,11 +2484,15 @@ func (s *Service) threadsOverview(ctx context.Context, rest string) (*DirectResp
 		return &DirectResponse{Text: strings.Join(lines, "\n")}, nil
 	}
 	buttons := [][]model.ButtonSpec{}
+	sections := []model.MessageSection{{Text: "All chats"}}
 	for index, thread := range threads {
-		lines = append(lines, fmt.Sprintf("%d. %s\n   %s | %s | %s\n   %s", index+1, strings.TrimSpace(thread.Title), thread.ProjectName, thread.DirectoryName, thread.ShortID(), trimPreview(thread.LastPreview)))
-		buttons = append(buttons, []model.ButtonSpec{s.callbackButton(ctx, fmt.Sprintf("Open %d", index+1), "show_thread", thread.ID, "", "", nil)})
+		text := fmt.Sprintf("%d. %s\n   %s | %s | %s\n   %s", index+1, strings.TrimSpace(thread.Title), thread.ProjectName, thread.DirectoryName, thread.ShortID(), trimPreview(thread.LastPreview))
+		button := s.callbackButton(ctx, fmt.Sprintf("Open %d", index+1), "show_thread", thread.ID, "", "", nil)
+		lines = append(lines, text)
+		buttons = append(buttons, []model.ButtonSpec{button})
+		sections = append(sections, model.MessageSection{Text: text, Buttons: [][]model.ButtonSpec{{button}}})
 	}
-	return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons}, nil
+	return &DirectResponse{Text: strings.Join(lines, "\n"), Sections: sections, Buttons: buttons}, nil
 }
 
 func (s *Service) showThread(ctx context.Context, chatID, topicID int64, threadID string, forceNew bool) (*DirectResponse, error) {
@@ -2385,6 +2599,10 @@ func normalizeRuntimePanelMode(value string) string {
 }
 
 func (s *Service) resolveRoute(ctx context.Context, chatID, topicID int64, explicitThreadID string, replyToMessageID int64) (model.RouteDecision, error) {
+	return s.resolveRouteFromSource(ctx, chatID, topicID, explicitThreadID, replyToMessageID, model.PanelSourceTelegramInput)
+}
+
+func (s *Service) resolveRouteFromSource(ctx context.Context, chatID, topicID int64, explicitThreadID string, replyToMessageID int64, sourceMode string) (model.RouteDecision, error) {
 	if strings.TrimSpace(explicitThreadID) != "" {
 		return model.RouteDecision{ThreadID: strings.TrimSpace(explicitThreadID), Source: model.RouteSourceExplicit}, nil
 	}
@@ -2403,6 +2621,15 @@ func (s *Service) resolveRoute(ctx context.Context, chatID, topicID int64, expli
 	}
 	if steerState != nil && strings.TrimSpace(steerState.ThreadID) != "" {
 		return model.RouteDecision{ThreadID: steerState.ThreadID, Source: model.RouteSourceSteer}, nil
+	}
+	if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
+		panel, err := s.store.GetLatestCurrentPanelForChat(ctx, chatID, topicID)
+		if err != nil {
+			return model.RouteDecision{}, err
+		}
+		if panel != nil && strings.TrimSpace(panel.ThreadID) != "" {
+			return model.RouteDecision{ThreadID: panel.ThreadID, Source: model.RouteSourcePanel}, nil
+		}
 	}
 	binding, err := s.store.GetBinding(ctx, chatID, topicID)
 	if err != nil {
@@ -2501,6 +2728,7 @@ func (s *Service) enqueueRenderedToBackgroundTargets(ctx context.Context, respon
 	for _, target := range targets {
 		payload := model.DeliveryPayload{
 			Text:     response.Text,
+			Sections: response.Sections,
 			ThreadID: threadID,
 			TurnID:   turnID,
 			ItemID:   itemID,

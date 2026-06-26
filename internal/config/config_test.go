@@ -21,10 +21,10 @@ func TestFromEnvReadsCodexChatsRoot(t *testing.T) {
 	}
 }
 
-func TestMarshalJSONIncludesNotifyNewRun(t *testing.T) {
+func TestMarshalJSONIncludesDesktopOpenSettings(t *testing.T) {
 	t.Parallel()
 
-	data, err := json.Marshal(Config{NotifyNewRun: true})
+	data, err := json.Marshal(Config{NotifyNewRun: true, NotifySystem: true, OpenCodexDesktopOnFeishu: true})
 	if err != nil {
 		t.Fatalf("json.Marshal failed: %v", err)
 	}
@@ -34,6 +34,60 @@ func TestMarshalJSONIncludesNotifyNewRun(t *testing.T) {
 	}
 	if got["notify_new_run"] != true {
 		t.Fatalf("notify_new_run = %#v, want true", got["notify_new_run"])
+	}
+	if got["notify_system"] != true {
+		t.Fatalf("notify_system = %#v, want true", got["notify_system"])
+	}
+	if got["open_codex_desktop_on_feishu"] != true {
+		t.Fatalf("open_codex_desktop_on_feishu = %#v, want true", got["open_codex_desktop_on_feishu"])
+	}
+}
+
+func TestFromEnvReadsFeishuConfig(t *testing.T) {
+	t.Setenv("CTR_GO_CONFIG", filepath.Join(t.TempDir(), "missing.env"))
+	t.Setenv("CTR_GO_ADAPTER", "feishu")
+	t.Setenv("CTR_GO_FEISHU_APP_ID", "cli_test")
+	t.Setenv("CTR_GO_FEISHU_APP_SECRET", "secret")
+	t.Setenv("CTR_GO_FEISHU_ALLOWED_OPEN_IDS", "ou_1,ou_2 ou_1")
+	t.Setenv("CTR_GO_FEISHU_ALLOWED_CHAT_IDS", "oc_1;oc_2")
+	t.Setenv("CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU", "true")
+
+	cfg := FromEnv()
+
+	if cfg.Adapter != "feishu" {
+		t.Fatalf("Adapter = %q, want feishu", cfg.Adapter)
+	}
+	if cfg.FeishuAppID != "cli_test" || cfg.FeishuAppSecret != "secret" {
+		t.Fatalf("Feishu credentials = %q/%q", cfg.FeishuAppID, cfg.FeishuAppSecret)
+	}
+	if !reflect.DeepEqual(cfg.FeishuAllowedOpenIDs, []string{"ou_1", "ou_2"}) {
+		t.Fatalf("FeishuAllowedOpenIDs = %#v", cfg.FeishuAllowedOpenIDs)
+	}
+	if !reflect.DeepEqual(cfg.FeishuAllowedChatIDs, []string{"oc_1", "oc_2"}) {
+		t.Fatalf("FeishuAllowedChatIDs = %#v", cfg.FeishuAllowedChatIDs)
+	}
+	if !cfg.OpenCodexDesktopOnFeishu {
+		t.Fatal("OpenCodexDesktopOnFeishu = false, want true")
+	}
+}
+
+func TestMarshalJSONRedactsFeishuSecret(t *testing.T) {
+	t.Parallel()
+
+	data, err := json.Marshal(Config{Adapter: "feishu", FeishuAppID: "cli_test", FeishuAppSecret: "secret"})
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, "secret") {
+		t.Fatalf("MarshalJSON leaked Feishu secret: %s", text)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if got["feishu_configured"] != true {
+		t.Fatalf("feishu_configured = %#v, want true", got["feishu_configured"])
 	}
 }
 
@@ -83,6 +137,7 @@ func TestLoadReadsConfigFileAndEnvOverridesIt(t *testing.T) {
 		`CTR_GO_ALLOWED_USER_IDS="101 202"`,
 		`CTR_GO_DEFAULT_CWD="` + fileDefaultCWD + `"`,
 		`CTR_GO_NOTIFY_NEW_RUN="off"`,
+		`CTR_GO_NOTIFY_SYSTEM="off"`,
 		"",
 	}, "\n")), 0o600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
@@ -108,6 +163,9 @@ func TestLoadReadsConfigFileAndEnvOverridesIt(t *testing.T) {
 	}
 	if cfg.NotifyNewRun {
 		t.Fatal("NotifyNewRun = true, want false from config file")
+	}
+	if cfg.NotifySystem {
+		t.Fatal("NotifySystem = true, want false from config file")
 	}
 }
 

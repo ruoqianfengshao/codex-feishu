@@ -19,6 +19,7 @@ type recordedMessage struct {
 	messageID int64
 	text      string
 	entities  []model.MessageEntity
+	style     string
 	buttons   [][]model.ButtonSpec
 	options   model.SendOptions
 }
@@ -51,7 +52,7 @@ func (s *recordingSender) SendRenderedMessages(ctx context.Context, chatID, topi
 	ids := make([]int64, 0, len(messages))
 	for _, message := range messages {
 		messageID := int64(len(s.messages) + 1)
-		s.messages = append(s.messages, recordedMessage{chatID: chatID, topicID: topicID, messageID: messageID, text: message.Text, entities: message.Entities, buttons: buttons, options: options})
+		s.messages = append(s.messages, recordedMessage{chatID: chatID, topicID: topicID, messageID: messageID, text: message.Text, entities: message.Entities, style: message.Style, buttons: buttons, options: options})
 		ids = append(ids, messageID)
 	}
 	return ids, nil
@@ -69,7 +70,7 @@ func (s *recordingSender) EditRenderedMessage(ctx context.Context, chatID, topic
 	if s.editErr != nil {
 		return s.editErr
 	}
-	s.edits = append(s.edits, recordedMessage{chatID: chatID, topicID: topicID, messageID: messageID, text: rendered.Text, entities: rendered.Entities, buttons: buttons})
+	s.edits = append(s.edits, recordedMessage{chatID: chatID, topicID: topicID, messageID: messageID, text: rendered.Text, entities: rendered.Entities, style: rendered.Style, buttons: buttons})
 	return nil
 }
 
@@ -128,6 +129,165 @@ func lastFinalMessage(t *testing.T, messages []recordedMessage) recordedMessage 
 
 func hasThreadChip(text, threadID string) bool {
 	return strings.Contains(strings.SplitN(text, "\n", 2)[0], "[T:"+visualShortID(threadID)+"]")
+}
+
+type recordingNotifier struct {
+	notifications []SystemNotification
+}
+
+func (n *recordingNotifier) Notify(ctx context.Context, notification SystemNotification) error {
+	n.notifications = append(n.notifications, notification)
+	return nil
+}
+
+func TestSyncThreadPanelSendsCompletedSystemNotificationOnce(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.NotifySystem = true
+	notifier := &recordingNotifier{}
+	service.SetNotifier(notifier)
+	sender := &recordingSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+
+	thread := model.Thread{
+		ID:          "thread-system-complete",
+		Title:       "System complete",
+		ProjectName: "Codex",
+		CWD:         `C:\Users\you\Projects\Codex`,
+		UpdatedAt:   time.Now().UTC().Unix(),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	snapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-system-complete",
+		LatestTurnStatus: "completed",
+		LatestFinalFP:    "final-system-complete",
+		LatestFinalText:  "All work complete.",
+	}, time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
+
+	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
+	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
+
+	if len(notifier.notifications) != 1 {
+		t.Fatalf("notifications = %#v, want one completed notification", notifier.notifications)
+	}
+	got := notifier.notifications[0]
+	if got.Kind != systemNotificationCompleted || got.ThreadID != thread.ID || got.TurnID != "turn-system-complete" {
+		t.Fatalf("notification = %#v, want completed thread/turn", got)
+	}
+	if !strings.Contains(got.Message, "All work complete.") {
+		t.Fatalf("notification message = %q, want final text", got.Message)
+	}
+}
+
+func TestSyncThreadPanelSendsFailedSystemNotificationWithoutFinalText(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.NotifySystem = true
+	notifier := &recordingNotifier{}
+	service.SetNotifier(notifier)
+	sender := &recordingSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+
+	thread := model.Thread{
+		ID:          "thread-system-failed",
+		Title:       "System failed",
+		ProjectName: "Codex",
+		CWD:         `C:\Users\you\Projects\Codex`,
+		UpdatedAt:   time.Now().UTC().Unix(),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	snapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-system-failed",
+		LatestTurnStatus: "failed",
+	}, time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
+
+	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
+	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
+
+	if len(notifier.notifications) != 1 {
+		t.Fatalf("notifications = %#v, want one failed notification", notifier.notifications)
+	}
+	got := notifier.notifications[0]
+	if got.Kind != systemNotificationFailed || got.Title != "Codex session failed" {
+		t.Fatalf("notification = %#v, want failed notification", got)
+	}
+	if !strings.Contains(got.Message, "Status: failed") {
+		t.Fatalf("notification message = %q, want failed status", got.Message)
+	}
+}
+
+func TestPendingApprovalSystemNotificationDedupes(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.NotifySystem = true
+	notifier := &recordingNotifier{}
+	service.SetNotifier(notifier)
+	ctx := context.Background()
+	approval := model.PendingApproval{
+		RequestID:  "request-system-approval",
+		ThreadID:   "thread-system-approval",
+		TurnID:     "turn-system-approval",
+		PromptKind: "approval",
+		Question:   "Allow command?",
+		Status:     "pending",
+		UpdatedAt:  model.NowString(),
+	}
+
+	service.notifyPendingApproval(ctx, approval)
+	service.notifyPendingApproval(ctx, approval)
+
+	if len(notifier.notifications) != 1 {
+		t.Fatalf("notifications = %#v, want one approval notification", notifier.notifications)
+	}
+	got := notifier.notifications[0]
+	if got.Kind != systemNotificationApproval || got.RequestID != approval.RequestID {
+		t.Fatalf("notification = %#v, want approval request", got)
+	}
+	if !strings.Contains(got.Message, "Allow command?") {
+		t.Fatalf("notification message = %q, want question", got.Message)
+	}
+}
+
+func TestSystemNotificationCanBeDisabled(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.NotifySystem = false
+	notifier := &recordingNotifier{}
+	service.SetNotifier(notifier)
+	ctx := context.Background()
+
+	service.notifyPendingApproval(ctx, model.PendingApproval{
+		RequestID: "request-system-disabled",
+		ThreadID:  "thread-system-disabled",
+		TurnID:    "turn-system-disabled",
+		Question:  "Allow command?",
+		Status:    "pending",
+		UpdatedAt: model.NowString(),
+	})
+
+	if len(notifier.notifications) != 0 {
+		t.Fatalf("notifications = %#v, want none when disabled", notifier.notifications)
+	}
 }
 
 func TestSyncThreadPanelDoesNotDuplicateFinalAnswerOnRepeatedSync(t *testing.T) {
@@ -821,6 +981,146 @@ func TestTelegramInputSyncDoesNotDuplicateUserRequestNotice(t *testing.T) {
 	}
 	if panel == nil || panel.SourceMode != model.PanelSourceTelegramInput || panel.RunNoticeMessageID != sender.messages[0].messageID || panel.LastUserNoticeFP != "" {
 		t.Fatalf("panel = %#v, want telegram_input with empty user notice fp", panel)
+	}
+}
+
+func TestFeishuInputSyncShowsFeishuSourceAndDoesNotDuplicateUserRequestNotice(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+
+	thread := model.Thread{
+		ID:          "thread-feishu-input",
+		Title:       "Feishu prompt",
+		ProjectName: "Codex",
+		CWD:         `C:\Users\you\Projects\Codex`,
+		UpdatedAt:   time.Now().UTC().Unix(),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	snapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
+		Thread:                thread,
+		LatestTurnID:          "turn-feishu-input",
+		LatestTurnStatus:      "inProgress",
+		LatestUserMessageID:   "user-feishu",
+		LatestUserMessageText: "This was already sent in Feishu.",
+		LatestUserMessageFP:   "user-feishu-fp",
+	}, time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	if err := service.markInputOriginTurn(ctx, thread.ID, "turn-feishu-input", model.PanelSourceFeishuInput, 123456789, 0); err != nil {
+		t.Fatalf("markInputOriginTurn failed: %v", err)
+	}
+
+	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
+	service.syncThreadPanelToTarget(ctx, target, thread.ID, true, model.PanelSourceFeishuInput)
+
+	if len(sender.messages) != 4 {
+		t.Fatalf("message count = %d, want New run + trio without [User] duplicate; messages=%#v", len(sender.messages), sender.messages)
+	}
+	if !strings.Contains(sender.messages[0].text, "New run:") || !strings.Contains(sender.messages[0].text, "Source: Feishu") {
+		t.Fatalf("first message = %q, want Feishu New run notice", sender.messages[0].text)
+	}
+	if strings.Contains(sender.messages[0].text, "Source: Telegram") {
+		t.Fatalf("first message = %q, must not say Telegram for Feishu input", sender.messages[0].text)
+	}
+	for _, message := range sender.messages {
+		if hasHeaderKind(message.text, "User") {
+			t.Fatalf("unexpected user notice for Feishu-originated input: %#v", sender.messages)
+		}
+	}
+	panel, err := service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
+	if err != nil {
+		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
+	}
+	if panel == nil || panel.SourceMode != model.PanelSourceFeishuInput || panel.RunNoticeMessageID != sender.messages[0].messageID || panel.LastUserNoticeFP != "" {
+		t.Fatalf("panel = %#v, want feishu_input with empty user notice fp", panel)
+	}
+}
+
+func TestGlobalObserverSyncAfterFeishuInputShowsDesktopUserRequest(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+
+	thread := model.Thread{
+		ID:          "thread-feishu-then-desktop",
+		Title:       "Feishu then desktop",
+		ProjectName: "Codex",
+		CWD:         `C:\Users\you\Projects\Codex`,
+		UpdatedAt:   time.Now().UTC().Unix(),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:           123456789,
+		TopicID:          0,
+		ProjectName:      thread.ProjectName,
+		ThreadID:         thread.ID,
+		SourceMode:       model.PanelSourceFeishuInput,
+		SummaryMessageID: 101,
+		ToolMessageID:    102,
+		OutputMessageID:  103,
+		CurrentTurnID:    "turn-feishu-old",
+		Status:           "completed",
+		ArchiveEnabled:   true,
+	}); err != nil {
+		t.Fatalf("CreateThreadPanel failed: %v", err)
+	}
+	snapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
+		Thread:                thread,
+		LatestTurnID:          "turn-desktop-new",
+		LatestTurnStatus:      "inProgress",
+		LatestUserMessageID:   "user-desktop-new",
+		LatestUserMessageText: "This was typed in Codex Desktop.",
+		LatestUserMessageFP:   "user-desktop-new-fp",
+	}, time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+
+	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
+	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
+
+	if len(sender.messages) != 5 {
+		t.Fatalf("message count = %d, want New run + [User] + trio; messages=%#v", len(sender.messages), sender.messages)
+	}
+	if !strings.Contains(sender.messages[0].text, "New run:") || !strings.Contains(sender.messages[0].text, "Source: GUI/CLI observer") {
+		t.Fatalf("first message = %q, want GUI/CLI observer New run notice", sender.messages[0].text)
+	}
+	if strings.Contains(sender.messages[0].text, "Source: Feishu") {
+		t.Fatalf("first message = %q, must not classify desktop turn as Feishu", sender.messages[0].text)
+	}
+	userNotices := 0
+	for _, message := range sender.messages {
+		if hasHeaderKind(message.text, "User") {
+			userNotices++
+			if message.style != model.MessageStyleDesktopUser {
+				t.Fatalf("user notice style = %q, want %q", message.style, model.MessageStyleDesktopUser)
+			}
+			if !strings.Contains(message.text, "This was typed in Codex Desktop.") {
+				t.Fatalf("user notice = %q, want desktop prompt text", message.text)
+			}
+		}
+	}
+	if userNotices != 1 {
+		t.Fatalf("user notices = %d, want one; messages=%#v", userNotices, sender.messages)
+	}
+	panel, err := service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
+	if err != nil {
+		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
+	}
+	if panel == nil || panel.SourceMode != model.PanelSourceGlobalObserver || panel.LastUserNoticeFP != "user-desktop-new-fp" {
+		t.Fatalf("panel = %#v, want observer panel with desktop user notice fp", panel)
 	}
 }
 

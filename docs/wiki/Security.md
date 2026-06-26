@@ -6,6 +6,8 @@
 
 - Codex App Server runs locally over stdio.
 - Telegram access is restricted by allowed user/chat ids.
+- Feishu/Lark access can be restricted by open_id/chat_id allowlists and by the
+  same stable numeric allowlists used by the control core.
 - SQLite state stays on the operator machine.
 - `ctr-go init` stores local configuration in `~/.codex-tg/config.env` by default.
 - `ctr-go service install` creates a user LaunchAgent whose environment contains
@@ -14,12 +16,13 @@
   private `config.env` and applied by the process after startup; proxy URLs may
   contain credentials, so treat the config file as secret material.
 - The macOS tray app controls service lifecycle and opens local files, but it
-  does not read or display Telegram tokens.
+  does not read or display Telegram tokens or Feishu app secrets.
 
 ## Never Commit
 
 - `.env`
 - Bot tokens
+- Feishu app secrets
 - `config.env`
 - Telegram user sessions
 - Chat ids from private deployments
@@ -36,9 +39,9 @@ Future control-plane APIs must default to loopback-only or unix-socket-only
 access. Public network listeners, cloud brokers, and unauthenticated local
 control surfaces require a separate ADR.
 
-Telegram, tray, voice, and future HTTP/mobile surfaces are adapters. They must
-not bypass Codex approvals, sandboxing, allowlists, or App Server lifecycle
-guards.
+Telegram, Feishu/Lark, tray, voice, and future HTTP/mobile surfaces are
+adapters. They must not bypass Codex approvals, sandboxing, allowlists, or App
+Server lifecycle guards.
 
 Voice wake-word adapters must treat transcription as untrusted input. A spoken
 request can route to Codex, but it must not auto-approve sensitive file,

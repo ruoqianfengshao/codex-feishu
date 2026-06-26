@@ -167,9 +167,14 @@ func (s *Service) logThreadReadSkipped(threadID, reason string) {
 }
 
 func (s *Service) logTelegramInbound(kind string, chatID, topicID int64, replyToMessageID int64, decision model.RouteDecision, text, collaborationMode string) {
+	s.logInputInbound(model.PanelSourceTelegramInput, kind, chatID, topicID, replyToMessageID, decision, text, collaborationMode)
+}
+
+func (s *Service) logInputInbound(sourceMode, kind string, chatID, topicID int64, replyToMessageID int64, decision model.RouteDecision, text, collaborationMode string) {
 	s.logLifecycle("telegram_inbound", lifecycleFields{
 		"kind":               kind,
 		"chat_key":           model.ChatKey(chatID, topicID),
+		"source_mode":        normalizeInputSourceMode(sourceMode),
 		"reply_message_id":   replyToMessageID,
 		"route_source":       string(decision.Source),
 		"thread_id":          decision.ThreadID,
@@ -286,7 +291,11 @@ func (s *Service) maybeLogTelegramOriginTerminal(ctx context.Context, snapshot a
 	threadID := strings.TrimSpace(snapshot.Thread.ID)
 	turnID := strings.TrimSpace(snapshot.LatestTurnID)
 	status := strings.TrimSpace(snapshot.LatestTurnStatus)
-	if threadID == "" || turnID == "" || !isTerminalTurnStatus(status) || !s.isTelegramOriginTurn(ctx, threadID, turnID) {
+	sourceMode := s.inputOriginTurnSource(ctx, threadID, turnID)
+	if threadID == "" || turnID == "" || !isTerminalTurnStatus(status) || !isDirectInputSourceMode(sourceMode) {
+		return
+	}
+	if sourceMode != model.PanelSourceTelegramInput {
 		return
 	}
 	if decision, err := s.decideTelegramOriginEmptyInterruptedTerminal(ctx, &snapshot, time.Now().UTC()); err == nil && decision.Action == terminalGateDefer {
@@ -300,7 +309,7 @@ func (s *Service) maybeLogTelegramOriginTerminal(ctx context.Context, snapshot a
 		return
 	}
 	fields := snapshotDiagnosticFields(snapshot)
-	fields["chat_source"] = model.PanelSourceTelegramInput
+	fields["chat_source"] = sourceMode
 	s.logLifecycle("telegram_origin_turn_terminal", fields)
 	_ = s.store.SetState(ctx, key, string(model.NowString()))
 	_ = s.clearTelegramOriginEmptyInterruptedDefer(ctx, threadID, turnID)

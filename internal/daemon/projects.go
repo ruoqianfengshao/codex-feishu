@@ -543,6 +543,10 @@ func (s *Service) armProjectNewThread(ctx context.Context, chatID, topicID int64
 }
 
 func (s *Service) newThreadCommand(ctx context.Context, chatID, topicID int64, rest string) (*DirectResponse, error) {
+	return s.newThreadCommandFromSource(ctx, chatID, topicID, rest, model.PanelSourceTelegramInput)
+}
+
+func (s *Service) newThreadCommandFromSource(ctx context.Context, chatID, topicID int64, rest, sourceMode string) (*DirectResponse, error) {
 	selector, prompt := splitCommandHead(rest)
 	if selector == "" || strings.TrimSpace(prompt) == "" {
 		return s.newThreadUsage(ctx)
@@ -555,10 +559,14 @@ func (s *Service) newThreadCommand(ctx context.Context, chatID, topicID int64, r
 		ProjectName:   workspace.ProjectName,
 		DirectoryName: workspace.DirectoryName,
 		CWD:           workspace.CWD,
-	}, strings.TrimSpace(prompt))
+	}, strings.TrimSpace(prompt), sourceMode)
 }
 
 func (s *Service) newChatCommand(ctx context.Context, chatID, topicID int64, rest string) (*DirectResponse, error) {
+	return s.newChatCommandFromSource(ctx, chatID, topicID, rest, model.PanelSourceTelegramInput)
+}
+
+func (s *Service) newChatCommandFromSource(ctx context.Context, chatID, topicID int64, rest, sourceMode string) (*DirectResponse, error) {
 	prompt := strings.TrimSpace(rest)
 	if prompt == "" {
 		return &DirectResponse{Text: "Usage: /newchat <prompt>"}, nil
@@ -571,15 +579,19 @@ func (s *Service) newChatCommand(ctx context.Context, chatID, topicID int64, res
 		ProjectName:   chatsProjectName,
 		DirectoryName: directoryName,
 		CWD:           cwd,
-	}, prompt)
+	}, prompt, sourceMode)
 }
 
 func (s *Service) newThreadWithoutCWDCommand(ctx context.Context, chatID, topicID int64, rest string) (*DirectResponse, error) {
+	return s.newThreadWithoutCWDCommandFromSource(ctx, chatID, topicID, rest, model.PanelSourceTelegramInput)
+}
+
+func (s *Service) newThreadWithoutCWDCommandFromSource(ctx context.Context, chatID, topicID int64, rest, sourceMode string) (*DirectResponse, error) {
 	prompt := strings.TrimSpace(rest)
 	if prompt == "" {
 		return &DirectResponse{Text: "Usage: /newthread <prompt>"}, nil
 	}
-	return s.createThreadFromProjectPrompt(ctx, chatID, topicID, pendingNewThreadState{}, prompt)
+	return s.createThreadFromProjectPrompt(ctx, chatID, topicID, pendingNewThreadState{}, prompt, sourceMode)
 }
 
 func (s *Service) codexChatsRoot() string {
@@ -683,6 +695,10 @@ func (s *Service) resolveProjectWorkspaceSelector(ctx context.Context, selector 
 }
 
 func (s *Service) maybeConsumeNewThreadPrompt(ctx context.Context, chatID, topicID int64, text string) (*DirectResponse, bool, error) {
+	return s.maybeConsumeNewThreadPromptFromSource(ctx, chatID, topicID, text, model.PanelSourceTelegramInput)
+}
+
+func (s *Service) maybeConsumeNewThreadPromptFromSource(ctx context.Context, chatID, topicID int64, text, sourceMode string) (*DirectResponse, bool, error) {
 	state, ok, expired, err := s.pendingNewThreadState(ctx, chatID, topicID)
 	if err != nil {
 		return nil, true, err
@@ -695,7 +711,7 @@ func (s *Service) maybeConsumeNewThreadPrompt(ctx context.Context, chatID, topic
 		return &DirectResponse{Text: "New thread request expired. Use /projects and New thread again."}, true, nil
 	}
 	_ = s.store.DeleteState(ctx, newThreadStateKey(chatID, topicID))
-	response, err := s.createThreadFromProjectPrompt(ctx, chatID, topicID, state, strings.TrimSpace(text))
+	response, err := s.createThreadFromProjectPrompt(ctx, chatID, topicID, state, strings.TrimSpace(text), sourceMode)
 	return response, true, err
 }
 
@@ -718,7 +734,8 @@ func (s *Service) pendingNewThreadState(ctx context.Context, chatID, topicID int
 	return state, true, false, nil
 }
 
-func (s *Service) createThreadFromProjectPrompt(ctx context.Context, chatID, topicID int64, state pendingNewThreadState, prompt string) (*DirectResponse, error) {
+func (s *Service) createThreadFromProjectPrompt(ctx context.Context, chatID, topicID int64, state pendingNewThreadState, prompt, sourceMode string) (*DirectResponse, error) {
+	sourceMode = normalizeInputSourceMode(sourceMode)
 	if strings.TrimSpace(prompt) == "" {
 		return &DirectResponse{Text: "First prompt is empty. Use New thread again and send a non-empty prompt."}, nil
 	}
@@ -770,7 +787,7 @@ func (s *Service) createThreadFromProjectPrompt(ctx context.Context, chatID, top
 		thread.Status = "inProgress"
 		thread.LastPreview = prompt
 		_ = s.store.UpsertThread(ctx, thread)
-		_ = s.markTelegramOriginTurnFromTelegram(ctx, thread.ID, turnID, chatID, topicID)
+		_ = s.markInputOriginTurn(ctx, thread.ID, turnID, sourceMode, chatID, topicID)
 		s.ensureStartedTurnSnapshot(ctx, &thread, turnID)
 	}
 	if _, refreshErr := s.refreshThreadForOperation(ctx, live, thread.ID, "refresh_new_thread_after_start"); refreshErr != nil {
@@ -786,7 +803,7 @@ func (s *Service) createThreadFromProjectPrompt(ctx context.Context, chatID, top
 		return nil, err
 	}
 	target := model.ObserverTarget{ChatKey: model.ChatKey(chatID, topicID), ChatID: chatID, TopicID: topicID, Enabled: true}
-	s.syncThreadPanelToTarget(ctx, target, thread.ID, true, model.PanelSourceTelegramInput)
+	s.syncThreadPanelToTarget(ctx, target, thread.ID, true, sourceMode)
 	if strings.TrimSpace(turnID) != "" {
 		s.startTelegramOriginHotPoll(ctx, thread.ID, turnID)
 	}

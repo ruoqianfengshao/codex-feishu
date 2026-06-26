@@ -63,8 +63,10 @@ func ThreadsFromList(result map[string]any) []model.Thread {
 
 func ThreadFromPayload(payload map[string]any) model.Thread {
 	threadPayload := payload
+	nestedThread := false
 	if nested, ok := payload["thread"].(map[string]any); ok && nested != nil {
 		threadPayload = nested
+		nestedThread = true
 	}
 	id := stringValue(threadPayload["id"], stringValue(threadPayload["threadId"], ""))
 	cwd := stringValue(threadPayload["cwd"], "")
@@ -74,7 +76,10 @@ func ThreadFromPayload(payload map[string]any) model.Thread {
 	status := statusText(threadPayload["status"])
 	preferredModel := stringValue(threadPayload["model"], stringValue(payload["model"], ""))
 	raw, _ := json.Marshal(threadPayload)
-	updatedAt := int64Value(threadPayload["updatedAt"])
+	updatedAt := payloadActivityAt(threadPayload)
+	if nestedThread {
+		updatedAt = maxInt64(updatedAt, payloadActivityAt(payload))
+	}
 	activeTurnID := stringValue(threadPayload["activeTurnId"], "")
 	if activeTurnID == "" {
 		if turns, ok := threadPayload["turns"].([]any); ok && len(turns) > 0 {
@@ -123,6 +128,11 @@ func SnapshotFromThreadRead(result map[string]any) ThreadReadSnapshot {
 		return snapshot
 	}
 	lastTurn, _ := turns[len(turns)-1].(map[string]any)
+	threadUpdatedAt := int64Value(payload["updatedAt"])
+	latestTurnUpdatedAt := payloadActivityAt(lastTurn)
+	if latestTurnUpdatedAt > snapshot.Thread.UpdatedAt {
+		snapshot.Thread.UpdatedAt = latestTurnUpdatedAt
+	}
 	snapshot.LatestTurnID = stringValue(lastTurn["id"], "")
 	snapshot.LatestTurnStatus = statusText(lastTurn["status"])
 	if statusHasFlag(snapshot.LatestTurnStatus, "waitingOnApproval") {
@@ -140,6 +150,9 @@ func SnapshotFromThreadRead(result map[string]any) ThreadReadSnapshot {
 	snapshot.LatestUserMessageID = userID
 	snapshot.LatestUserMessageText = userText
 	snapshot.LatestUserMessageFP = userFP
+	if userText != "" && shouldUseLatestUserPreview(snapshot.Thread.LastPreview, threadUpdatedAt, latestTurnUpdatedAt) {
+		snapshot.Thread.LastPreview = userText
+	}
 	finalText, finalFP := latestFinalAgentMessage(items)
 	snapshot.LatestFinalText = finalText
 	snapshot.LatestFinalFP = finalFP
@@ -171,6 +184,33 @@ func SnapshotFromThreadRead(result map[string]any) ThreadReadSnapshot {
 		}
 	}
 	return snapshot
+}
+
+func shouldUseLatestUserPreview(preview string, threadUpdatedAt, latestTurnUpdatedAt int64) bool {
+	if strings.TrimSpace(preview) == "" {
+		return true
+	}
+	if threadUpdatedAt == 0 {
+		return true
+	}
+	return latestTurnUpdatedAt > 0 && latestTurnUpdatedAt > threadUpdatedAt
+}
+
+func payloadActivityAt(payload map[string]any) int64 {
+	if payload == nil {
+		return 0
+	}
+	return maxInt64(int64Value(payload["updatedAt"]), int64Value(payload["recencyAt"]))
+}
+
+func maxInt64(values ...int64) int64 {
+	var out int64
+	for _, value := range values {
+		if value > out {
+			out = value
+		}
+	}
+	return out
 }
 
 func normalizeFinalizedTurn(snapshot *ThreadReadSnapshot) {

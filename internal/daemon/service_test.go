@@ -67,6 +67,99 @@ func TestResolveRoutePrecedenceExplicitThenReplyThenBinding(t *testing.T) {
 	}
 }
 
+func TestResolveRouteFromFeishuPlainTextPrefersLatestCurrentPanelOverBinding(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+
+	if err := service.store.SetBinding(ctx, 123456789, 0, "binding-thread", model.BindingModeBound); err != nil {
+		t.Fatalf("SetBinding failed: %v", err)
+	}
+	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:        123456789,
+		TopicID:       0,
+		ProjectName:   "project",
+		ThreadID:      "panel-thread",
+		SourceMode:    model.PanelSourceExplicit,
+		CurrentTurnID: "panel-turn",
+		Status:        "inProgress",
+	}); err != nil {
+		t.Fatalf("CreateThreadPanel failed: %v", err)
+	}
+
+	feishu, err := service.resolveRouteFromSource(ctx, 123456789, 0, "", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("resolveRouteFromSource(feishu) failed: %v", err)
+	}
+	if feishu.ThreadID != "panel-thread" || feishu.Source != model.RouteSourcePanel || feishu.TurnID != "" {
+		t.Fatalf("feishu route = %#v, want panel-thread / panel without turn route", feishu)
+	}
+
+	telegram, err := service.resolveRouteFromSource(ctx, 123456789, 0, "", 0, model.PanelSourceTelegramInput)
+	if err != nil {
+		t.Fatalf("resolveRouteFromSource(telegram) failed: %v", err)
+	}
+	if telegram.ThreadID != "binding-thread" || telegram.Source != model.RouteSourceBinding {
+		t.Fatalf("telegram route = %#v, want binding-thread / binding", telegram)
+	}
+}
+
+func TestResolveRouteFromFeishuPlainTextKeepsExplicitReplyAndSteerPrecedence(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+
+	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:      123456789,
+		TopicID:     0,
+		ProjectName: "project",
+		ThreadID:    "panel-thread",
+		SourceMode:  model.PanelSourceExplicit,
+		Status:      "inProgress",
+	}); err != nil {
+		t.Fatalf("CreateThreadPanel failed: %v", err)
+	}
+	if err := service.store.PutMessageRoute(ctx, model.MessageRoute{
+		ChatID:    123456789,
+		TopicID:   0,
+		MessageID: 99,
+		ThreadID:  "reply-thread",
+		TurnID:    "reply-turn",
+		CreatedAt: model.NowString(),
+	}); err != nil {
+		t.Fatalf("PutMessageRoute failed: %v", err)
+	}
+	if err := service.armSteer(ctx, 123456789, 0, "steer-thread", "steer-turn", 7); err != nil {
+		t.Fatalf("armSteer failed: %v", err)
+	}
+
+	explicit, err := service.resolveRouteFromSource(ctx, 123456789, 0, "explicit-thread", 99, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("resolveRouteFromSource(explicit) failed: %v", err)
+	}
+	if explicit.ThreadID != "explicit-thread" || explicit.Source != model.RouteSourceExplicit {
+		t.Fatalf("explicit route = %#v, want explicit-thread / explicit", explicit)
+	}
+
+	reply, err := service.resolveRouteFromSource(ctx, 123456789, 0, "", 99, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("resolveRouteFromSource(reply) failed: %v", err)
+	}
+	if reply.ThreadID != "reply-thread" || reply.TurnID != "reply-turn" || reply.Source != model.RouteSourceReply {
+		t.Fatalf("reply route = %#v, want reply-thread / reply-turn / reply", reply)
+	}
+
+	steer, err := service.resolveRouteFromSource(ctx, 123456789, 0, "", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("resolveRouteFromSource(steer) failed: %v", err)
+	}
+	if steer.ThreadID != "steer-thread" || steer.Source != model.RouteSourceSteer {
+		t.Fatalf("steer route = %#v, want steer-thread / steer", steer)
+	}
+}
+
 func TestResolveRouteExtractsPlanRequestIDOnlyFromPlanRequestEvent(t *testing.T) {
 	t.Parallel()
 
@@ -366,6 +459,12 @@ func TestThreadsCommandHidesInternalSubAgentThreads(t *testing.T) {
 	}
 	if len(response.Buttons) != 1 || len(response.Buttons[0]) != 1 || response.Buttons[0][0].Text != "Open 1" {
 		t.Fatalf("/threads buttons = %#v, want one Open 1 button", response.Buttons)
+	}
+	if len(response.Sections) != 2 {
+		t.Fatalf("/threads sections = %#v, want header plus visible thread", response.Sections)
+	}
+	if response.Sections[1].Text == "" || len(response.Sections[1].Buttons) != 1 || len(response.Sections[1].Buttons[0]) != 1 || response.Sections[1].Buttons[0][0].Text != "Open 1" {
+		t.Fatalf("/threads section = %#v, want visible thread text with Open 1 button", response.Sections[1])
 	}
 }
 
@@ -2938,6 +3037,331 @@ func TestNoActiveTurnSteerFailureFallsBackToTurnStart(t *testing.T) {
 	}
 }
 
+func TestFeishuInputOpensCodexDesktopThreadWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "01900000-0000-7000-8000-000000000201",
+		Title:       "Feishu desktop open",
+		ProjectName: "Codex",
+		CWD:         "/Users/example/project",
+		Status:      "idle",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	stub := &stubSession{}
+	service.live = stub
+	service.liveConnected = true
+	service.desktopInputDispatcher = &stubDesktopInputDispatcher{loadErr: fmt.Errorf("no-client-found")}
+	var opened []string
+	service.desktopOpener = func(ctx context.Context, threadID string) error {
+		opened = append(opened, threadID)
+		return nil
+	}
+
+	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", "Open in desktop", "", model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
+	}
+	if response == nil || response.ThreadID != thread.ID || response.TurnID != "started-turn" {
+		t.Fatalf("response = %#v, want started Feishu input", response)
+	}
+	if len(opened) != 1 || opened[0] != thread.ID {
+		t.Fatalf("opened = %#v, want %s", opened, thread.ID)
+	}
+}
+
+func TestFeishuInputUsesDesktopDispatcherWhenAvailable(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "01900000-0000-7000-8000-000000000203",
+		Title:       "Feishu desktop dispatch",
+		ProjectName: "Codex",
+		CWD:         "/Users/example/project",
+		Status:      "idle",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	stub := &stubSession{}
+	service.live = stub
+	service.liveConnected = true
+	desktop := &stubDesktopInputDispatcher{
+		startResult: map[string]any{
+			"result": map[string]any{"turn": map[string]any{"id": "desktop-turn"}},
+		},
+	}
+	service.desktopInputDispatcher = desktop
+	var opened []string
+	service.desktopOpener = func(ctx context.Context, threadID string) error {
+		opened = append(opened, threadID)
+		return nil
+	}
+
+	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", "Open in desktop", "", model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
+	}
+	if response == nil || response.ThreadID != thread.ID || response.TurnID != "desktop-turn" {
+		t.Fatalf("response = %#v, want desktop turn", response)
+	}
+	if len(desktop.loadCalls) != 1 || desktop.loadCalls[0] != thread.ID {
+		t.Fatalf("desktop loadCalls = %#v, want %s", desktop.loadCalls, thread.ID)
+	}
+	if len(opened) != 1 || opened[0] != thread.ID {
+		t.Fatalf("opened = %#v, want %s", opened, thread.ID)
+	}
+	if len(desktop.startCalls) != 1 {
+		t.Fatalf("desktop startCalls = %#v, want one", desktop.startCalls)
+	}
+	if len(stub.turnStartCalls) != 0 {
+		t.Fatalf("app-server turnStartCalls = %#v, want none", stub.turnStartCalls)
+	}
+}
+
+func TestFeishuInputUsesDesktopDispatcherWhenLiveSessionUnavailable(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "01900000-0000-7000-8000-000000000207",
+		Title:       "Feishu desktop without live",
+		ProjectName: "Codex",
+		CWD:         "/Users/example/project",
+		Status:      "idle",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	service.live = nil
+	service.liveConnected = false
+	desktop := &stubDesktopInputDispatcher{
+		startResult: map[string]any{
+			"result": map[string]any{"turn": map[string]any{"id": "desktop-no-live-turn"}},
+		},
+	}
+	service.desktopInputDispatcher = desktop
+	var opened []string
+	service.desktopOpener = func(ctx context.Context, threadID string) error {
+		opened = append(opened, threadID)
+		return nil
+	}
+
+	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", "Open in desktop", "", model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
+	}
+	if response == nil || response.ThreadID != thread.ID || response.TurnID != "desktop-no-live-turn" {
+		t.Fatalf("response = %#v, want desktop turn without live session", response)
+	}
+	if len(desktop.loadCalls) != 1 || desktop.loadCalls[0] != thread.ID {
+		t.Fatalf("desktop loadCalls = %#v, want %s", desktop.loadCalls, thread.ID)
+	}
+	if len(opened) != 1 || opened[0] != thread.ID {
+		t.Fatalf("opened = %#v, want %s", opened, thread.ID)
+	}
+	if len(desktop.startCalls) != 1 {
+		t.Fatalf("desktop startCalls = %#v, want one", desktop.startCalls)
+	}
+}
+
+func TestFeishuInputFallsBackWhenDesktopDispatcherUnavailable(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "01900000-0000-7000-8000-000000000204",
+		Title:       "Feishu desktop fallback",
+		ProjectName: "Codex",
+		CWD:         "/Users/example/project",
+		Status:      "idle",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	stub := &stubSession{}
+	service.live = stub
+	service.liveConnected = true
+	service.desktopInputDispatcher = &stubDesktopInputDispatcher{loadErr: fmt.Errorf("no-client-found")}
+	service.desktopOpener = func(ctx context.Context, threadID string) error {
+		return nil
+	}
+
+	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", "Fallback", "", model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
+	}
+	if response == nil || response.ThreadID != thread.ID || response.TurnID != "started-turn" {
+		t.Fatalf("response = %#v, want app-server fallback turn", response)
+	}
+	if len(stub.turnStartCalls) != 1 {
+		t.Fatalf("turnStartCalls = %#v, want one fallback start", stub.turnStartCalls)
+	}
+}
+
+func TestFeishuInputRetriesDesktopDispatcherAfterOpeningThread(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "01900000-0000-7000-8000-000000000206",
+		Title:       "Feishu desktop retry",
+		ProjectName: "Codex",
+		CWD:         "/Users/example/project",
+		Status:      "idle",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	stub := &stubSession{}
+	service.live = stub
+	service.liveConnected = true
+	desktop := &stubDesktopInputDispatcher{
+		loadErrs: []error{fmt.Errorf("no-client-found")},
+		startResult: map[string]any{
+			"result": map[string]any{"turn": map[string]any{"id": "desktop-retry-turn"}},
+		},
+	}
+	service.desktopInputDispatcher = desktop
+	var opened []string
+	service.desktopOpener = func(ctx context.Context, threadID string) error {
+		opened = append(opened, threadID)
+		return nil
+	}
+
+	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", "Retry in desktop", "", model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
+	}
+	if response == nil || response.ThreadID != thread.ID || response.TurnID != "desktop-retry-turn" {
+		t.Fatalf("response = %#v, want desktop retry turn", response)
+	}
+	if len(opened) != 1 || opened[0] != thread.ID {
+		t.Fatalf("opened = %#v, want %s", opened, thread.ID)
+	}
+	if len(desktop.loadCalls) != 2 {
+		t.Fatalf("desktop loadCalls = %#v, want retry after open", desktop.loadCalls)
+	}
+	if len(desktop.startCalls) != 1 {
+		t.Fatalf("desktop startCalls = %#v, want one desktop start", desktop.startCalls)
+	}
+	if len(stub.turnStartCalls) != 0 {
+		t.Fatalf("app-server turnStartCalls = %#v, want none", stub.turnStartCalls)
+	}
+}
+
+func TestFeishuInputStartsDesktopTurnWhenReplySteerFindsNoActiveTurn(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "01900000-0000-7000-8000-000000000205",
+		Title:       "Feishu desktop reply start",
+		ProjectName: "Codex",
+		CWD:         "/Users/example/project",
+		Status:      "idle",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	stub := &stubSession{}
+	service.live = stub
+	service.liveConnected = true
+	desktop := &stubDesktopInputDispatcher{
+		steerErr: fmt.Errorf("no active turn to steer"),
+		startResult: map[string]any{
+			"result": map[string]any{"turn": map[string]any{"id": "desktop-reply-start"}},
+		},
+	}
+	service.desktopInputDispatcher = desktop
+	service.desktopOpener = func(ctx context.Context, threadID string) error {
+		return nil
+	}
+
+	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "old-turn", "Reply after idle", "", model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
+	}
+	if response == nil || response.ThreadID != thread.ID || response.TurnID != "desktop-reply-start" {
+		t.Fatalf("response = %#v, want desktop reply start", response)
+	}
+	if len(desktop.steerCalls) != 1 {
+		t.Fatalf("steerCalls = %#v, want one attempted steer", desktop.steerCalls)
+	}
+	if len(desktop.steerRestoreMessages) != 1 {
+		t.Fatalf("steerRestoreMessages = %#v, want one restore message", desktop.steerRestoreMessages)
+	}
+	if got, want := desktop.steerRestoreMessages[0]["cwd"], "/Users/example/project"; got != want {
+		t.Fatalf("restoreMessage.cwd = %v, want %q", got, want)
+	}
+	contextPayload, ok := desktop.steerRestoreMessages[0]["context"].(map[string]any)
+	if !ok {
+		t.Fatalf("restoreMessage.context = %#v, want object", desktop.steerRestoreMessages[0]["context"])
+	}
+	roots, ok := contextPayload["workspaceRoots"].([]string)
+	if !ok {
+		t.Fatalf("workspaceRoots = %#v, want string slice", contextPayload["workspaceRoots"])
+	}
+	if len(roots) != 1 || roots[0] != "/Users/example/project" {
+		t.Fatalf("workspaceRoots = %#v, want project cwd", roots)
+	}
+	if len(desktop.startCalls) != 1 {
+		t.Fatalf("startCalls = %#v, want one start after no active turn", desktop.startCalls)
+	}
+	if len(stub.turnStartCalls) != 0 {
+		t.Fatalf("app-server turnStartCalls = %#v, want none", stub.turnStartCalls)
+	}
+}
+
+func TestFeishuInputDoesNotOpenCodexDesktopThreadWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = false
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "01900000-0000-7000-8000-000000000202",
+		Title:       "Feishu desktop open disabled",
+		ProjectName: "Codex",
+		CWD:         "/Users/example/project",
+		Status:      "idle",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	stub := &stubSession{}
+	service.live = stub
+	service.liveConnected = true
+	var opened []string
+	service.desktopOpener = func(ctx context.Context, threadID string) error {
+		opened = append(opened, threadID)
+		return nil
+	}
+
+	if _, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", "Keep desktop still", "", model.PanelSourceFeishuInput); err != nil {
+		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
+	}
+	if len(opened) != 0 {
+		t.Fatalf("opened = %#v, want none", opened)
+	}
+}
+
 func TestActiveTurnMismatchRetriesFoundTurn(t *testing.T) {
 	t.Parallel()
 
@@ -3464,6 +3888,59 @@ func TestEnsureSessionsSuppressesDuplicateConcurrentStarts(t *testing.T) {
 	if got := poll.StartCalls(); got != 1 {
 		t.Fatalf("poll Start calls = %d, want 1", got)
 	}
+}
+
+func TestEnsureSessionsFallsBackFromProxyToStdioAfterStartFailure(t *testing.T) {
+	service := newTestService(t)
+	service.cfg.AppServerListen = "proxy"
+	service.appServerListen = "proxy"
+	logs := captureServiceLogs(service)
+	proxyLive := &startErrorSession{err: errors.New("EOF")}
+	proxyPoll := &startErrorSession{err: errors.New("EOF")}
+	stdioLive := &stubSession{threadListResult: map[string]any{"threads": []any{}}}
+	stdioPoll := &stubSession{}
+	liveFactoryCalls := 0
+	pollFactoryCalls := 0
+	service.liveFactory = func() Session {
+		liveFactoryCalls++
+		if liveFactoryCalls == 1 {
+			return proxyLive
+		}
+		return stdioLive
+	}
+	service.pollFactory = func() Session {
+		pollFactoryCalls++
+		if pollFactoryCalls == 1 {
+			return proxyPoll
+		}
+		return stdioPoll
+	}
+	service.live = service.liveFactory()
+	service.poll = service.pollFactory()
+
+	service.ensureSessions(context.Background())
+
+	if proxyLive.StartCalls() != 1 {
+		t.Fatalf("proxy live Start calls = %d, want 1", proxyLive.StartCalls())
+	}
+	if proxyPoll.StartCalls() != 0 {
+		t.Fatalf("proxy poll Start calls = %d, want 0 because live fallback switches both sessions first", proxyPoll.StartCalls())
+	}
+	if liveFactoryCalls != 2 || pollFactoryCalls != 2 {
+		t.Fatalf("factory calls live=%d poll=%d, want 2/2", liveFactoryCalls, pollFactoryCalls)
+	}
+	if !service.liveConnected || !service.pollConnected {
+		t.Fatalf("connected live=%t poll=%t, want both true after stdio fallback", service.liveConnected, service.pollConnected)
+	}
+	if service.appServerListen != "stdio://" {
+		t.Fatalf("appServerListen = %q, want stdio://", service.appServerListen)
+	}
+	if service.cfg.AppServerListen != "proxy" {
+		t.Fatalf("configured AppServerListen = %q, want original proxy config preserved", service.cfg.AppServerListen)
+	}
+	got := logs.String()
+	requireLogContains(t, got, `"event":"appserver_proxy_fallback_to_stdio"`)
+	requireLogContains(t, got, `"event":"appserver_session_started"`)
 }
 
 func TestStaleLiveEventLoopDoesNotClearNewLiveState(t *testing.T) {
@@ -4486,7 +4963,7 @@ func TestAnswerChoiceMissingTextDoesNotSendNil(t *testing.T) {
 		ThreadID:    "thread-missing-text",
 		TurnID:      "turn-missing-text",
 		PayloadJSON: `{}`,
-	})
+	}, model.PanelSourceTelegramInput)
 	if err != nil {
 		t.Fatalf("answerChoice(missing text) failed: %v", err)
 	}
@@ -4772,6 +5249,29 @@ func (s *startCountingSession) StartCalls() int {
 	return s.starts
 }
 
+type startErrorSession struct {
+	stubSession
+	mu     sync.Mutex
+	err    error
+	starts int
+}
+
+func (s *startErrorSession) Start(ctx context.Context) error {
+	s.mu.Lock()
+	s.starts++
+	s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
+	return nil
+}
+
+func (s *startErrorSession) StartCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.starts
+}
+
 type stubSession struct {
 	threadReads         map[string]map[string]any
 	threadListResult    map[string]any
@@ -4812,6 +5312,57 @@ type turnCall struct {
 type respondRequestCall struct {
 	requestID string
 	result    map[string]any
+}
+
+type stubDesktopInputDispatcher struct {
+	loadCalls            []string
+	startCalls           []map[string]any
+	steerCalls           []string
+	steerRestoreMessages []map[string]any
+	loadErr              error
+	loadErrs             []error
+	startErr             error
+	steerErr             error
+	startResult          map[string]any
+	steerResult          map[string]any
+}
+
+func (s *stubDesktopInputDispatcher) LoadCompleteHistory(ctx context.Context, threadID string) (map[string]any, error) {
+	s.loadCalls = append(s.loadCalls, threadID)
+	if len(s.loadErrs) > 0 {
+		err := s.loadErrs[0]
+		s.loadErrs = s.loadErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
+	if s.loadErr != nil {
+		return nil, s.loadErr
+	}
+	return map[string]any{"revision": float64(1)}, nil
+}
+
+func (s *stubDesktopInputDispatcher) StartTurn(ctx context.Context, threadID string, turnStartParams map[string]any) (map[string]any, error) {
+	s.startCalls = append(s.startCalls, turnStartParams)
+	if s.startErr != nil {
+		return nil, s.startErr
+	}
+	if s.startResult != nil {
+		return s.startResult, nil
+	}
+	return map[string]any{"turn": map[string]any{"id": "desktop-started-turn"}}, nil
+}
+
+func (s *stubDesktopInputDispatcher) SteerTurn(ctx context.Context, threadID string, input []map[string]any, restoreMessage map[string]any) (map[string]any, error) {
+	s.steerCalls = append(s.steerCalls, threadID)
+	s.steerRestoreMessages = append(s.steerRestoreMessages, restoreMessage)
+	if s.steerErr != nil {
+		return nil, s.steerErr
+	}
+	if s.steerResult != nil {
+		return s.steerResult, nil
+	}
+	return map[string]any{"turn": map[string]any{"id": "desktop-steered-turn"}}, nil
 }
 
 func (s *stubSession) Start(ctx context.Context) error { return nil }

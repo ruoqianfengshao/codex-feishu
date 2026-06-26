@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -18,8 +20,11 @@ import (
 	"syscall"
 	"time"
 
+	qrterminal "github.com/mdp/qrterminal/v3"
+
 	"github.com/mideco-tech/codex-tg/internal/config"
 	"github.com/mideco-tech/codex-tg/internal/daemon"
+	"github.com/mideco-tech/codex-tg/internal/feishu"
 	"github.com/mideco-tech/codex-tg/internal/telegram"
 	"github.com/mideco-tech/codex-tg/internal/version"
 )
@@ -44,6 +49,8 @@ func runWithIO(args []string, in io.Reader, out io.Writer) error {
 	switch args[0] {
 	case "init":
 		return runInit(args[1:], in, out)
+	case "feishu":
+		return runFeishu(args[1:], in, out)
 	case "service":
 		return runService(args[1:], in, out)
 	case "daemon":
@@ -84,9 +91,251 @@ func runWithIO(args []string, in io.Reader, out io.Writer) error {
 	}
 }
 
+func runFeishu(args []string, in io.Reader, out io.Writer) error {
+	if len(args) == 0 {
+		printFeishuUsage(out)
+		return nil
+	}
+	switch args[0] {
+	case "setup":
+		return runFeishuSetup(args[1:], in, out)
+	case "help", "--help", "-h":
+		printFeishuUsage(out)
+		return nil
+	default:
+		return fmt.Errorf("unknown feishu command: %s", strings.Join(args, " "))
+	}
+}
+
+type feishuSetupOptions struct {
+	Force            bool
+	NoQR             bool
+	ConfigPath       string
+	Domain           string
+	LarkDomain       string
+	AllowedOpenIDs   string
+	AllowedChatIDs   string
+	DefaultCWD       string
+	CodexChatsRoot   string
+	CodexBin         string
+	NotifyNewRun     string
+	NotifySystem     string
+	OpenCodexDesktop string
+	RequestTimeout   time.Duration
+	RegistrationHTTP *http.Client
+}
+
+func runFeishuSetup(args []string, in io.Reader, out io.Writer) error {
+	for _, arg := range args {
+		switch arg {
+		case "help", "--help", "-h":
+			printFeishuUsage(out)
+			return nil
+		}
+	}
+	opts, err := parseFeishuSetupOptions(args)
+	if err != nil {
+		return err
+	}
+	return runFeishuSetupWithOptions(opts, in, out)
+}
+
+func parseFeishuSetupOptions(args []string) (feishuSetupOptions, error) {
+	opts := feishuSetupOptions{
+		ConfigPath:     config.ConfigFilePath(),
+		RequestTimeout: 10 * time.Minute,
+	}
+	fs := flagSet("ctr-go feishu setup")
+	fs.BoolVar(&opts.Force, "force", false, "overwrite existing config.env")
+	fs.BoolVar(&opts.NoQR, "no-qr", false, "print only the setup link, without a terminal QR code")
+	fs.StringVar(&opts.ConfigPath, "config", opts.ConfigPath, "config.env path")
+	fs.StringVar(&opts.Domain, "domain", "", "Feishu accounts domain")
+	fs.StringVar(&opts.LarkDomain, "lark-domain", "", "Lark accounts domain used after domain switch")
+	fs.StringVar(&opts.AllowedOpenIDs, "feishu-allowed-open-ids", "", "allowed Feishu open ids")
+	fs.StringVar(&opts.AllowedChatIDs, "feishu-allowed-chat-ids", "", "allowed Feishu chat ids")
+	fs.StringVar(&opts.DefaultCWD, "default-cwd", "", "default Codex working directory")
+	fs.StringVar(&opts.CodexChatsRoot, "codex-chats-root", "", "Codex UI Chats root")
+	fs.StringVar(&opts.CodexBin, "codex-bin", "", "Codex binary path")
+	fs.StringVar(&opts.NotifyNewRun, "notify-new-run", "", "notify on New run")
+	fs.StringVar(&opts.NotifySystem, "notify-system", "", "send macOS system notifications for completion, failure, and approval")
+	fs.StringVar(&opts.OpenCodexDesktop, "open-codex-desktop", "", "open Codex Desktop to the target thread after Feishu input")
+	if err := fs.Parse(args); err != nil {
+		return opts, fmt.Errorf("usage: ctr-go feishu setup [flags]")
+	}
+	if fs.NArg() != 0 {
+		return opts, fmt.Errorf("usage: ctr-go feishu setup [flags]")
+	}
+	opts.ConfigPath = filepath.Clean(opts.ConfigPath)
+	return opts, nil
+}
+
+func flagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	return fs
+}
+
+func runFeishuSetupWithOptions(opts feishuSetupOptions, in io.Reader, out io.Writer) error {
+	existing, err := LoadEnvFileIfExists(opts.ConfigPath)
+	if err != nil {
+		return err
+	}
+	if len(existing) > 0 && !opts.Force {
+		return fmt.Errorf("%s already exists; rerun with --force to overwrite it", opts.ConfigPath)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), opts.RequestTimeout)
+	defer cancel()
+	_, _ = fmt.Fprintln(out, "Feishu/Lark app setup")
+	_, _ = fmt.Fprintln(out, "Scan the QR code with the Feishu/Lark mobile app, then approve app creation.")
+	client := feishu.RegistrationClient{
+		HTTPClient: opts.RegistrationHTTP,
+		Domain:     opts.Domain,
+		LarkDomain: opts.LarkDomain,
+		Source:     "ctr-go-feishu-setup",
+	}
+	result, err := client.Register(ctx, feishu.RegistrationOptions{
+		OnQRCodeReady: func(info feishu.RegistrationQRCode) {
+			_, _ = fmt.Fprintf(out, "\nSetup link: %s\n", info.URL)
+			if info.ExpireIn > 0 {
+				_, _ = fmt.Fprintf(out, "Expires in: %s\n", info.ExpireIn.Round(time.Second))
+			}
+			if !opts.NoQR {
+				_, _ = fmt.Fprintln(out)
+				qrterminal.GenerateHalfBlock(info.URL, qrterminal.M, out)
+			}
+			_, _ = fmt.Fprintln(out, "\nWaiting for approval...")
+		},
+		OnStatusChange: func(status feishu.RegistrationStatus) {
+			switch status.Status {
+			case "slow_down":
+				_, _ = fmt.Fprintf(out, "Still waiting; polling slowed to %s.\n", status.Interval.Round(time.Second))
+			case "domain_switched":
+				_, _ = fmt.Fprintln(out, "Detected Lark tenant; switched registration domain.")
+			case "polling":
+				_, _ = fmt.Fprint(out, ".")
+			}
+		},
+	})
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(out, "\nApproved. Writing local config...")
+
+	values, err := feishuSetupConfigValues(opts, existing, result)
+	if err != nil {
+		return err
+	}
+	if err := writeConfigEnv(opts.ConfigPath, values, opts.Force); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(out, "Wrote %s\n", opts.ConfigPath)
+	_, _ = fmt.Fprintln(out, "\nSetup summary")
+	_, _ = fmt.Fprintln(out, "  Adapter: feishu")
+	_, _ = fmt.Fprintf(out, "  Feishu app id: %s\n", result.ClientID)
+	_, _ = fmt.Fprintln(out, "  Feishu app secret: configured")
+	if strings.TrimSpace(result.UserOpenID) != "" {
+		_, _ = fmt.Fprintf(out, "  Creator open id: %s\n", result.UserOpenID)
+	}
+	if strings.TrimSpace(values["CTR_GO_FEISHU_ALLOWED_OPEN_IDS"]) != "" {
+		_, _ = fmt.Fprintf(out, "  Allowed Feishu open ids: %s\n", values["CTR_GO_FEISHU_ALLOWED_OPEN_IDS"])
+	} else {
+		_, _ = fmt.Fprintln(out, "  Allowed Feishu open ids: any")
+	}
+	_, _ = fmt.Fprintln(out, "\nNext steps")
+	_, _ = fmt.Fprintln(out, "  ctr-go doctor")
+	_, _ = fmt.Fprintln(out, "  ctr-go daemon run")
+	_, _ = fmt.Fprintln(out, "  Configure bot menu shortcuts in the Feishu developer console if you want them.")
+	return nil
+}
+
+func feishuSetupConfigValues(opts feishuSetupOptions, existing map[string]string, result feishu.RegistrationResult) (map[string]string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	codexBin := "codex"
+	if found, err := exec.LookPath("codex"); err == nil && strings.TrimSpace(found) != "" {
+		codexBin = found
+	}
+	values := make(map[string]string, len(existing)+8)
+	for key, value := range existing {
+		values[key] = value
+	}
+	values["CTR_GO_ADAPTER"] = "feishu"
+	values["CTR_GO_FEISHU_APP_ID"] = result.ClientID
+	values["CTR_GO_FEISHU_APP_SECRET"] = result.ClientSecret
+	values["CTR_GO_FEISHU_ALLOWED_OPEN_IDS"] = strings.TrimSpace(firstNonEmpty(opts.AllowedOpenIDs, existing["CTR_GO_FEISHU_ALLOWED_OPEN_IDS"], result.UserOpenID))
+	values["CTR_GO_FEISHU_ALLOWED_CHAT_IDS"] = strings.TrimSpace(firstNonEmpty(opts.AllowedChatIDs, existing["CTR_GO_FEISHU_ALLOWED_CHAT_IDS"]))
+	values["CTR_GO_DEFAULT_CWD"] = strings.TrimSpace(firstNonEmpty(opts.DefaultCWD, existing["CTR_GO_DEFAULT_CWD"], cwd))
+	values["CTR_GO_CODEX_CHATS_ROOT"] = strings.TrimSpace(firstNonEmpty(opts.CodexChatsRoot, existing["CTR_GO_CODEX_CHATS_ROOT"], config.DefaultCodexChatsRoot()))
+	values["CTR_GO_CODEX_BIN"] = strings.TrimSpace(firstNonEmpty(opts.CodexBin, existing["CTR_GO_CODEX_BIN"], codexBin))
+	values["CTR_GO_NOTIFY_NEW_RUN"] = strings.TrimSpace(firstNonEmpty(opts.NotifyNewRun, existing["CTR_GO_NOTIFY_NEW_RUN"], "true"))
+	values["CTR_GO_NOTIFY_SYSTEM"] = strings.TrimSpace(firstNonEmpty(opts.NotifySystem, existing["CTR_GO_NOTIFY_SYSTEM"], "true"))
+	values["CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU"] = strings.TrimSpace(firstNonEmpty(opts.OpenCodexDesktop, existing["CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU"], "true"))
+	for _, key := range config.RuntimeEnvPassthroughKeys() {
+		if strings.TrimSpace(values[key]) != "" {
+			continue
+		}
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			values[key] = value
+		}
+	}
+	for _, key := range []string{
+		"CTR_GO_TELEGRAM_BOT_TOKEN",
+		"CTR_GO_ALLOWED_USER_IDS",
+		"CTR_GO_ALLOWED_CHAT_IDS",
+	} {
+		delete(values, key)
+	}
+	if strings.TrimSpace(values["CTR_GO_FEISHU_ALLOWED_OPEN_IDS"]) == "" {
+		delete(values, "CTR_GO_FEISHU_ALLOWED_OPEN_IDS")
+	}
+	if strings.TrimSpace(values["CTR_GO_FEISHU_ALLOWED_CHAT_IDS"]) == "" {
+		delete(values, "CTR_GO_FEISHU_ALLOWED_CHAT_IDS")
+	}
+	return validateFeishuSetupValues(values)
+}
+
+func validateFeishuSetupValues(values map[string]string) (map[string]string, error) {
+	required := []string{
+		"CTR_GO_ADAPTER",
+		"CTR_GO_FEISHU_APP_ID",
+		"CTR_GO_FEISHU_APP_SECRET",
+		"CTR_GO_DEFAULT_CWD",
+		"CTR_GO_CODEX_CHATS_ROOT",
+		"CTR_GO_CODEX_BIN",
+		"CTR_GO_NOTIFY_NEW_RUN",
+		"CTR_GO_NOTIFY_SYSTEM",
+		"CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU",
+	}
+	for _, key := range required {
+		if strings.TrimSpace(values[key]) == "" {
+			return nil, fmt.Errorf("%s is required", key)
+		}
+	}
+	if err := validateDirectory(values["CTR_GO_DEFAULT_CWD"]); err != nil {
+		return nil, fmt.Errorf("CTR_GO_DEFAULT_CWD: %w", err)
+	}
+	if err := validateExecutableRef(values["CTR_GO_CODEX_BIN"]); err != nil {
+		return nil, fmt.Errorf("CTR_GO_CODEX_BIN: %w", err)
+	}
+	if err := validateBoolText(values["CTR_GO_NOTIFY_NEW_RUN"]); err != nil {
+		return nil, fmt.Errorf("CTR_GO_NOTIFY_NEW_RUN: %w", err)
+	}
+	if err := validateBoolText(values["CTR_GO_NOTIFY_SYSTEM"]); err != nil {
+		return nil, fmt.Errorf("CTR_GO_NOTIFY_SYSTEM: %w", err)
+	}
+	if err := validateBoolText(values["CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU"]); err != nil {
+		return nil, fmt.Errorf("CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU: %w", err)
+	}
+	return values, nil
+}
+
 func runDaemon(cfg config.Config) error {
-	if strings.TrimSpace(cfg.TelegramBotToken) == "" {
-		return errors.New("CTR_GO_TELEGRAM_BOT_TOKEN or CTR_TELEGRAM_BOT_TOKEN must be set")
+	adapter := selectedAdapter(cfg)
+	if adapter == "" {
+		return errors.New("configure Telegram or Feishu credentials, or set CTR_GO_ADAPTER explicitly")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -99,7 +348,7 @@ func runDaemon(cfg config.Config) error {
 	defer service.Close()
 	service.SetLogger(diagnosticLogger(cfg, logger))
 
-	bot, err := telegram.NewBot(cfg, service, logger)
+	bot, err := newAdapterBot(cfg, service, logger, adapter)
 	if err != nil {
 		return err
 	}
@@ -112,6 +361,40 @@ func runDaemon(cfg config.Config) error {
 	}
 	logger.Printf("ctr-go daemon running with %s", bot.String())
 	return bot.Run(ctx)
+}
+
+type adapterBot interface {
+	daemon.Sender
+	Start(context.Context) error
+	Run(context.Context) error
+	String() string
+}
+
+func newAdapterBot(cfg config.Config, service *daemon.Service, logger *log.Logger, adapter string) (adapterBot, error) {
+	switch adapter {
+	case "feishu":
+		return feishu.NewBot(cfg, service, service.Store(), logger)
+	case "telegram":
+		return telegram.NewBot(cfg, service, logger)
+	default:
+		return nil, fmt.Errorf("unsupported adapter: %s", adapter)
+	}
+}
+
+func selectedAdapter(cfg config.Config) string {
+	switch strings.TrimSpace(strings.ToLower(cfg.Adapter)) {
+	case "feishu":
+		return "feishu"
+	case "telegram":
+		return "telegram"
+	}
+	if strings.TrimSpace(cfg.FeishuAppID) != "" && strings.TrimSpace(cfg.FeishuAppSecret) != "" {
+		return "feishu"
+	}
+	if strings.TrimSpace(cfg.TelegramBotToken) != "" {
+		return "telegram"
+	}
+	return ""
 }
 
 func daemonLogger(cfg config.Config) *log.Logger {
@@ -153,9 +436,13 @@ func runStatus(cfg config.Config, out io.Writer) error {
 		fmt.Sprintf("Home: %s", cfg.Paths.Home),
 		fmt.Sprintf("DB: %s", cfg.Paths.DBPath),
 		fmt.Sprintf("Codex bin: %s", cfg.CodexBin),
+		fmt.Sprintf("Adapter: %s", selectedAdapterLabel(cfg)),
 		fmt.Sprintf("Telegram configured: %t", strings.TrimSpace(cfg.TelegramBotToken) != ""),
+		fmt.Sprintf("Feishu configured: %t", strings.TrimSpace(cfg.FeishuAppID) != "" && strings.TrimSpace(cfg.FeishuAppSecret) != ""),
 		fmt.Sprintf("Allowed users: %s", formatIDs(cfg.AllowedUserIDs)),
 		fmt.Sprintf("Allowed chats: %s", formatIDs(cfg.AllowedChatIDs)),
+		fmt.Sprintf("Allowed Feishu open ids: %s", formatStrings(cfg.FeishuAllowedOpenIDs)),
+		fmt.Sprintf("Allowed Feishu chats: %s", formatStrings(cfg.FeishuAllowedChatIDs)),
 		fmt.Sprintf("Default cwd: %s", cfg.DefaultCWD),
 		fmt.Sprintf("Codex Chats root: %s", cfg.CodexChatsRoot),
 		fmt.Sprintf("Delivery backlog: %d", backlog),
@@ -176,6 +463,17 @@ func runStatus(cfg config.Config, out io.Writer) error {
 	}
 	_, _ = fmt.Fprintln(out, strings.Join(lines, "\n"))
 	return nil
+}
+
+func selectedAdapterLabel(cfg config.Config) string {
+	adapter := selectedAdapter(cfg)
+	if adapter == "" {
+		return "(not configured)"
+	}
+	if strings.TrimSpace(strings.ToLower(cfg.Adapter)) == "auto" || strings.TrimSpace(cfg.Adapter) == "" {
+		return adapter + " (auto)"
+	}
+	return adapter
 }
 
 func runDoctor(cfg config.Config, out io.Writer) error {
@@ -247,17 +545,60 @@ func runInit(args []string, in io.Reader, out io.Writer) error {
 
 	reader := bufio.NewReader(in)
 	_, _ = fmt.Fprintln(out, "This writes a local codex-tg config file. Keep it private.")
-	token, err := promptRequired(reader, out, "Telegram bot token")
+	adapter, err := prompt(reader, out, "Adapter (telegram or feishu)", "telegram")
 	if err != nil {
 		return err
 	}
-	allowedUsers, err := promptRequired(reader, out, "Allowed Telegram user id(s)")
-	if err != nil {
-		return err
+	adapter = strings.ToLower(strings.TrimSpace(adapter))
+	values := map[string]string{
+		"CTR_GO_ADAPTER": adapter,
 	}
-	allowedChats, err := prompt(reader, out, "Allowed Telegram chat id(s), optional", "")
-	if err != nil {
-		return err
+	switch adapter {
+	case "feishu":
+		appID, err := promptRequired(reader, out, "Feishu app id")
+		if err != nil {
+			return err
+		}
+		appSecret, err := promptRequired(reader, out, "Feishu app secret")
+		if err != nil {
+			return err
+		}
+		allowedOpenIDs, err := prompt(reader, out, "Allowed Feishu open id(s), optional", "")
+		if err != nil {
+			return err
+		}
+		allowedChats, err := prompt(reader, out, "Allowed Feishu chat id(s), optional", "")
+		if err != nil {
+			return err
+		}
+		values["CTR_GO_FEISHU_APP_ID"] = appID
+		values["CTR_GO_FEISHU_APP_SECRET"] = appSecret
+		if strings.TrimSpace(allowedOpenIDs) != "" {
+			values["CTR_GO_FEISHU_ALLOWED_OPEN_IDS"] = allowedOpenIDs
+		}
+		if strings.TrimSpace(allowedChats) != "" {
+			values["CTR_GO_FEISHU_ALLOWED_CHAT_IDS"] = allowedChats
+		}
+	case "telegram":
+		token, err := promptRequired(reader, out, "Telegram bot token")
+		if err != nil {
+			return err
+		}
+		allowedUsers, err := promptRequired(reader, out, "Allowed Telegram user id(s)")
+		if err != nil {
+			return err
+		}
+		allowedChats, err := prompt(reader, out, "Allowed Telegram chat id(s), optional", "")
+		if err != nil {
+			return err
+		}
+		values["CTR_GO_TELEGRAM_BOT_TOKEN"] = token
+		values["CTR_GO_ALLOWED_USER_IDS"] = allowedUsers
+		if strings.TrimSpace(allowedChats) != "" {
+			values["CTR_GO_ALLOWED_CHAT_IDS"] = allowedChats
+		}
+	default:
+		return fmt.Errorf("unsupported adapter %q; use telegram or feishu", adapter)
 	}
 	defaultCWD, err := prompt(reader, out, "Default cwd", cwd)
 	if err != nil {
@@ -275,18 +616,16 @@ func runInit(args []string, in io.Reader, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	notifySystem, err := prompt(reader, out, "macOS system notifications", "true")
+	if err != nil {
+		return err
+	}
 
-	values := map[string]string{
-		"CTR_GO_TELEGRAM_BOT_TOKEN": token,
-		"CTR_GO_ALLOWED_USER_IDS":   allowedUsers,
-		"CTR_GO_DEFAULT_CWD":        defaultCWD,
-		"CTR_GO_CODEX_CHATS_ROOT":   chatsRoot,
-		"CTR_GO_CODEX_BIN":          selectedCodexBin,
-		"CTR_GO_NOTIFY_NEW_RUN":     notifyNewRun,
-	}
-	if strings.TrimSpace(allowedChats) != "" {
-		values["CTR_GO_ALLOWED_CHAT_IDS"] = allowedChats
-	}
+	values["CTR_GO_DEFAULT_CWD"] = defaultCWD
+	values["CTR_GO_CODEX_CHATS_ROOT"] = chatsRoot
+	values["CTR_GO_CODEX_BIN"] = selectedCodexBin
+	values["CTR_GO_NOTIFY_NEW_RUN"] = notifyNewRun
+	values["CTR_GO_NOTIFY_SYSTEM"] = notifySystem
 	if err := writeConfigEnv(path, values, force); err != nil {
 		return err
 	}
@@ -346,7 +685,7 @@ func writeConfigEnv(path string, values map[string]string, force bool) error {
 	}
 	sort.Strings(keys)
 	_, _ = fmt.Fprintln(file, "# codex-tg local configuration")
-	_, _ = fmt.Fprintln(file, "# Keep this file private. It contains Telegram credentials.")
+	_, _ = fmt.Fprintln(file, "# Keep this file private. It contains bot credentials.")
 	for _, key := range keys {
 		_, _ = fmt.Fprintf(file, "%s=%s\n", key, strconv.Quote(values[key]))
 	}
@@ -356,6 +695,7 @@ func writeConfigEnv(path string, values map[string]string, force bool) error {
 func printUsage(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "Usage:")
 	_, _ = fmt.Fprintln(out, "  ctr-go init [--force]")
+	_, _ = fmt.Fprintln(out, "  ctr-go feishu setup [--force] [flags]")
 	_, _ = fmt.Fprintln(out, "  ctr-go service install [flags]")
 	_, _ = fmt.Fprintln(out, "  ctr-go service start|stop|restart|status|enable-login|disable-login|uninstall")
 	_, _ = fmt.Fprintln(out, "  ctr-go daemon run")
@@ -373,6 +713,14 @@ func printInitUsage(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "Set CTR_GO_CONFIG to choose a custom config path.")
 }
 
+func printFeishuUsage(out io.Writer) {
+	_, _ = fmt.Fprintln(out, "Usage:")
+	_, _ = fmt.Fprintln(out, "  ctr-go feishu setup [--force] [--no-qr] [flags]")
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "Creates a Feishu/Lark app with the official scan-to-create flow and writes local config.env.")
+	_, _ = fmt.Fprintln(out, "Set CTR_GO_CONFIG or pass --config to choose a custom config path.")
+}
+
 func formatIDs(values []int64) string {
 	if len(values) == 0 {
 		return "(none)"
@@ -382,6 +730,13 @@ func formatIDs(values []int64) string {
 		parts = append(parts, fmt.Sprintf("%d", value))
 	}
 	return strings.Join(parts, ", ")
+}
+
+func formatStrings(values []string) string {
+	if len(values) == 0 {
+		return "(none)"
+	}
+	return strings.Join(values, ", ")
 }
 
 func normalizeStringMap(value any) map[string]string {

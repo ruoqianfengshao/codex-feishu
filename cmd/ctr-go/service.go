@@ -71,19 +71,26 @@ func runService(args []string, in io.Reader, out io.Writer) error {
 }
 
 type serviceInstallOptions struct {
-	Force           bool
-	Start           bool
-	StartAtLogin    bool
-	NonInteractive  bool
-	ConfigPath      string
-	TelegramToken   string
-	AllowedUserIDs  string
-	AllowedChatIDs  string
-	DefaultCWD      string
-	CodexChatsRoot  string
-	CodexBin        string
-	NotifyNewRun    string
-	CTRGoBinaryPath string
+	Force            bool
+	Start            bool
+	StartAtLogin     bool
+	NonInteractive   bool
+	ConfigPath       string
+	Adapter          string
+	TelegramToken    string
+	AllowedUserIDs   string
+	AllowedChatIDs   string
+	FeishuAppID      string
+	FeishuAppSecret  string
+	FeishuOpenIDs    string
+	FeishuChatIDs    string
+	DefaultCWD       string
+	CodexChatsRoot   string
+	CodexBin         string
+	NotifyNewRun     string
+	NotifySystem     string
+	OpenCodexDesktop string
+	CTRGoBinaryPath  string
 }
 
 func parseServiceInstallOptions(args []string) (serviceInstallOptions, error) {
@@ -101,13 +108,20 @@ func parseServiceInstallOptions(args []string) (serviceInstallOptions, error) {
 	fs.BoolVar(&opts.StartAtLogin, "start-at-login", false, "enable user LaunchAgent at login")
 	fs.BoolVar(&opts.NonInteractive, "non-interactive", false, "fail instead of prompting for missing values")
 	fs.StringVar(&opts.ConfigPath, "config", opts.ConfigPath, "config.env path")
+	fs.StringVar(&opts.Adapter, "adapter", "", "adapter: telegram or feishu")
 	fs.StringVar(&opts.TelegramToken, "telegram-bot-token", "", "Telegram bot token")
 	fs.StringVar(&opts.AllowedUserIDs, "allowed-user-ids", "", "allowed Telegram user ids")
 	fs.StringVar(&opts.AllowedChatIDs, "allowed-chat-ids", "", "allowed Telegram chat ids")
+	fs.StringVar(&opts.FeishuAppID, "feishu-app-id", "", "Feishu app id")
+	fs.StringVar(&opts.FeishuAppSecret, "feishu-app-secret", "", "Feishu app secret")
+	fs.StringVar(&opts.FeishuOpenIDs, "feishu-allowed-open-ids", "", "allowed Feishu open ids")
+	fs.StringVar(&opts.FeishuChatIDs, "feishu-allowed-chat-ids", "", "allowed Feishu chat ids")
 	fs.StringVar(&opts.DefaultCWD, "default-cwd", "", "default Codex working directory")
 	fs.StringVar(&opts.CodexChatsRoot, "codex-chats-root", "", "Codex UI Chats root")
 	fs.StringVar(&opts.CodexBin, "codex-bin", "", "Codex binary path")
 	fs.StringVar(&opts.NotifyNewRun, "notify-new-run", "", "notify on New run")
+	fs.StringVar(&opts.NotifySystem, "notify-system", "", "send macOS system notifications for completion, failure, and approval")
+	fs.StringVar(&opts.OpenCodexDesktop, "open-codex-desktop", "", "open Codex Desktop to the target thread after Feishu input")
 	fs.StringVar(&opts.CTRGoBinaryPath, "ctr-go-bin", opts.CTRGoBinaryPath, "ctr-go binary path for LaunchAgent")
 	if err := fs.Parse(args); err != nil {
 		return opts, fmt.Errorf("usage: ctr-go service install [flags]")
@@ -179,17 +193,38 @@ func runServiceInstall(args []string, in io.Reader, out io.Writer) error {
 		_, _ = fmt.Fprintf(out, "Enabled login item: %s\n", paths.LoginPlistPath)
 	}
 	_, _ = fmt.Fprintln(out, "\nSetup summary")
-	_, _ = fmt.Fprintln(out, "  Telegram bot token: configured")
-	_, _ = fmt.Fprintf(out, "  Allowed users: %s\n", values["CTR_GO_ALLOWED_USER_IDS"])
-	if strings.TrimSpace(values["CTR_GO_ALLOWED_CHAT_IDS"]) != "" {
-		_, _ = fmt.Fprintf(out, "  Allowed chats: %s\n", values["CTR_GO_ALLOWED_CHAT_IDS"])
+	adapter := strings.TrimSpace(values["CTR_GO_ADAPTER"])
+	if adapter == "" {
+		adapter = "telegram"
+	}
+	_, _ = fmt.Fprintf(out, "  Adapter: %s\n", adapter)
+	if adapter == "feishu" {
+		_, _ = fmt.Fprintln(out, "  Feishu app credentials: configured")
+		if strings.TrimSpace(values["CTR_GO_FEISHU_ALLOWED_OPEN_IDS"]) != "" {
+			_, _ = fmt.Fprintf(out, "  Allowed Feishu open ids: %s\n", values["CTR_GO_FEISHU_ALLOWED_OPEN_IDS"])
+		} else {
+			_, _ = fmt.Fprintln(out, "  Allowed Feishu open ids: any")
+		}
+		if strings.TrimSpace(values["CTR_GO_FEISHU_ALLOWED_CHAT_IDS"]) != "" {
+			_, _ = fmt.Fprintf(out, "  Allowed Feishu chats: %s\n", values["CTR_GO_FEISHU_ALLOWED_CHAT_IDS"])
+		} else {
+			_, _ = fmt.Fprintln(out, "  Allowed Feishu chats: any")
+		}
 	} else {
-		_, _ = fmt.Fprintln(out, "  Allowed chats: any chat from allowed users")
+		_, _ = fmt.Fprintln(out, "  Telegram bot token: configured")
+		_, _ = fmt.Fprintf(out, "  Allowed users: %s\n", values["CTR_GO_ALLOWED_USER_IDS"])
+		if strings.TrimSpace(values["CTR_GO_ALLOWED_CHAT_IDS"]) != "" {
+			_, _ = fmt.Fprintf(out, "  Allowed chats: %s\n", values["CTR_GO_ALLOWED_CHAT_IDS"])
+		} else {
+			_, _ = fmt.Fprintln(out, "  Allowed chats: any chat from allowed users")
+		}
 	}
 	_, _ = fmt.Fprintf(out, "  Default cwd: %s\n", values["CTR_GO_DEFAULT_CWD"])
 	_, _ = fmt.Fprintf(out, "  Codex Chats root: %s\n", values["CTR_GO_CODEX_CHATS_ROOT"])
 	_, _ = fmt.Fprintf(out, "  Codex binary: %s\n", values["CTR_GO_CODEX_BIN"])
 	_, _ = fmt.Fprintf(out, "  New run notifications: %s\n", values["CTR_GO_NOTIFY_NEW_RUN"])
+	_, _ = fmt.Fprintf(out, "  macOS system notifications: %s\n", values["CTR_GO_NOTIFY_SYSTEM"])
+	_, _ = fmt.Fprintf(out, "  Open Codex Desktop on Feishu input: %s\n", values["CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU"])
 	_, _ = fmt.Fprintln(out, "\nNext steps")
 	_, _ = fmt.Fprintln(out, "  ctr-go service status")
 	_, _ = fmt.Fprintln(out, "  ctr-go doctor")
@@ -206,16 +241,39 @@ func runServiceInstall(args []string, in io.Reader, out io.Writer) error {
 
 func serviceConfigValues(values map[string]string) map[string]string {
 	out := make(map[string]string, len(values))
+	adapter := normalizeServiceAdapter(values["CTR_GO_ADAPTER"])
 	for key, value := range values {
 		if key == "CTR_GO_CTR_GO_BIN" {
 			continue
 		}
-		if strings.TrimSpace(value) == "" && key == "CTR_GO_ALLOWED_CHAT_IDS" {
+		if strings.TrimSpace(value) == "" && optionalServiceConfigKey(adapter, key) {
 			continue
 		}
 		out[key] = value
 	}
 	return out
+}
+
+func optionalServiceConfigKey(adapter, key string) bool {
+	switch key {
+	case "CTR_GO_ALLOWED_CHAT_IDS", "CTR_GO_FEISHU_ALLOWED_OPEN_IDS", "CTR_GO_FEISHU_ALLOWED_CHAT_IDS":
+		return true
+	case "CTR_GO_TELEGRAM_BOT_TOKEN", "CTR_GO_ALLOWED_USER_IDS":
+		return adapter == "feishu"
+	case "CTR_GO_FEISHU_APP_ID", "CTR_GO_FEISHU_APP_SECRET":
+		return adapter == "telegram"
+	default:
+		return false
+	}
+}
+
+func normalizeServiceAdapter(value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "feishu", "lark":
+		return "feishu"
+	default:
+		return "telegram"
+	}
 }
 
 func collectServiceInstallValues(opts serviceInstallOptions, existing map[string]string, in io.Reader, out io.Writer) (map[string]string, error) {
@@ -231,13 +289,20 @@ func collectServiceInstallValues(opts serviceInstallOptions, existing map[string
 	for key, value := range existing {
 		values[key] = value
 	}
+	values["CTR_GO_ADAPTER"] = normalizeServiceAdapter(firstNonEmpty(opts.Adapter, existing["CTR_GO_ADAPTER"], "telegram"))
 	values["CTR_GO_TELEGRAM_BOT_TOKEN"] = strings.TrimSpace(firstNonEmpty(opts.TelegramToken, existing["CTR_GO_TELEGRAM_BOT_TOKEN"]))
 	values["CTR_GO_ALLOWED_USER_IDS"] = strings.TrimSpace(firstNonEmpty(opts.AllowedUserIDs, existing["CTR_GO_ALLOWED_USER_IDS"]))
 	values["CTR_GO_ALLOWED_CHAT_IDS"] = strings.TrimSpace(firstNonEmpty(opts.AllowedChatIDs, existing["CTR_GO_ALLOWED_CHAT_IDS"]))
+	values["CTR_GO_FEISHU_APP_ID"] = strings.TrimSpace(firstNonEmpty(opts.FeishuAppID, existing["CTR_GO_FEISHU_APP_ID"]))
+	values["CTR_GO_FEISHU_APP_SECRET"] = strings.TrimSpace(firstNonEmpty(opts.FeishuAppSecret, existing["CTR_GO_FEISHU_APP_SECRET"]))
+	values["CTR_GO_FEISHU_ALLOWED_OPEN_IDS"] = strings.TrimSpace(firstNonEmpty(opts.FeishuOpenIDs, existing["CTR_GO_FEISHU_ALLOWED_OPEN_IDS"]))
+	values["CTR_GO_FEISHU_ALLOWED_CHAT_IDS"] = strings.TrimSpace(firstNonEmpty(opts.FeishuChatIDs, existing["CTR_GO_FEISHU_ALLOWED_CHAT_IDS"]))
 	values["CTR_GO_DEFAULT_CWD"] = strings.TrimSpace(firstNonEmpty(opts.DefaultCWD, existing["CTR_GO_DEFAULT_CWD"], cwd))
 	values["CTR_GO_CODEX_CHATS_ROOT"] = strings.TrimSpace(firstNonEmpty(opts.CodexChatsRoot, existing["CTR_GO_CODEX_CHATS_ROOT"], config.DefaultCodexChatsRoot()))
 	values["CTR_GO_CODEX_BIN"] = strings.TrimSpace(firstNonEmpty(opts.CodexBin, existing["CTR_GO_CODEX_BIN"], codexBin))
 	values["CTR_GO_NOTIFY_NEW_RUN"] = strings.TrimSpace(firstNonEmpty(opts.NotifyNewRun, existing["CTR_GO_NOTIFY_NEW_RUN"], "true"))
+	values["CTR_GO_NOTIFY_SYSTEM"] = strings.TrimSpace(firstNonEmpty(opts.NotifySystem, existing["CTR_GO_NOTIFY_SYSTEM"], "true"))
+	values["CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU"] = strings.TrimSpace(firstNonEmpty(opts.OpenCodexDesktop, existing["CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU"], "false"))
 	values["CTR_GO_CTR_GO_BIN"] = strings.TrimSpace(firstNonEmpty(opts.CTRGoBinaryPath, existing["CTR_GO_CTR_GO_BIN"]))
 	for _, key := range config.RuntimeEnvPassthroughKeys() {
 		if strings.TrimSpace(values[key]) != "" {
@@ -258,64 +323,119 @@ func runServiceWizard(values map[string]string, in io.Reader, out io.Writer) (ma
 	_, _ = fmt.Fprintln(out, "codex-tg service setup")
 	_, _ = fmt.Fprintln(out, "This wizard creates a private config.env and a user-level macOS service.")
 	_, _ = fmt.Fprintln(out, "Secrets are written to the config file only; they are not printed in the summary.")
-	fields := []wizardField{
-		{
-			Key:      "CTR_GO_TELEGRAM_BOT_TOKEN",
-			Step:     "1/7",
-			Label:    "Telegram bot token",
-			Help:     "Create it with @BotFather. Example format: 123456789:AA...",
-			Required: true,
-			Secret:   true,
-			Validate: validateTokenLike,
-		},
-		{
-			Key:      "CTR_GO_ALLOWED_USER_IDS",
-			Step:     "2/7",
-			Label:    "Allowed Telegram user id(s)",
-			Help:     "Only these Telegram users can control the bot. Example: 123456789 or 123,456",
-			Required: true,
-			Validate: validateRequiredIDList,
-		},
-		{
-			Key:      "CTR_GO_ALLOWED_CHAT_IDS",
-			Step:     "3/7",
-			Label:    "Allowed Telegram chat id(s)",
-			Help:     "Optional. Leave empty to allow any chat from the allowed users.",
-			Validate: validateOptionalIDList,
-		},
-		{
+	adapterField := wizardField{
+		Key:      "CTR_GO_ADAPTER",
+		Step:     "1",
+		Label:    "Adapter",
+		Help:     "Use telegram or feishu.",
+		Required: true,
+		Validate: validateAdapterText,
+	}
+	adapterValue, err := promptWizardField(reader, in, out, adapterField, values["CTR_GO_ADAPTER"])
+	if err != nil {
+		return nil, err
+	}
+	values["CTR_GO_ADAPTER"] = normalizeServiceAdapter(adapterValue)
+	adapter := values["CTR_GO_ADAPTER"]
+	fields := []wizardField{}
+	if adapter == "feishu" {
+		fields = append(fields,
+			wizardField{
+				Key:      "CTR_GO_FEISHU_APP_ID",
+				Label:    "Feishu app id",
+				Help:     "Enterprise self-built app id, usually cli_...",
+				Required: true,
+				Validate: validateNonEmpty,
+			},
+			wizardField{
+				Key:      "CTR_GO_FEISHU_APP_SECRET",
+				Label:    "Feishu app secret",
+				Help:     "Stored only in the private config.env.",
+				Required: true,
+				Secret:   true,
+				Validate: validateNonEmpty,
+			},
+			wizardField{
+				Key:   "CTR_GO_FEISHU_ALLOWED_OPEN_IDS",
+				Label: "Allowed Feishu open id(s)",
+				Help:  "Optional comma-separated Feishu user open_id allowlist.",
+			},
+			wizardField{
+				Key:   "CTR_GO_FEISHU_ALLOWED_CHAT_IDS",
+				Label: "Allowed Feishu chat id(s)",
+				Help:  "Optional comma-separated Feishu chat_id allowlist.",
+			},
+		)
+	} else {
+		fields = append(fields,
+			wizardField{
+				Key:      "CTR_GO_TELEGRAM_BOT_TOKEN",
+				Label:    "Telegram bot token",
+				Help:     "Create it with @BotFather. Example format: 123456789:AA...",
+				Required: true,
+				Secret:   true,
+				Validate: validateTokenLike,
+			},
+			wizardField{
+				Key:      "CTR_GO_ALLOWED_USER_IDS",
+				Label:    "Allowed Telegram user id(s)",
+				Help:     "Only these Telegram users can control the bot. Example: 123456789 or 123,456",
+				Required: true,
+				Validate: validateRequiredIDList,
+			},
+			wizardField{
+				Key:      "CTR_GO_ALLOWED_CHAT_IDS",
+				Label:    "Allowed Telegram chat id(s)",
+				Help:     "Optional. Leave empty to allow any chat from the allowed users.",
+				Validate: validateOptionalIDList,
+			},
+		)
+	}
+	fields = append(fields,
+		wizardField{
 			Key:      "CTR_GO_DEFAULT_CWD",
-			Step:     "4/7",
 			Label:    "Default Codex work directory",
 			Help:     "Used for no-cwd threads and fallback routing.",
 			Required: true,
 			Validate: validateDirectory,
 		},
-		{
+		wizardField{
 			Key:      "CTR_GO_CODEX_CHATS_ROOT",
-			Step:     "5/7",
 			Label:    "Codex UI Chats root",
 			Help:     "New /newchat folders are created here, usually ~/Documents/Codex.",
 			Required: true,
 			Validate: validateNonEmpty,
 		},
-		{
+		wizardField{
 			Key:      "CTR_GO_CODEX_BIN",
-			Step:     "6/7",
 			Label:    "Codex binary",
 			Help:     "Absolute path is best. The detected default is used when available.",
 			Required: true,
 			Validate: validateExecutableRef,
 		},
-		{
+		wizardField{
 			Key:      "CTR_GO_NOTIFY_NEW_RUN",
-			Step:     "7/7",
 			Label:    "Notify on New run",
 			Help:     "Use true/false. Final and Plan prompts still notify by design.",
 			Required: true,
 			Validate: validateBoolText,
 		},
-	}
+		wizardField{
+			Key:      "CTR_GO_NOTIFY_SYSTEM",
+			Label:    "macOS system notifications",
+			Help:     "Use true/false. Sends macOS notifications for completion, failure, and approval.",
+			Required: true,
+			Validate: validateBoolText,
+		},
+		wizardField{
+			Key:      "CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU",
+			Label:    "Open Codex Desktop on Feishu input",
+			Help:     "Use true/false. Opens codex://threads/<id> locally after Feishu input.",
+			Required: true,
+			Validate: validateBoolText,
+		},
+	)
+	numberWizardSteps(fields, 2, len(fields)+1)
 	for _, field := range fields {
 		current := values[field.Key]
 		value, err := promptWizardField(reader, in, out, field, current)
@@ -330,6 +450,12 @@ func runServiceWizard(values map[string]string, in io.Reader, out io.Writer) (ma
 		}
 	}
 	return validateServiceValues(values)
+}
+
+func numberWizardSteps(fields []wizardField, start, total int) {
+	for i := range fields {
+		fields[i].Step = fmt.Sprintf("%d/%d", start+i, total)
+	}
 }
 
 type wizardField struct {
@@ -399,13 +525,22 @@ func readWizardValue(reader *bufio.Reader, in io.Reader, out io.Writer, field wi
 
 func validateServiceValues(values map[string]string) (map[string]string, error) {
 	required := map[string]string{
-		"CTR_GO_TELEGRAM_BOT_TOKEN": "--telegram-bot-token",
-		"CTR_GO_ALLOWED_USER_IDS":   "--allowed-user-ids",
-		"CTR_GO_DEFAULT_CWD":        "--default-cwd",
-		"CTR_GO_CODEX_CHATS_ROOT":   "--codex-chats-root",
-		"CTR_GO_CODEX_BIN":          "--codex-bin",
-		"CTR_GO_NOTIFY_NEW_RUN":     "--notify-new-run",
-		"CTR_GO_CTR_GO_BIN":         "--ctr-go-bin",
+		"CTR_GO_ADAPTER":                      "--adapter",
+		"CTR_GO_DEFAULT_CWD":                  "--default-cwd",
+		"CTR_GO_CODEX_CHATS_ROOT":             "--codex-chats-root",
+		"CTR_GO_CODEX_BIN":                    "--codex-bin",
+		"CTR_GO_NOTIFY_NEW_RUN":               "--notify-new-run",
+		"CTR_GO_NOTIFY_SYSTEM":                "--notify-system",
+		"CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU": "--open-codex-desktop",
+		"CTR_GO_CTR_GO_BIN":                   "--ctr-go-bin",
+	}
+	adapter := normalizeServiceAdapter(values["CTR_GO_ADAPTER"])
+	if adapter == "feishu" {
+		required["CTR_GO_FEISHU_APP_ID"] = "--feishu-app-id"
+		required["CTR_GO_FEISHU_APP_SECRET"] = "--feishu-app-secret"
+	} else {
+		required["CTR_GO_TELEGRAM_BOT_TOKEN"] = "--telegram-bot-token"
+		required["CTR_GO_ALLOWED_USER_IDS"] = "--allowed-user-ids"
 	}
 	var missing []string
 	for key, flagName := range required {
@@ -420,13 +555,40 @@ func validateServiceValues(values map[string]string) (map[string]string, error) 
 		key string
 		fn  func(string) error
 	}{
-		{"CTR_GO_TELEGRAM_BOT_TOKEN", validateTokenLike},
-		{"CTR_GO_ALLOWED_USER_IDS", validateRequiredIDList},
-		{"CTR_GO_ALLOWED_CHAT_IDS", validateOptionalIDList},
+		{"CTR_GO_ADAPTER", validateAdapterText},
 		{"CTR_GO_DEFAULT_CWD", validateDirectory},
 		{"CTR_GO_CODEX_CHATS_ROOT", validateNonEmpty},
 		{"CTR_GO_CODEX_BIN", validateExecutableRef},
 		{"CTR_GO_NOTIFY_NEW_RUN", validateBoolText},
+		{"CTR_GO_NOTIFY_SYSTEM", validateBoolText},
+		{"CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU", validateBoolText},
+	}
+	if adapter == "feishu" {
+		checks = append(checks,
+			struct {
+				key string
+				fn  func(string) error
+			}{"CTR_GO_FEISHU_APP_ID", validateNonEmpty},
+			struct {
+				key string
+				fn  func(string) error
+			}{"CTR_GO_FEISHU_APP_SECRET", validateNonEmpty},
+		)
+	} else {
+		checks = append(checks,
+			struct {
+				key string
+				fn  func(string) error
+			}{"CTR_GO_TELEGRAM_BOT_TOKEN", validateTokenLike},
+			struct {
+				key string
+				fn  func(string) error
+			}{"CTR_GO_ALLOWED_USER_IDS", validateRequiredIDList},
+			struct {
+				key string
+				fn  func(string) error
+			}{"CTR_GO_ALLOWED_CHAT_IDS", validateOptionalIDList},
+		)
 	}
 	for _, check := range checks {
 		if err := check.fn(values[check.key]); err != nil {
@@ -727,6 +889,15 @@ func validateNonEmpty(value string) error {
 		return errors.New("value is required")
 	}
 	return nil
+}
+
+func validateAdapterText(value string) error {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "telegram", "feishu":
+		return nil
+	default:
+		return errors.New("adapter must be telegram or feishu")
+	}
 }
 
 func validateTokenLike(value string) error {

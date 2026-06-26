@@ -1,13 +1,14 @@
 # Architecture
 
 `codex-tg` is moving from a Telegram-first bridge toward a local Codex Control
-Plane. The current production adapter is Telegram; future adapters can include
-tray workflows, local HTTP/unix-socket clients, voice assistants, or a separate
-router agent.
+Plane. Current chat adapters include Telegram and Feishu/Lark; future adapters
+can include tray workflows, local HTTP/unix-socket clients, voice assistants, or
+a separate router agent.
 
 ```text
 Channel adapters
   - Telegram
+  - Feishu/Lark
   - macOS tray
   - future voice / router / local API
         |
@@ -33,6 +34,7 @@ local Codex sessions and workspaces
 The v0.4 runtime still runs as a Go daemon with:
 
 - Telegram Bot API long polling;
+- Feishu/Lark official SDK WebSocket long connection;
 - route and callback handling;
 - observer and panel rendering;
 - SQLite state;
@@ -64,7 +66,8 @@ SQLite stores routes, callback tokens, bindings, observer target, panels,
 pending prompts, delivery metadata, and daemon state.
 
 Future control-plane work should keep adapter-specific state, such as Telegram
-message ids, outside the control core wherever practical.
+message ids and Feishu open message ids, outside the control core wherever
+practical.
 
 ## Further Reading
 

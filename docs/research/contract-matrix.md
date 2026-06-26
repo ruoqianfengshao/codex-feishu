@@ -55,7 +55,7 @@ This file now serves two purposes:
 - Config files use simple `.env` style `KEY=VALUE` entries; comments and quoted values are supported, but shell expansion is not.
 - Runtime proxy env can be stored in the private config and applied after
   startup; LaunchAgent plists still carry only `CTR_GO_CONFIG`.
-- `status`, `doctor`, daemon logs, init summaries, service summaries, LaunchAgent plists, and tray surfaces must not print Telegram bot tokens in full.
+- `status`, `doctor`, daemon logs, init summaries, service summaries, LaunchAgent plists, and tray surfaces must not print Telegram bot tokens or Feishu app secrets in full.
 - Official GitHub Release assets include `ctr-go` archives for macOS, Linux, and Windows, macOS `.pkg` artifacts, and `SHA256SUMS`.
 
 ## Codex Control API Contract
@@ -141,6 +141,46 @@ Adapter routing:
 - If the prompt is not available when the run is discovered, `[User]` starts as a placeholder and is edited into the real prompt later.
 - Telegram-originated runs create `New run` and the live trio, but do not duplicate the user request as `[User]`.
 - Telegram-visible text must never render literal `"<nil>"`. Missing, null, empty, or nil-like App Server fields are treated as absent and must be cleaned before Markdown/entity conversion.
+
+## Feishu/Lark Adapter Contract
+
+- Feishu/Lark uses an enterprise self-built app and the official SDK WebSocket
+  long connection; no public callback URL is required for message receive or
+  card action events.
+- `CTR_GO_ADAPTER=feishu` selects the Feishu/Lark adapter. `auto` selects it
+  when `CTR_GO_FEISHU_APP_ID` and `CTR_GO_FEISHU_APP_SECRET` are present.
+- Feishu `chat_id`, `open_id`, and `message_id` are mapped into stable local
+  numeric ids before they enter the Codex control core. The original Feishu ids
+  remain adapter context and are persisted only for send/edit/delete routing.
+- Text messages are accepted from `im.message.receive_v1`; non-text messages
+  are ignored by the control path.
+- Feishu input-box shortcuts are the platform's bot custom menu, not the
+  Telegram-style command registry. The menu is configured in the Feishu
+  developer console, is limited to one-on-one bot chats, and requires publishing
+  a new app version before it appears. Menu items should usually use the "send
+  text message" action with existing commands such as `/help`, `/threads`,
+  `/projects`, `/settings`, `/status`, or `/repair`.
+- Event-based bot menu items use `application.bot.menu_v6`. Supported event
+  keys include `help`, `threads`, `projects`, `settings`, `status`,
+  `observe_all`, `observe_off`, and `repair`. Because Feishu menu events do not
+  include a chat id, event responses are sent to the operator's bot DM.
+- Replies use Feishu parent/root message ids when available, then fall back to
+  the current binding rules already owned by the daemon.
+- Outbound plain text uses Feishu text messages. Messages with buttons use
+  interactive cards, with callback tokens stored under button value
+  `callback_data`.
+- Card callbacks map `open_message_id`, `open_chat_id`, and operator `open_id`
+  back to local numeric ids before calling the daemon callback handler.
+- Edits patch interactive cards when buttons are present and update text
+  messages otherwise. Deletes use the stored Feishu open message id.
+- File exports upload a Feishu file and then send it to the mapped chat, with
+  an optional caption sent as a separate text message.
+- Feishu allowlists can use `CTR_GO_FEISHU_ALLOWED_OPEN_IDS` and
+  `CTR_GO_FEISHU_ALLOWED_CHAT_IDS`. Existing numeric allowlists
+  `CTR_GO_ALLOWED_USER_IDS` and `CTR_GO_ALLOWED_CHAT_IDS` still apply after id
+  mapping when configured.
+- Feishu-visible text must never render literal `"<nil>"`. Missing, null,
+  empty, or nil-like App Server fields are treated as absent before rendering.
 
 ## Callback / button surface from the oracle
 
