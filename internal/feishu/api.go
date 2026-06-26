@@ -14,6 +14,9 @@ import (
 type apiClient interface {
 	Send(ctx context.Context, receiveID, msgType, content string) (sentMessage, error)
 	SendToOpenID(ctx context.Context, openID, msgType, content string) (sentMessage, error)
+	Reply(ctx context.Context, openMessageID, msgType, content string, replyInThread bool) (sentMessage, error)
+	GetChat(ctx context.Context, openChatID string) (chatInfo, error)
+	CreateThreadRoom(ctx context.Context, name string, userOpenIDs []string, botAppID string, uuid string) (string, error)
 	UpdateText(ctx context.Context, openMessageID, text string) error
 	PatchCard(ctx context.Context, openMessageID, card string) error
 	Delete(ctx context.Context, openMessageID string) error
@@ -23,6 +26,15 @@ type apiClient interface {
 type sentMessage struct {
 	OpenMessageID string
 	OpenChatID    string
+	RootID        string
+	ThreadID      string
+}
+
+type chatInfo struct {
+	OpenChatID       string
+	Name             string
+	ChatMode         string
+	GroupMessageType string
 }
 
 type sdkAPIClient struct {
@@ -63,7 +75,89 @@ func (c *sdkAPIClient) send(ctx context.Context, receiveIDType, receiveID, msgTy
 	return sentMessage{
 		OpenMessageID: value(resp.Data.MessageId),
 		OpenChatID:    value(resp.Data.ChatId),
+		RootID:        value(resp.Data.RootId),
+		ThreadID:      value(resp.Data.ThreadId),
 	}, nil
+}
+
+func (c *sdkAPIClient) Reply(ctx context.Context, openMessageID, msgType, content string, replyInThread bool) (sentMessage, error) {
+	req := larkim.NewReplyMessageReqBuilder().
+		MessageId(openMessageID).
+		Body(larkim.NewReplyMessageReqBodyBuilder().
+			MsgType(msgType).
+			Content(content).
+			ReplyInThread(replyInThread).
+			Build()).
+		Build()
+	resp, err := c.client.Im.V1.Message.Reply(ctx, req)
+	if err != nil {
+		return sentMessage{}, err
+	}
+	if !resp.Success() {
+		return sentMessage{}, sdkError("reply message", resp.Code, resp.Msg, resp.RequestId())
+	}
+	if resp.Data == nil {
+		return sentMessage{}, nil
+	}
+	return sentMessage{
+		OpenMessageID: value(resp.Data.MessageId),
+		OpenChatID:    value(resp.Data.ChatId),
+		RootID:        value(resp.Data.RootId),
+		ThreadID:      value(resp.Data.ThreadId),
+	}, nil
+}
+
+func (c *sdkAPIClient) GetChat(ctx context.Context, openChatID string) (chatInfo, error) {
+	req := larkim.NewGetChatReqBuilder().
+		ChatId(openChatID).
+		UserIdType(larkim.UserIdTypeOpenId).
+		Build()
+	resp, err := c.client.Im.V1.Chat.Get(ctx, req)
+	if err != nil {
+		return chatInfo{}, err
+	}
+	if !resp.Success() {
+		return chatInfo{}, sdkError("get chat", resp.Code, resp.Msg, resp.RequestId())
+	}
+	if resp.Data == nil {
+		return chatInfo{OpenChatID: strings.TrimSpace(openChatID)}, nil
+	}
+	return chatInfo{
+		OpenChatID:       strings.TrimSpace(openChatID),
+		Name:             value(resp.Data.Name),
+		ChatMode:         value(resp.Data.ChatMode),
+		GroupMessageType: value(resp.Data.GroupMessageType),
+	}, nil
+}
+
+func (c *sdkAPIClient) CreateThreadRoom(ctx context.Context, name string, userOpenIDs []string, botAppID string, uuid string) (string, error) {
+	body := larkim.NewCreateChatReqBodyBuilder().
+		Name(name).
+		UserIdList(userOpenIDs).
+		BotIdList([]string{botAppID}).
+		GroupMessageType(larkim.CreateChatGroupMessageTypeThread).
+		ChatMode("group").
+		ChatType("private").
+		JoinMessageVisibility("not_anyone").
+		LeaveMessageVisibility("not_anyone").
+		Build()
+	req := larkim.NewCreateChatReqBuilder().
+		UserIdType(larkim.UserIdTypeOpenId).
+		SetBotManager(true).
+		Uuid(uuid).
+		Body(body).
+		Build()
+	resp, err := c.client.Im.V1.Chat.Create(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	if !resp.Success() {
+		return "", sdkError("create chat", resp.Code, resp.Msg, resp.RequestId())
+	}
+	if resp.Data == nil {
+		return "", nil
+	}
+	return value(resp.Data.ChatId), nil
 }
 
 func (c *sdkAPIClient) UpdateText(ctx context.Context, openMessageID, text string) error {

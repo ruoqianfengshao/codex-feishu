@@ -434,7 +434,7 @@ func (s *Service) projectWorkspaceFromCallback(ctx context.Context, payload map[
 	return projectWorkspace{}, false
 }
 
-func (s *Service) openChatThread(ctx context.Context, chatID, topicID int64, threadID string) (*DirectResponse, error) {
+func (s *Service) openChatThread(ctx context.Context, chatID, topicID int64, threadID string, sourceMode string) (*DirectResponse, error) {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
 		return &DirectResponse{Text: "This Chat button is stale. Use Open Chats to refresh."}, nil
@@ -450,7 +450,7 @@ func (s *Service) openChatThread(ctx context.Context, chatID, topicID int64, thr
 		return nil, err
 	}
 	s.kickBootstrap()
-	response, err := s.showThread(ctx, chatID, topicID, threadID, true)
+	response, err := s.showThread(ctx, chatID, topicID, threadID, true, sourceMode)
 	if err != nil {
 		return nil, err
 	}

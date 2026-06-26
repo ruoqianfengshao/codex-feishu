@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -89,6 +90,35 @@ func (s *recordingSender) SendDocumentData(ctx context.Context, chatID, topicID 
 		options:  options,
 	})
 	return int64(len(s.documents)), nil
+}
+
+type recordingThreadTopicSender struct {
+	recordingSender
+	topic              *model.FeishuThreadTopic
+	canonicalByChatID  map[int64]int64
+	ensureTopicChatIDs []int64
+}
+
+func (s *recordingThreadTopicSender) EnsureThreadTopic(ctx context.Context, chatID int64, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) (*model.FeishuThreadTopic, error) {
+	s.ensureTopicChatIDs = append(s.ensureTopicChatIDs, chatID)
+	if s.topic == nil {
+		s.topic = &model.FeishuThreadTopic{
+			ChatID:            chatID,
+			OpenChatID:        "oc_chat",
+			ThreadID:          thread.ID,
+			RootMessageID:     9001,
+			RootOpenMessageID: "om_root",
+			FeishuThreadID:    "othread_root",
+		}
+	}
+	return s.topic, nil
+}
+
+func (s *recordingThreadTopicSender) ResolveThreadTopicTarget(ctx context.Context, chatID int64) (int64, error) {
+	if s.canonicalByChatID != nil && s.canonicalByChatID[chatID] != 0 {
+		return s.canonicalByChatID[chatID], nil
+	}
+	return chatID, nil
 }
 
 func hasRecordedEntity(entities []model.MessageEntity, entityType, language string) bool {
@@ -328,14 +358,14 @@ func TestSyncThreadPanelDoesNotDuplicateFinalAnswerOnRepeatedSync(t *testing.T) 
 	if finalCount != 1 {
 		t.Fatalf("final message count = %d, want 1; messages=%#v", finalCount, sender.messages)
 	}
-	if len(sender.messages) != 4 {
-		t.Fatalf("message count = %d, want 3 live trio messages plus Final on first sync only; messages=%#v", len(sender.messages), sender.messages)
+	if len(sender.messages) != 2 {
+		t.Fatalf("message count = %d, want live summary plus Final on first sync only; messages=%#v", len(sender.messages), sender.messages)
 	}
 	if len(sender.documents) != 0 {
 		t.Fatalf("documents = %#v, want no tool documents for a completed turn without tool output", sender.documents)
 	}
-	if len(sender.deletes) != 3 {
-		t.Fatalf("deletes = %#v, want best-effort delete for commentary/tool/output messages", sender.deletes)
+	if len(sender.deletes) != 1 {
+		t.Fatalf("deletes = %#v, want best-effort delete for live summary message", sender.deletes)
 	}
 
 	panel, err := service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
@@ -433,20 +463,14 @@ func TestFinalTransitionDeletesRunNoticeToolAndOutputButKeepsUser(t *testing.T) 
 	}
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
-	if len(sender.messages) != 5 {
-		t.Fatalf("messages = %#v, want New run + [User] + trio", sender.messages)
-	}
 	if strings.Contains(sender.messages[0].text, "Status:") {
-		t.Fatalf("run notice text = %q, want no status", sender.messages[0].text)
+		t.Fatalf("user notice text = %q, want no status", sender.messages[0].text)
 	}
-	if strings.Contains(sender.messages[1].text, "Status:") {
-		t.Fatalf("user notice text = %q, want no status", sender.messages[1].text)
+	if len(sender.messages) != 2 {
+		t.Fatalf("messages = %#v, want [User] + summary", sender.messages)
 	}
-	runNoticeID := sender.messages[0].messageID
-	userID := sender.messages[1].messageID
-	summaryID := sender.messages[2].messageID
-	toolID := sender.messages[3].messageID
-	outputID := sender.messages[4].messageID
+	userID := sender.messages[0].messageID
+	summaryID := sender.messages[1].messageID
 
 	completed := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
 		Thread:                thread,
@@ -469,10 +493,10 @@ func TestFinalTransitionDeletesRunNoticeToolAndOutputButKeepsUser(t *testing.T) 
 	}
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
 
-	if len(sender.deletes) != 4 {
-		t.Fatalf("deletes = %#v, want commentary + New run + tool + output deletes", sender.deletes)
+	if len(sender.deletes) != 1 {
+		t.Fatalf("deletes = %#v, want summary delete", sender.deletes)
 	}
-	wantDeletes := []int64{summaryID, runNoticeID, toolID, outputID}
+	wantDeletes := []int64{summaryID}
 	for index, want := range wantDeletes {
 		if sender.deletes[index].messageID != want {
 			t.Fatalf("delete[%d] = %d, want %d; deletes=%#v", index, sender.deletes[index].messageID, want, sender.deletes)
@@ -679,6 +703,87 @@ func TestSyncThreadPanelDoesNotUseDocumentDeliveryForToolOutput(t *testing.T) {
 	}
 }
 
+func TestSyncThreadPanelSendsToolAndOutputOnlyWhenContentAppears(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+
+	thread := model.Thread{
+		ID:          "thread-tool-output-on-demand",
+		Title:       "Tool output on demand",
+		ProjectName: "Codex",
+		CWD:         `C:\Users\you\Projects\Codex`,
+		UpdatedAt:   time.Now().UTC().Unix(),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	initial := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-tool-output-on-demand",
+		LatestTurnStatus: "inProgress",
+	}, time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, initial); err != nil {
+		t.Fatalf("UpsertSnapshot(initial) failed: %v", err)
+	}
+	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
+
+	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
+
+	if len(sender.messages) != 2 {
+		t.Fatalf("initial messages = %#v, want [User placeholder] + summary only", sender.messages)
+	}
+	for _, message := range sender.messages {
+		if strings.Contains(message.text, "No completed tool") || hasHeaderKind(message.text, "Tool") || hasHeaderKind(message.text, "Output") {
+			t.Fatalf("unexpected empty tool/output message: %#v", sender.messages)
+		}
+	}
+	panel, err := service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
+	if err != nil {
+		t.Fatalf("GetCurrentThreadPanel(initial) failed: %v", err)
+	}
+	if panel == nil || panel.ToolMessageID != 0 || panel.OutputMessageID != 0 || panel.LastToolHash != "" || panel.LastOutputHash != "" {
+		t.Fatalf("initial panel = %#v, want no tool/output message ids", panel)
+	}
+
+	withTool := appserver.CompactSnapshot(&initial, appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-tool-output-on-demand",
+		LatestTurnStatus: "inProgress",
+		LatestToolID:     "tool-on-demand",
+		LatestToolKind:   "commandExecution",
+		LatestToolLabel:  "bash -lc 'printf ready'",
+		LatestToolStatus: "completed",
+		LatestToolOutput: "ready\n",
+		LatestToolFP:     "tool-on-demand-fp",
+	}, time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, withTool); err != nil {
+		t.Fatalf("UpsertSnapshot(withTool) failed: %v", err)
+	}
+
+	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
+
+	if len(sender.messages) != 4 {
+		t.Fatalf("messages = %#v, want tool and output appended after content appears", sender.messages)
+	}
+	if !hasHeaderKind(sender.messages[2].text, "Tool") || !strings.Contains(sender.messages[2].text, "printf ready") {
+		t.Fatalf("tool message = %q, want real tool", sender.messages[2].text)
+	}
+	if !hasHeaderKind(sender.messages[3].text, "Output") || !strings.Contains(sender.messages[3].text, "ready") {
+		t.Fatalf("output message = %q, want real output", sender.messages[3].text)
+	}
+	panel, err = service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
+	if err != nil {
+		t.Fatalf("GetCurrentThreadPanel(withTool) failed: %v", err)
+	}
+	if panel == nil || panel.ToolMessageID != sender.messages[2].messageID || panel.OutputMessageID != sender.messages[3].messageID || panel.LastToolHash == "" || panel.LastOutputHash == "" {
+		t.Fatalf("panel = %#v, want appended tool/output ids and hashes", panel)
+	}
+}
+
 func TestGlobalObserverSyncSendsUserRequestNoticeOnceBeforeTrio(t *testing.T) {
 	t.Parallel()
 
@@ -713,35 +818,29 @@ func TestGlobalObserverSyncSendsUserRequestNoticeOnceBeforeTrio(t *testing.T) {
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
 
-	if len(sender.messages) != 5 {
-		t.Fatalf("message count = %d, want 5 (New run + [User] + trio once); messages=%#v", len(sender.messages), sender.messages)
-	}
-	if !strings.Contains(sender.messages[0].text, "New run:") {
-		t.Fatalf("first message = %q, want New run before [User]", sender.messages[0].text)
+	if len(sender.messages) != 2 {
+		t.Fatalf("message count = %d, want 2 ([User] + summary once); messages=%#v", len(sender.messages), sender.messages)
 	}
 	if strings.Contains(sender.messages[0].text, "Status:") {
-		t.Fatalf("run notice text = %q, want no status", sender.messages[0].text)
+		t.Fatalf("user notice text = %q, want no status", sender.messages[0].text)
 	}
-	if !hasHeaderKind(sender.messages[1].text, "User") {
-		t.Fatalf("second message = %q, want [User] before trio", sender.messages[1].text)
+	if !hasHeaderKind(sender.messages[0].text, "User") {
+		t.Fatalf("first message = %q, want [User] before summary", sender.messages[0].text)
 	}
-	if strings.Contains(sender.messages[1].text, "Status:") {
-		t.Fatalf("user notice text = %q, want no status", sender.messages[1].text)
+	if strings.Contains(sender.messages[0].text, "```") {
+		t.Fatalf("user notice contains raw markdown: %q", sender.messages[0].text)
 	}
-	if strings.Contains(sender.messages[1].text, "```") {
-		t.Fatalf("user notice contains raw markdown: %q", sender.messages[1].text)
-	}
-	if !hasRecordedEntity(sender.messages[1].entities, "code", "") {
-		t.Fatalf("user notice entities = %#v, want inline code entity", sender.messages[1].entities)
+	if !hasRecordedEntity(sender.messages[0].entities, "code", "") {
+		t.Fatalf("user notice entities = %#v, want inline code entity", sender.messages[0].entities)
 	}
 	panel, err := service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
 	if err != nil {
 		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
 	}
-	if panel == nil || panel.RunNoticeMessageID != sender.messages[0].messageID || panel.UserMessageID != sender.messages[1].messageID || panel.LastUserNoticeFP != "user-fp-1" {
-		t.Fatalf("panel notice state = %#v, want run id %d and user id %d / user-fp-1", panel, sender.messages[0].messageID, sender.messages[1].messageID)
+	if panel == nil || panel.RunNoticeMessageID != 0 || panel.UserMessageID != sender.messages[0].messageID || panel.LastUserNoticeFP != "user-fp-1" {
+		t.Fatalf("panel notice state = %#v, want no run id and user id %d / user-fp-1", panel, sender.messages[0].messageID)
 	}
-	route, err := service.store.ResolveMessageRoute(ctx, target.ChatID, target.TopicID, sender.messages[1].messageID)
+	route, err := service.store.ResolveMessageRoute(ctx, target.ChatID, target.TopicID, sender.messages[0].messageID)
 	if err != nil {
 		t.Fatalf("ResolveMessageRoute failed: %v", err)
 	}
@@ -784,30 +883,24 @@ func TestGlobalObserverSyncCreatesRunNoticeAndUserPlaceholderBeforeTrioWithoutUs
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
 
-	if len(sender.messages) != 5 {
-		t.Fatalf("messages = %#v, want New run + [User placeholder] + trio", sender.messages)
-	}
-	if !strings.Contains(sender.messages[0].text, "New run:") {
-		t.Fatalf("first message = %q, want New run", sender.messages[0].text)
+	if len(sender.messages) != 2 {
+		t.Fatalf("messages = %#v, want [User placeholder] + summary", sender.messages)
 	}
 	if strings.Contains(sender.messages[0].text, "Status:") {
-		t.Fatalf("run notice text = %q, want no status", sender.messages[0].text)
+		t.Fatalf("user placeholder text = %q, want no status", sender.messages[0].text)
 	}
-	if !hasHeaderKind(sender.messages[1].text, "User") || !strings.Contains(sender.messages[1].text, "User prompt was not available") {
-		t.Fatalf("second message = %q, want [User] placeholder", sender.messages[1].text)
+	if !hasHeaderKind(sender.messages[0].text, "User") || !strings.Contains(sender.messages[0].text, "User prompt was not available") {
+		t.Fatalf("first message = %q, want [User] placeholder", sender.messages[0].text)
 	}
-	if strings.Contains(sender.messages[1].text, "Status:") {
-		t.Fatalf("user placeholder text = %q, want no status", sender.messages[1].text)
-	}
-	if !hasHeaderKind(sender.messages[2].text, "commentary") || !hasHeaderKind(sender.messages[3].text, "Tool") || !hasHeaderKind(sender.messages[4].text, "Output") {
-		t.Fatalf("messages = %#v, want trio after New run and [User]", sender.messages)
+	if !hasHeaderKind(sender.messages[1].text, "commentary") {
+		t.Fatalf("messages = %#v, want summary after [User]", sender.messages)
 	}
 	panel, err := service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
 	if err != nil {
 		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
 	}
-	if panel == nil || panel.RunNoticeMessageID != sender.messages[0].messageID || panel.UserMessageID != sender.messages[1].messageID || panel.LastUserNoticeFP != "" {
-		t.Fatalf("panel = %#v, want run notice id and user placeholder id without user fp", panel)
+	if panel == nil || panel.RunNoticeMessageID != 0 || panel.UserMessageID != sender.messages[0].messageID || panel.LastUserNoticeFP != "" {
+		t.Fatalf("panel = %#v, want no run notice and user placeholder id without user fp", panel)
 	}
 }
 
@@ -843,10 +936,10 @@ func TestLateUserPromptEditsExistingUserPlaceholder(t *testing.T) {
 	}
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
-	if len(sender.messages) != 5 || !strings.Contains(sender.messages[0].text, "New run:") || !hasHeaderKind(sender.messages[1].text, "User") {
-		t.Fatalf("initial messages = %#v, want New run + [User placeholder] + trio", sender.messages)
+	if len(sender.messages) != 2 || !hasHeaderKind(sender.messages[0].text, "User") {
+		t.Fatalf("initial messages = %#v, want [User placeholder] + summary", sender.messages)
 	}
-	userMessageID := sender.messages[1].messageID
+	userMessageID := sender.messages[0].messageID
 
 	late := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
 		Thread:                thread,
@@ -865,7 +958,7 @@ func TestLateUserPromptEditsExistingUserPlaceholder(t *testing.T) {
 	}
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
 
-	if len(sender.messages) != 5 {
+	if len(sender.messages) != 2 {
 		t.Fatalf("messages = %#v, want no late appended [User] message", sender.messages)
 	}
 	foundEdit := false
@@ -961,8 +1054,8 @@ func TestTelegramInputSyncDoesNotDuplicateUserRequestNotice(t *testing.T) {
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, true, model.PanelSourceTelegramInput)
 
-	if len(sender.messages) != 4 {
-		t.Fatalf("message count = %d, want New run + trio without [User] duplicate; messages=%#v", len(sender.messages), sender.messages)
+	if len(sender.messages) != 2 {
+		t.Fatalf("message count = %d, want New run + summary without [User] duplicate; messages=%#v", len(sender.messages), sender.messages)
 	}
 	if !strings.Contains(sender.messages[0].text, "New run:") || !strings.Contains(sender.messages[0].text, "Source: Telegram") {
 		t.Fatalf("first message = %q, want Telegram New run notice", sender.messages[0].text)
@@ -1020,14 +1113,14 @@ func TestFeishuInputSyncShowsFeishuSourceAndDoesNotDuplicateUserRequestNotice(t 
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, true, model.PanelSourceFeishuInput)
 
-	if len(sender.messages) != 4 {
-		t.Fatalf("message count = %d, want New run + trio without [User] duplicate; messages=%#v", len(sender.messages), sender.messages)
+	if len(sender.messages) != 1 {
+		t.Fatalf("message count = %d, want summary without New run or [User] duplicate; messages=%#v", len(sender.messages), sender.messages)
 	}
-	if !strings.Contains(sender.messages[0].text, "New run:") || !strings.Contains(sender.messages[0].text, "Source: Feishu") {
-		t.Fatalf("first message = %q, want Feishu New run notice", sender.messages[0].text)
+	if strings.Contains(sender.messages[0].text, "New run:") || strings.Contains(sender.messages[0].text, "Source: Feishu") {
+		t.Fatalf("first message = %q, want no Feishu New run notice", sender.messages[0].text)
 	}
-	if strings.Contains(sender.messages[0].text, "Source: Telegram") {
-		t.Fatalf("first message = %q, must not say Telegram for Feishu input", sender.messages[0].text)
+	if !strings.Contains(sender.messages[0].text, "[Codex]") {
+		t.Fatalf("first message = %q, want project segment in header", sender.messages[0].text)
 	}
 	for _, message := range sender.messages {
 		if hasHeaderKind(message.text, "User") {
@@ -1038,8 +1131,197 @@ func TestFeishuInputSyncShowsFeishuSourceAndDoesNotDuplicateUserRequestNotice(t 
 	if err != nil {
 		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
 	}
-	if panel == nil || panel.SourceMode != model.PanelSourceFeishuInput || panel.RunNoticeMessageID != sender.messages[0].messageID || panel.LastUserNoticeFP != "" {
+	if panel == nil || panel.SourceMode != model.PanelSourceFeishuInput || panel.RunNoticeMessageID != 0 || panel.LastUserNoticeFP != "" {
 		t.Fatalf("panel = %#v, want feishu_input with empty user notice fp", panel)
+	}
+}
+
+func TestFeishuThreadTopicSenderRoutesPanelMessagesIntoThread(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingThreadTopicSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+
+	thread := model.Thread{
+		ID:          "thread-feishu-topic",
+		Title:       "Feishu topic",
+		ProjectName: "Codex",
+		CWD:         `C:\Users\you\Projects\Codex`,
+		UpdatedAt:   time.Now().UTC().Unix(),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	snapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-feishu-topic",
+		LatestTurnStatus: "inProgress",
+		LatestAgentMessageEntries: []appserver.AgentMessageEntry{{
+			Text:  "Working on it.",
+			Phase: "commentary",
+		}},
+	}, time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
+
+	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
+
+	if len(sender.messages) == 0 {
+		t.Fatalf("messages = %#v, want panel messages in topic", sender.messages)
+	}
+	for _, message := range sender.messages {
+		if message.options.FeishuReplyToMessageID != 9001 || !message.options.FeishuReplyInThread || message.options.FeishuCodexThreadID != thread.ID {
+			t.Fatalf("message options = %#v, want Feishu topic reply options", message.options)
+		}
+	}
+	route, err := service.store.ResolveMessageRoute(ctx, target.ChatID, target.TopicID, 9001)
+	if err != nil {
+		t.Fatalf("ResolveMessageRoute(root) failed: %v", err)
+	}
+	if route == nil || route.ThreadID != thread.ID {
+		t.Fatalf("root route = %#v, want thread route", route)
+	}
+}
+
+func TestFeishuThreadTopicRouteIsStoredForActualTopicChat(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingThreadTopicSender{
+		topic: &model.FeishuThreadTopic{
+			ChatID:        987654321,
+			ThreadID:      "thread-feishu-control-room",
+			RootMessageID: 9002,
+		},
+	}
+	service.SetSender(sender)
+	ctx := context.Background()
+
+	thread := model.Thread{
+		ID:          "thread-feishu-control-room",
+		Title:       "Feishu control room",
+		ProjectName: "Codex",
+		CWD:         t.TempDir(),
+		UpdatedAt:   time.Now().UTC().Unix(),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	snapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-feishu-control-room",
+		LatestTurnStatus: "inProgress",
+	}, time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
+
+	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
+
+	originalRoute, err := service.store.ResolveMessageRoute(ctx, target.ChatID, target.TopicID, 9002)
+	if err != nil {
+		t.Fatalf("ResolveMessageRoute(original) failed: %v", err)
+	}
+	if originalRoute == nil || originalRoute.ThreadID != thread.ID {
+		t.Fatalf("original route = %#v, want thread route", originalRoute)
+	}
+	topicRoute, err := service.store.ResolveMessageRoute(ctx, 987654321, 0, 9002)
+	if err != nil {
+		t.Fatalf("ResolveMessageRoute(topic chat) failed: %v", err)
+	}
+	if topicRoute == nil || topicRoute.ThreadID != thread.ID {
+		t.Fatalf("topic route = %#v, want thread route", topicRoute)
+	}
+}
+
+func TestFeishuThreadTopicSyncUsesCanonicalTargetOnce(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingThreadTopicSender{
+		topic: &model.FeishuThreadTopic{
+			ChatID:        2002,
+			ThreadID:      "thread-feishu-canonical",
+			RootMessageID: 9003,
+		},
+		canonicalByChatID: map[int64]int64{
+			1001: 2002,
+		},
+	}
+	service.SetSender(sender)
+	ctx := context.Background()
+	if err := service.store.SetGlobalObserverTarget(ctx, 123456789, 0, false); err != nil {
+		t.Fatalf("SetGlobalObserverTarget(disabled) failed: %v", err)
+	}
+
+	thread := model.Thread{
+		ID:          "thread-feishu-canonical",
+		Title:       "Feishu canonical",
+		ProjectName: "Codex",
+		CWD:         t.TempDir(),
+		UpdatedAt:   time.Now().UTC().Unix(),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	snapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-feishu-canonical",
+		LatestTurnStatus: "completed",
+		LatestFinalFP:    "final-feishu-canonical",
+		LatestAgentMessageEntries: []appserver.AgentMessageEntry{{
+			Text:  "Done.",
+			Phase: "final",
+		}},
+	}, time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:         1001,
+		TopicID:        0,
+		ThreadID:       thread.ID,
+		ProjectName:    thread.ProjectName,
+		SourceMode:     model.PanelSourceFeishuInput,
+		ArchiveEnabled: true,
+	}); err != nil {
+		t.Fatalf("CreateThreadPanel(dm) failed: %v", err)
+	}
+	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:         2002,
+		TopicID:        0,
+		ThreadID:       thread.ID,
+		ProjectName:    thread.ProjectName,
+		SourceMode:     model.PanelSourceFeishuInput,
+		ArchiveEnabled: true,
+	}); err != nil {
+		t.Fatalf("CreateThreadPanel(topic) failed: %v", err)
+	}
+
+	service.syncThreadPanel(ctx, thread.ID)
+
+	if got := fmt.Sprint(sender.ensureTopicChatIDs); got != "[2002]" {
+		t.Fatalf("EnsureThreadTopic chat IDs = %s, want [2002]", got)
+	}
+	if len(sender.messages) == 0 {
+		t.Fatalf("messages = %#v, want one canonical panel sync", sender.messages)
+	}
+	for _, message := range sender.messages {
+		if message.chatID != 2002 {
+			t.Fatalf("message chatID = %d, want canonical topic chat 2002", message.chatID)
+		}
+	}
+	panels, err := service.store.ListCurrentPanelsForThread(ctx, thread.ID)
+	if err != nil {
+		t.Fatalf("ListCurrentPanelsForThread failed: %v", err)
+	}
+	if len(panels) != 1 || panels[0].ChatID != 2002 {
+		t.Fatalf("current panels = %#v, want only canonical topic panel", panels)
 	}
 }
 
@@ -1091,14 +1373,13 @@ func TestGlobalObserverSyncAfterFeishuInputShowsDesktopUserRequest(t *testing.T)
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
 
-	if len(sender.messages) != 5 {
-		t.Fatalf("message count = %d, want New run + [User] + trio; messages=%#v", len(sender.messages), sender.messages)
+	if len(sender.messages) != 2 {
+		t.Fatalf("message count = %d, want [User] + summary; messages=%#v", len(sender.messages), sender.messages)
 	}
-	if !strings.Contains(sender.messages[0].text, "New run:") || !strings.Contains(sender.messages[0].text, "Source: GUI/CLI observer") {
-		t.Fatalf("first message = %q, want GUI/CLI observer New run notice", sender.messages[0].text)
-	}
-	if strings.Contains(sender.messages[0].text, "Source: Feishu") {
-		t.Fatalf("first message = %q, must not classify desktop turn as Feishu", sender.messages[0].text)
+	for _, message := range sender.messages {
+		if strings.Contains(message.text, "New run:") {
+			t.Fatalf("message = %q, want no GUI/CLI observer New run notice", message.text)
+		}
 	}
 	userNotices := 0
 	for _, message := range sender.messages {
@@ -1156,8 +1437,8 @@ func TestGlobalObserverDoesNotRecreateTelegramOriginPanelOnEditFailure(t *testin
 
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, true, model.PanelSourceTelegramInput)
-	if len(sender.messages) != 4 {
-		t.Fatalf("initial message count = %d, want New run + trio; messages=%#v", len(sender.messages), sender.messages)
+	if len(sender.messages) != 2 {
+		t.Fatalf("initial message count = %d, want New run + summary; messages=%#v", len(sender.messages), sender.messages)
 	}
 	panelBefore, err := service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
 	if err != nil {
@@ -1181,8 +1462,8 @@ func TestGlobalObserverDoesNotRecreateTelegramOriginPanelOnEditFailure(t *testin
 	sender.editErr = errors.New("forced edit failure")
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
 
-	if len(sender.messages) != 4 {
-		t.Fatalf("message count after global sync = %d, want no duplicate New run/trio; messages=%#v", len(sender.messages), sender.messages)
+	if len(sender.messages) != 2 {
+		t.Fatalf("message count after global sync = %d, want no duplicate New run/summary; messages=%#v", len(sender.messages), sender.messages)
 	}
 	panelAfter, err := service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
 	if err != nil {
@@ -1475,15 +1756,15 @@ func TestSyncThreadPanelToTargetCreatesPanelForRecentTerminalGlobalObserverChang
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, "global_observer")
 
-	if len(sender.messages) != 4 {
-		t.Fatalf("message count = %d, want 3 live trio messages plus Final for recent terminal observer change; messages=%#v", len(sender.messages), sender.messages)
+	if len(sender.messages) != 2 {
+		t.Fatalf("message count = %d, want live summary plus Final for recent terminal observer change; messages=%#v", len(sender.messages), sender.messages)
 	}
 	final := lastFinalMessage(t, sender.messages)
 	if final.options.Silent {
 		t.Fatalf("final = %#v, want audible Final message", final)
 	}
-	if len(sender.deletes) != 3 {
-		t.Fatalf("deletes = %#v, want commentary/tool/output delete after final", sender.deletes)
+	if len(sender.deletes) != 1 {
+		t.Fatalf("deletes = %#v, want live summary delete after final", sender.deletes)
 	}
 	panel, err := service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
 	if err != nil {
@@ -1531,13 +1812,12 @@ func TestTerminalObserverPanelWithRunNoticeCollapsesWhenFinalAppears(t *testing.
 
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
-	if len(sender.messages) != 5 {
-		t.Fatalf("initial messages = %#v, want New run + [User] + trio", sender.messages)
+	if len(sender.messages) != 4 {
+		t.Fatalf("initial messages = %#v, want [User] + trio", sender.messages)
 	}
-	runNoticeID := sender.messages[0].messageID
-	summaryID := sender.messages[2].messageID
-	toolID := sender.messages[3].messageID
-	outputID := sender.messages[4].messageID
+	summaryID := sender.messages[1].messageID
+	toolID := sender.messages[2].messageID
+	outputID := sender.messages[3].messageID
 
 	finalSnapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
 		Thread:                thread,
@@ -1560,10 +1840,10 @@ func TestTerminalObserverPanelWithRunNoticeCollapsesWhenFinalAppears(t *testing.
 	}
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
 
-	if len(sender.deletes) != 4 {
-		t.Fatalf("deletes = %#v, want commentary + New run + tool + output", sender.deletes)
+	if len(sender.deletes) != 3 {
+		t.Fatalf("deletes = %#v, want commentary + tool + output", sender.deletes)
 	}
-	wantDeletes := []int64{summaryID, runNoticeID, toolID, outputID}
+	wantDeletes := []int64{summaryID, toolID, outputID}
 	for index, want := range wantDeletes {
 		if sender.deletes[index].messageID != want {
 			t.Fatalf("delete[%d] = %d, want %d; deletes=%#v", index, sender.deletes[index].messageID, want, sender.deletes)
@@ -2872,38 +3152,32 @@ func TestSyncThreadPanelCreatesRouteablePlanPromptAndDedupes(t *testing.T) {
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
 
-	if len(sender.messages) != 6 {
-		t.Fatalf("message count = %d, want New run + [User placeholder] + [Plan] + trio once: %#v", len(sender.messages), sender.messages)
+	if len(sender.messages) != 3 {
+		t.Fatalf("message count = %d, want [User placeholder] + [Plan] + summary once: %#v", len(sender.messages), sender.messages)
 	}
-	if !strings.Contains(sender.messages[0].text, "New run:") {
-		t.Fatalf("first message = %q, want New run before [User]/[Plan]", sender.messages[0].text)
+	if !hasHeaderKind(sender.messages[0].text, "User") || !strings.Contains(sender.messages[0].text, "User prompt was not available") {
+		t.Fatalf("first message = %q, want [User] placeholder before [Plan]", sender.messages[0].text)
 	}
-	if !hasHeaderKind(sender.messages[1].text, "User") || !strings.Contains(sender.messages[1].text, "User prompt was not available") {
-		t.Fatalf("second message = %q, want [User] placeholder before [Plan]", sender.messages[1].text)
+	if !hasHeaderKind(sender.messages[1].text, "Plan") {
+		t.Fatalf("second message = %q, want [Plan] prompt before summary", sender.messages[1].text)
 	}
-	if !hasHeaderKind(sender.messages[2].text, "Plan") {
-		t.Fatalf("third message = %q, want [Plan] prompt before trio", sender.messages[2].text)
+	if !strings.Contains(sender.messages[1].text, "Choose next step?") {
+		t.Fatalf("plan prompt text = %q, want question", sender.messages[1].text)
 	}
-	if !strings.Contains(sender.messages[2].text, "Choose next step?") {
-		t.Fatalf("plan prompt text = %q, want question", sender.messages[2].text)
+	if got := buttonToken(sender.messages[1].buttons, "Continue"); got == "" {
+		t.Fatalf("plan prompt buttons = %#v, want structured Continue button", sender.messages[1].buttons)
 	}
-	if got := buttonToken(sender.messages[2].buttons, "Continue"); got == "" {
-		t.Fatalf("plan prompt buttons = %#v, want structured Continue button", sender.messages[2].buttons)
-	}
-	if sender.messages[0].options.Silent {
-		t.Fatalf("New run options = %#v, want audible when notify_new_run is enabled", sender.messages[0].options)
-	}
-	if !sender.messages[1].options.Silent || sender.messages[2].options.Silent || !sender.messages[3].options.Silent || !sender.messages[4].options.Silent || !sender.messages[5].options.Silent {
-		t.Fatalf("message options = %#v, want only New run and [Plan] audible", sender.messages)
+	if !sender.messages[0].options.Silent || sender.messages[1].options.Silent || !sender.messages[2].options.Silent {
+		t.Fatalf("message options = %#v, want only [Plan] audible", sender.messages)
 	}
 	panel, err := service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
 	if err != nil {
 		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
 	}
-	if panel == nil || panel.UserMessageID != sender.messages[1].messageID || panel.PlanPromptMessageID != sender.messages[2].messageID || panel.LastPlanPromptFP != "plan-fp-1" {
-		t.Fatalf("panel plan prompt state = %#v, want user id %d and plan id %d / plan-fp-1", panel, sender.messages[1].messageID, sender.messages[2].messageID)
+	if panel == nil || panel.UserMessageID != sender.messages[0].messageID || panel.PlanPromptMessageID != sender.messages[1].messageID || panel.LastPlanPromptFP != "plan-fp-1" {
+		t.Fatalf("panel plan prompt state = %#v, want user id %d and plan id %d / plan-fp-1", panel, sender.messages[0].messageID, sender.messages[1].messageID)
 	}
-	route, err := service.store.ResolveMessageRoute(ctx, target.ChatID, target.TopicID, sender.messages[2].messageID)
+	route, err := service.store.ResolveMessageRoute(ctx, target.ChatID, target.TopicID, sender.messages[1].messageID)
 	if err != nil {
 		t.Fatalf("ResolveMessageRoute failed: %v", err)
 	}
@@ -2956,13 +3230,13 @@ func TestSyncThreadPanelCreatesServerRequestPlanPromptRoute(t *testing.T) {
 
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
 
-	if len(sender.messages) != 6 {
-		t.Fatalf("message count = %d, want New run + [User placeholder] + [Plan] + trio: %#v", len(sender.messages), sender.messages)
+	if len(sender.messages) != 3 {
+		t.Fatalf("message count = %d, want [User placeholder] + [Plan] + summary: %#v", len(sender.messages), sender.messages)
 	}
-	if got := buttonToken(sender.messages[2].buttons, "staging"); got == "" {
-		t.Fatalf("plan prompt buttons = %#v, want staging button", sender.messages[2].buttons)
+	if got := buttonToken(sender.messages[1].buttons, "staging"); got == "" {
+		t.Fatalf("plan prompt buttons = %#v, want staging button", sender.messages[1].buttons)
 	}
-	route, err := service.store.ResolveMessageRoute(ctx, target.ChatID, target.TopicID, sender.messages[2].messageID)
+	route, err := service.store.ResolveMessageRoute(ctx, target.ChatID, target.TopicID, sender.messages[1].messageID)
 	if err != nil {
 		t.Fatalf("ResolveMessageRoute failed: %v", err)
 	}
@@ -2971,7 +3245,7 @@ func TestSyncThreadPanelCreatesServerRequestPlanPromptRoute(t *testing.T) {
 	}
 }
 
-func TestRunNoticeNotificationFlagCanSilenceNewRun(t *testing.T) {
+func TestGlobalObserverDoesNotSendNewRunWhenNotificationFlagIsDisabled(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -3002,11 +3276,13 @@ func TestRunNoticeNotificationFlagCanSilenceNewRun(t *testing.T) {
 
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceGlobalObserver)
 
-	if len(sender.messages) != 5 {
-		t.Fatalf("messages = %#v, want New run + [User placeholder] + trio", sender.messages)
+	if len(sender.messages) != 2 {
+		t.Fatalf("messages = %#v, want [User placeholder] + summary", sender.messages)
 	}
-	if !strings.Contains(sender.messages[0].text, "New run:") {
-		t.Fatalf("first message = %q, want New run", sender.messages[0].text)
+	for index, message := range sender.messages {
+		if strings.Contains(message.text, "New run:") {
+			t.Fatalf("message[%d] = %q, want no New run notice for global observer", index, message.text)
+		}
 	}
 	for index, message := range sender.messages {
 		if !message.options.Silent {

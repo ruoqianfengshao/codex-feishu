@@ -1,19 +1,19 @@
 # codex-tg: local Codex control plane
 
-Local control plane for OpenAI Codex App Server, built in Go, with Telegram and
-Feishu/Lark adapters.
+Local control plane for OpenAI Codex App Server, built in Go, with a Feishu/Lark
+adapter.
 
 `codex-tg` watches local Codex threads, keeps durable thread identity visible,
 routes operator input back to the right turn, and exposes high-signal controls
 such as Plan Mode prompts, Stop, Steer, Details, Tools file, and Get full log.
-Telegram remains the most mature UI surface; Feishu/Lark is available for
-enterprise self-built apps through the official WebSocket long connection.
+Feishu/Lark is available for enterprise self-built apps through the official
+WebSocket long connection.
 
 ## Why codex-tg?
 
 - Local Codex control plane for OpenAI Codex App Server.
 - Control and observe Codex threads through adapters without exposing App Server to the internet.
-- Use Telegram or Feishu/Lark as high-signal notification, reply, approval, and Details surfaces.
+- Use Feishu/Lark as a high-signal notification, reply, approval, and Details surface.
 - Reuse your existing Codex setup: skills, MCP servers, plugins, repo instructions, and local workflows.
 - Thread-first routing keeps replies, tools, Plan Mode, Details, and Final cards attached to the right run.
 - Built toward long-running local coding-agent orchestration and future router-agent workflows.
@@ -28,16 +28,16 @@ The demo flow is documented in [docs/demo/telegram-plan-mode-demo.md](docs/demo/
 
 - Keep local Codex work observable and controllable without exposing Codex App Server to the internet.
 - Give future router agents a stable local control surface for Codex threads, turns, approvals, events, and skills.
-- Use Telegram as a low-friction fallback and notification surface on unreliable or constrained networks.
+- Use Feishu/Lark as a low-friction notification and control surface without exposing Codex App Server.
 - Preserve local-first ownership: Codex sessions, workspaces, SQLite state, and tokens stay on your machine.
 
 ## Remote Connections
 
 Official Codex Remote Connections cover the broad mobile remote-control
 workflow for Codex. `codex-tg` is not trying to replace that feature. The
-project direction is a local control layer and adapter system: Telegram and
-Feishu/Lark consume the same Codex control core, while future adapters can use
-the same routing and event contracts.
+project direction is a local control layer and adapter system: Feishu/Lark
+consumes the Codex control core, while future adapters can use the same routing
+and event contracts.
 
 ## Demo Screenshots
 
@@ -57,11 +57,11 @@ the same routing and event contracts.
 
 - Thread-first routing over local Codex App Server.
 - Global observer for foreign GUI/CLI runs, with polling fallback through `thread/read`.
-- Telegram-origin live current tool rendering from App Server `item/*` events, while foreign GUI/CLI panels stay completed-tool only.
+- Feishu-origin live current tool rendering from App Server `item/*` events, while foreign GUI/CLI panels stay completed-tool only.
 - Stable visual identity per thread: emoji marker plus project/thread/run chips.
 - Explicit `New run -> [User] -> [commentary] -> [Tool] -> [Output] -> [Final]` chronology with status on the live commentary/final card.
-- Low-noise Telegram notifications: only `New run` (configurable), `[Plan]`, and `[Final]` are audible; live progress and exports are sent silently.
-- Plan Mode starts from Telegram via `/plan` or `/reply --plan`; if a thread remains in Plan Mode, the Plan Final Card offers `Turn off Plan` and `/stop` also arms the next normal turn to leave Plan Mode. `[Plan]` prompt-cards keep reply-first routing and structured buttons when Codex provides choices.
+- Low-noise notifications: only `New run` (configurable), `[Plan]`, and `[Final]` are audible; live progress and exports are sent silently.
+- Plan Mode starts via `/plan` or `/reply --plan`; if a thread remains in Plan Mode, the Plan Final Card offers `Turn off Plan` and `/stop` also arms the next normal turn to leave Plan Mode. `[Plan]` prompt-cards keep reply-first routing and structured buttons when Codex provides choices.
 - Final Card with Details pagination and on-demand Tools file export.
 - On-demand full log archive from Codex session JSONL.
 - SQLite-backed durable state for bindings, routes, callbacks, observer target, panels, and delivery metadata.
@@ -72,7 +72,7 @@ the same routing and event contracts.
 
 ## Platform Status
 
-- Windows: actively tested with the local Codex App Server, Telegram Bot API, observer flows, and live E2E demo.
+- Windows: local daemon/runtime validation is pending after the Feishu-only adapter change.
 - macOS: `v0.5.0` preserves the `v0.4.0` verified service/runtime path on macOS 26.3.1 arm64 with Go 1.26.2, and adds validated Codex Control Plane architecture, internal control interfaces, capability mapping, normalized event contracts, and notification severity policy.
 - Linux: CI runs tests/builds on Ubuntu; full local daemon/runtime validation is still pending.
 
@@ -81,9 +81,7 @@ the same routing and event contracts.
 Prerequisites:
 
 - OpenAI Codex CLI with `codex app-server`.
-- One adapter credential set:
-  - Telegram: a BotFather token and your numeric Telegram user id.
-  - Feishu/Lark: run `ctr-go feishu setup` to create an app by QR scan, or provide an existing app id and secret.
+- Feishu/Lark credentials: run `ctr-go feishu setup` to create an app by QR scan, or provide an existing app id and secret.
 
 On macOS, download the latest `.pkg` from
 [GitHub Releases](https://github.com/mideco-tech/codex-tg/releases/latest),
@@ -139,16 +137,7 @@ go run ./cmd/ctr-go doctor
 go run ./cmd/ctr-go daemon run
 ```
 
-Environment-only setup remains supported:
-
-```powershell
-$env:CTR_GO_ADAPTER = "telegram"
-$env:CTR_GO_TELEGRAM_BOT_TOKEN = "<telegram-bot-token>"
-$env:CTR_GO_ALLOWED_USER_IDS = "<telegram-user-id>"
-$env:CTR_GO_DEFAULT_CWD = "C:\Users\you\Projects\Codex"
-```
-
-Feishu/Lark environment-only setup remains supported when you already have an
+Environment-only setup remains supported when you already have an
 app:
 
 ```powershell
@@ -222,7 +211,7 @@ go run ./cmd/ctr-go repair
 go run ./cmd/ctr-go daemon run
 ```
 
-Telegram commands:
+Feishu commands:
 
 - `/start`, `/help`
 - `/threads`, `/projects`, `/new`, `/newchat`, `/newthread`, `/show`, `/bind`, `/reply`, `/plan`
@@ -247,12 +236,9 @@ Primary environment variables:
 
 - `CTR_GO_HOME`
 - `CTR_GO_CONFIG` (`~/.codex-tg/config.env` by default)
-- `CTR_GO_ADAPTER` (`auto`, `telegram`, or `feishu`; `auto` picks Feishu when Feishu credentials are present, otherwise Telegram)
+- `CTR_GO_ADAPTER` (`feishu`; `auto` is treated as Feishu)
 - `CTR_GO_CODEX_BIN`
 - `CTR_GO_APP_SERVER_LISTEN`
-- `CTR_GO_TELEGRAM_BOT_TOKEN`
-- `CTR_GO_ALLOWED_USER_IDS`
-- `CTR_GO_ALLOWED_CHAT_IDS`
 - `CTR_GO_FEISHU_APP_ID`
 - `CTR_GO_FEISHU_APP_SECRET`
 - `CTR_GO_FEISHU_ALLOWED_OPEN_IDS`
@@ -274,12 +260,6 @@ Primary environment variables:
 - `CTR_GO_DELIVERY_RETRY_SECONDS`
 - `CTR_GO_DELIVERY_MAX_ATTEMPTS`
 
-Compatibility fallbacks:
-
-- `CTR_TELEGRAM_BOT_TOKEN`
-- `CTR_ALLOWED_USER_IDS`
-- `CTR_ALLOWED_CHAT_IDS`
-
 ## Verification
 
 ```powershell
@@ -287,34 +267,18 @@ go test ./...
 go build -buildvcs=false ./...
 ```
 
-Live Telegram readback E2E is documented in
-[tests/live_e2e/README.md](tests/live_e2e/README.md). It is intentionally
-gated by local env and is not part of `go test ./...`.
-
-Live demo for a screenshot:
-
-```powershell
-$env:CTR_DEMO_TELEGRAM_E2E = "1"
-$env:CTR_DEMO_TELEGRAM_CHAT_ID = "<telegram-chat-id>"
-$env:CTR_GO_TELEGRAM_BOT_TOKEN = "<telegram-bot-token>"
-$env:CTR_DEMO_KEEP_MESSAGES = "true"
-go test -tags demo_e2e ./tests -run TestTelegramPlanModeScreenshotDemo -count=1 -v
-```
-
-See [docs/demo/telegram-plan-mode-demo.md](docs/demo/telegram-plan-mode-demo.md) for the screenshot checklist.
-
 ## GitHub Metadata
 
 Suggested repository description:
 
 ```text
-Local Codex control plane with Telegram and Feishu/Lark adapters. Observe, approve, steer, and route Codex App Server threads without exposing App Server publicly.
+Local Codex control plane with a Feishu/Lark adapter. Observe, approve, steer, and route Codex App Server threads without exposing App Server publicly.
 ```
 
 Suggested topics:
 
 ```text
-codex telegram telegram-bot telegram-ui feishu lark openai-codex codex-cli
+codex feishu lark openai-codex codex-cli
 codex-app-server codex-control-plane ai-agents coding-agent remote-control developer-tools
 local-first go macos windows linux plan-mode agent-observer router-agent
 ```
@@ -340,7 +304,6 @@ Apache License 2.0. This keeps the project permissive for the community while al
 
 ## Operational Notes
 
-- Telegram long polling returns `409 Conflict` when another process consumes the same bot token.
 - Feishu/Lark uses the official SDK WebSocket long connection; no public callback URL is required for message/card events.
 - Do not expose Codex App Server on a public interface. `codex-tg` is designed around local/private App Server connectivity.
-- Keep bot tokens, Feishu app secrets, Telegram sessions, SQLite databases, logs, and `.env` files out of git.
+- Keep Feishu app secrets, SQLite databases, logs, and `.env` files out of git.

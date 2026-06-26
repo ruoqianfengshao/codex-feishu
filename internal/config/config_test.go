@@ -96,17 +96,17 @@ func TestParseEnvFileSupportsCommentsAndQuotes(t *testing.T) {
 
 	values, err := ParseEnvFile([]byte(`
 # comment
-CTR_GO_TELEGRAM_BOT_TOKEN="token with spaces"
-CTR_GO_ALLOWED_USER_IDS='123,456'
+CTR_GO_FEISHU_APP_ID="cli token with spaces"
+CTR_GO_FEISHU_ALLOWED_OPEN_IDS='ou_123,ou_456'
 CTR_GO_NOTIFY_NEW_RUN=off
 `), "test.env")
 	if err != nil {
 		t.Fatalf("ParseEnvFile failed: %v", err)
 	}
 	want := map[string]string{
-		"CTR_GO_TELEGRAM_BOT_TOKEN": "token with spaces",
-		"CTR_GO_ALLOWED_USER_IDS":   "123,456",
-		"CTR_GO_NOTIFY_NEW_RUN":     "off",
+		"CTR_GO_FEISHU_APP_ID":           "cli token with spaces",
+		"CTR_GO_FEISHU_ALLOWED_OPEN_IDS": "ou_123,ou_456",
+		"CTR_GO_NOTIFY_NEW_RUN":          "off",
 	}
 	if !reflect.DeepEqual(values, want) {
 		t.Fatalf("values = %#v, want %#v", values, want)
@@ -133,8 +133,7 @@ func TestLoadReadsConfigFileAndEnvOverridesIt(t *testing.T) {
 	home := filepath.Join(dir, "home")
 	if err := os.WriteFile(configPath, []byte(strings.Join([]string{
 		`CTR_GO_HOME="` + home + `"`,
-		`CTR_GO_TELEGRAM_BOT_TOKEN="file-token"`,
-		`CTR_GO_ALLOWED_USER_IDS="101 202"`,
+		`CTR_GO_NUMERIC_ALLOWED_USER_IDS="101 202"`,
 		`CTR_GO_DEFAULT_CWD="` + fileDefaultCWD + `"`,
 		`CTR_GO_NOTIFY_NEW_RUN="off"`,
 		`CTR_GO_NOTIFY_SYSTEM="off"`,
@@ -148,9 +147,6 @@ func TestLoadReadsConfigFileAndEnvOverridesIt(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
-	}
-	if cfg.TelegramBotToken != "file-token" {
-		t.Fatalf("TelegramBotToken = %q, want file-token", cfg.TelegramBotToken)
 	}
 	if !reflect.DeepEqual(cfg.AllowedUserIDs, []int64{101, 202}) {
 		t.Fatalf("AllowedUserIDs = %#v, want 101,202", cfg.AllowedUserIDs)

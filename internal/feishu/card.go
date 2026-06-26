@@ -150,7 +150,6 @@ var feishuButtonLabels = map[string]string{
 	"Approve":         "批准",
 	"Approve Session": "批准会话",
 	"Back":            "返回",
-	"Bind here":       "绑定",
 	"Cancel":          "取消",
 	"Continue":        "继续",
 	"Deny":            "拒绝",

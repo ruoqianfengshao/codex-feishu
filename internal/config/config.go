@@ -49,7 +49,6 @@ type Config struct {
 	Adapter                     string
 	CodexBin                    string
 	AppServerListen             string
-	TelegramBotToken            string
 	AllowedUserIDs              []int64
 	AllowedChatIDs              []int64
 	FeishuAppID                 string
@@ -137,12 +136,11 @@ func fromSource(source envSource) Config {
 	}
 	return Config{
 		Paths:                       paths,
-		Adapter:                     normalizeAdapter(source.string("CTR_GO_ADAPTER", "auto")),
+		Adapter:                     normalizeAdapter(source.string("CTR_GO_ADAPTER", "feishu")),
 		CodexBin:                    codexBin,
 		AppServerListen:             listen,
-		TelegramBotToken:            source.first("CTR_GO_TELEGRAM_BOT_TOKEN", "CTR_TELEGRAM_BOT_TOKEN"),
-		AllowedUserIDs:              parseInt64List(source.first("CTR_GO_ALLOWED_USER_IDS", "CTR_ALLOWED_USER_IDS")),
-		AllowedChatIDs:              parseInt64List(source.first("CTR_GO_ALLOWED_CHAT_IDS", "CTR_ALLOWED_CHAT_IDS")),
+		AllowedUserIDs:              parseInt64List(source.get("CTR_GO_NUMERIC_ALLOWED_USER_IDS")),
+		AllowedChatIDs:              parseInt64List(source.get("CTR_GO_NUMERIC_ALLOWED_CHAT_IDS")),
 		FeishuAppID:                 source.get("CTR_GO_FEISHU_APP_ID"),
 		FeishuAppSecret:             source.get("CTR_GO_FEISHU_APP_SECRET"),
 		FeishuAllowedOpenIDs:        parseStringList(source.get("CTR_GO_FEISHU_ALLOWED_OPEN_IDS")),
@@ -174,7 +172,6 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		CodexBin                    string   `json:"codex_bin"`
 		AppServerListen             string   `json:"app_server_listen"`
 		Adapter                     string   `json:"adapter"`
-		HasTelegramToken            bool     `json:"telegram_configured"`
 		HasFeishuCredentials        bool     `json:"feishu_configured"`
 		AllowedUserIDs              []int64  `json:"allowed_user_ids"`
 		AllowedChatIDs              []int64  `json:"allowed_chat_ids"`
@@ -201,7 +198,6 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		CodexBin:                    c.CodexBin,
 		AppServerListen:             c.AppServerListen,
 		Adapter:                     normalizeAdapter(c.Adapter),
-		HasTelegramToken:            c.TelegramBotToken != "",
 		HasFeishuCredentials:        c.FeishuAppID != "" && c.FeishuAppSecret != "",
 		AllowedUserIDs:              c.AllowedUserIDs,
 		AllowedChatIDs:              c.AllowedChatIDs,
@@ -451,11 +447,9 @@ func normalizePanelMode(value string) string {
 
 func normalizeAdapter(value string) string {
 	switch strings.TrimSpace(strings.ToLower(value)) {
-	case "telegram", "tg":
-		return "telegram"
-	case "feishu", "lark":
+	case "", "auto", "feishu", "lark":
 		return "feishu"
 	default:
-		return "auto"
+		return strings.TrimSpace(strings.ToLower(value))
 	}
 }

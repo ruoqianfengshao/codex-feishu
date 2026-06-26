@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mideco-tech/codex-tg/internal/model"
 )
 
 func TestVisualMarkerIsStableForSameThread(t *testing.T) {
@@ -80,6 +82,60 @@ func TestVisualMarkerReusesExpiredAssignment(t *testing.T) {
 	marker := service.visualMarker(ctx, threadID)
 	if marker != base {
 		t.Fatalf("marker = %q, want expired base marker %q to be reusable", marker, base)
+	}
+}
+
+func TestVisualHeaderShowsProjectSegmentForWorkspaceThread(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	header := service.visualHeader(context.Background(), "Final", model.Thread{
+		ID:          "thread-header-project",
+		Title:       "Implement Feishu bridge",
+		ProjectName: "codex-tg-controller",
+		CWD:         "/Users/vico/workspace/vico/codex-tg-controller",
+	}, "turn-header-project")
+
+	if !strings.Contains(header, "[codex-tg-contro...]") {
+		t.Fatalf("header = %q, want project segment", header)
+	}
+	if !strings.Contains(header, "[Implement Feishu bridge]") || !strings.Contains(header, "[T:thread]") || !strings.Contains(header, "[R:turn]") || !strings.Contains(header, "[Final]") {
+		t.Fatalf("header = %q, want title/thread/turn/kind segments", header)
+	}
+}
+
+func TestVisualHeaderOmitsProjectSegmentForCodexChatThread(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	header := service.visualHeader(context.Background(), "Final", model.Thread{
+		ID:          "thread-header-chat",
+		Title:       "019efe1a-c0e7-7722-adf5-f036e91d7ec1",
+		ProjectName: "iam",
+		CWD:         "/Users/vico/Documents/Codex/2026-06-25/iam",
+	}, "turn-header-chat")
+
+	if strings.Contains(header, "[iam]") {
+		t.Fatalf("header = %q, want no Codex chat project segment", header)
+	}
+	if !strings.Contains(header, "[019efe1a-c0e7-7722-adf5-f03...]") || !strings.Contains(header, "[T:thread]") || !strings.Contains(header, "[R:turn]") || !strings.Contains(header, "[Final]") {
+		t.Fatalf("header = %q, want title/thread/turn/kind segments", header)
+	}
+}
+
+func TestVisualHeaderShowsSameNameWhenThreadIsRealWorkspace(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	header := service.visualHeader(context.Background(), "Final", model.Thread{
+		ID:          "thread-header-real-iam",
+		Title:       "IAM workspace",
+		ProjectName: "iam",
+		CWD:         "/Users/vico/workspace/terminus/iam",
+	}, "turn-header-real-iam")
+
+	if !strings.Contains(header, "[iam]") {
+		t.Fatalf("header = %q, want project segment for real workspace", header)
 	}
 }
 

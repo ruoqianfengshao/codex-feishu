@@ -18,15 +18,15 @@ func TestServiceInstallNonInteractiveWritesConfigAndLaunchAgent(t *testing.T) {
 	t.Setenv("CTR_GO_HOME", home)
 	t.Setenv("HOME", dir)
 	binary := os.Args[0]
-	token := "123456:abcdefghijklmnopqrstuvwxyz"
+	secret := "feishu-secret-value"
 	var out bytes.Buffer
 
 	err := runWithIO([]string{
 		"service", "install",
 		"--non-interactive",
 		"--config", configPath,
-		"--telegram-bot-token", token,
-		"--allowed-user-ids", "42",
+		"--feishu-app-id", "cli_app_id",
+		"--feishu-app-secret", secret,
 		"--default-cwd", dir,
 		"--codex-chats-root", filepath.Join(dir, "Codex"),
 		"--codex-bin", binary,
@@ -37,8 +37,8 @@ func TestServiceInstallNonInteractiveWritesConfigAndLaunchAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("service install failed: %v", err)
 	}
-	if strings.Contains(out.String(), token) {
-		t.Fatalf("service install leaked token:\n%s", out.String())
+	if strings.Contains(out.String(), secret) {
+		t.Fatalf("service install leaked secret:\n%s", out.String())
 	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -46,8 +46,9 @@ func TestServiceInstallNonInteractiveWritesConfigAndLaunchAgent(t *testing.T) {
 	}
 	text := string(data)
 	for _, want := range []string{
-		`CTR_GO_TELEGRAM_BOT_TOKEN="` + token + `"`,
-		`CTR_GO_ALLOWED_USER_IDS="42"`,
+		`CTR_GO_ADAPTER="feishu"`,
+		`CTR_GO_FEISHU_APP_ID="cli_app_id"`,
+		`CTR_GO_FEISHU_APP_SECRET="` + secret + `"`,
 		`CTR_GO_NOTIFY_NEW_RUN="false"`,
 		`CTR_GO_NOTIFY_SYSTEM="false"`,
 		`CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU="false"`,
@@ -72,8 +73,8 @@ func TestServiceInstallNonInteractiveWritesConfigAndLaunchAgent(t *testing.T) {
 		t.Fatalf("ReadFile plist failed: %v", err)
 	}
 	plistText := string(plist)
-	if strings.Contains(plistText, token) {
-		t.Fatalf("plist leaked token:\n%s", plistText)
+	if strings.Contains(plistText, secret) {
+		t.Fatalf("plist leaked secret:\n%s", plistText)
 	}
 	for _, want := range []string{
 		"<key>CTR_GO_CONFIG</key>",
@@ -156,7 +157,6 @@ func TestServiceInstallForcePreservesExistingUnknownConfigKeys(t *testing.T) {
 	t.Setenv("CTR_GO_HOME", home)
 	t.Setenv("HOME", dir)
 	binary := os.Args[0]
-	token := "123456:abcdefghijklmnopqrstuvwxyz"
 	if err := os.WriteFile(configPath, []byte("CTR_GO_HOME=/custom/home\nCTR_GO_EXTRA_FLAG=yes\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile existing config failed: %v", err)
 	}
@@ -166,8 +166,8 @@ func TestServiceInstallForcePreservesExistingUnknownConfigKeys(t *testing.T) {
 		"--force",
 		"--non-interactive",
 		"--config", configPath,
-		"--telegram-bot-token", token,
-		"--allowed-user-ids", "42",
+		"--feishu-app-id", "cli_app_id",
+		"--feishu-app-secret", "secret",
 		"--default-cwd", dir,
 		"--codex-chats-root", filepath.Join(dir, "Codex"),
 		"--codex-bin", binary,
@@ -185,7 +185,7 @@ func TestServiceInstallForcePreservesExistingUnknownConfigKeys(t *testing.T) {
 	for _, want := range []string{
 		`CTR_GO_HOME="/custom/home"`,
 		`CTR_GO_EXTRA_FLAG="yes"`,
-		`CTR_GO_ALLOWED_USER_IDS="42"`,
+		`CTR_GO_FEISHU_APP_ID="cli_app_id"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("config missing preserved value %q:\n%s", want, text)
@@ -207,8 +207,8 @@ func TestServiceInstallCapturesRuntimeProxyEnvInConfig(t *testing.T) {
 		"service", "install",
 		"--non-interactive",
 		"--config", configPath,
-		"--telegram-bot-token", "123456:abcdefghijklmnopqrstuvwxyz",
-		"--allowed-user-ids", "42",
+		"--feishu-app-id", "cli_app_id",
+		"--feishu-app-secret", "secret",
 		"--default-cwd", dir,
 		"--codex-chats-root", filepath.Join(dir, "Codex"),
 		"--codex-bin", binary,
@@ -240,14 +240,13 @@ func TestServiceInstallInteractiveWizardRetriesInvalidValues(t *testing.T) {
 	t.Setenv("CTR_GO_HOME", home)
 	t.Setenv("HOME", dir)
 	binary := os.Args[0]
-	token := "123456:abcdefghijklmnopqrstuvwxyz"
+	secret := "feishu-secret-value"
 	input := strings.Join([]string{
 		"",
-		"bad-token",
-		token,
-		"abc",
-		"42",
-		"chat",
+		"cli_app_id",
+		secret,
+		"ou_1",
+		"oc_chat",
 		"",
 		dir,
 		filepath.Join(dir, "Codex"),
@@ -269,15 +268,13 @@ func TestServiceInstallInteractiveWizardRetriesInvalidValues(t *testing.T) {
 		t.Fatalf("service install wizard failed: %v", err)
 	}
 	got := out.String()
-	if strings.Contains(got, token) {
-		t.Fatalf("wizard leaked token:\n%s", got)
+	if strings.Contains(got, secret) {
+		t.Fatalf("wizard leaked secret:\n%s", got)
 	}
 	for _, want := range []string{
 		"codex-tg service setup",
-		"[1] Adapter",
-		"[2/10] Telegram bot token",
-		"Telegram bot token should look like",
-		"ids must be integers",
+		"[1/10] Feishu app id",
+		"[2/10] Feishu app secret",
 		"value must be true or false",
 		"Next steps",
 	} {
@@ -296,35 +293,9 @@ func TestServiceInstallNonInteractiveReportsMissingFlags(t *testing.T) {
 	if err == nil {
 		t.Fatal("service install succeeded, want missing values error")
 	}
-	for _, want := range []string{"--telegram-bot-token", "--allowed-user-ids"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error missing %q: %v", want, err)
-		}
-	}
-}
-
-func TestServiceInstallNonInteractiveReportsMissingFeishuFlags(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("CTR_GO_HOME", filepath.Join(dir, "home"))
-	t.Setenv("HOME", dir)
-
-	err := runWithIO([]string{
-		"service", "install",
-		"--non-interactive",
-		"--adapter", "feishu",
-		"--config", filepath.Join(dir, "config.env"),
-	}, strings.NewReader(""), io.Discard)
-	if err == nil {
-		t.Fatal("service install succeeded, want missing values error")
-	}
 	for _, want := range []string{"--feishu-app-id", "--feishu-app-secret"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error missing %q: %v", want, err)
-		}
-	}
-	for _, bad := range []string{"--telegram-bot-token", "--allowed-user-ids"} {
-		if strings.Contains(err.Error(), bad) {
-			t.Fatalf("error contains Telegram-only flag %q: %v", bad, err)
 		}
 	}
 }

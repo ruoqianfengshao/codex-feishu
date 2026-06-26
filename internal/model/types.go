@@ -47,7 +47,10 @@ const (
 type TimeString string
 
 type SendOptions struct {
-	Silent bool
+	Silent                 bool
+	FeishuReplyToMessageID int64
+	FeishuReplyInThread    bool
+	FeishuCodexThreadID    string
 }
 
 const (
@@ -256,6 +259,17 @@ type FeishuMessageMap struct {
 	OpenChatID    string
 	CreatedAt     TimeString
 	UpdatedAt     TimeString
+}
+
+type FeishuThreadTopic struct {
+	ChatID            int64
+	OpenChatID        string
+	ThreadID          string
+	RootMessageID     int64
+	RootOpenMessageID string
+	FeishuThreadID    string
+	CreatedAt         TimeString
+	UpdatedAt         TimeString
 }
 
 type DeliveryPayload struct {

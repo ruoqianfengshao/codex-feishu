@@ -25,14 +25,13 @@ import (
 	"github.com/mideco-tech/codex-tg/internal/config"
 	"github.com/mideco-tech/codex-tg/internal/daemon"
 	"github.com/mideco-tech/codex-tg/internal/feishu"
-	"github.com/mideco-tech/codex-tg/internal/telegram"
 	"github.com/mideco-tech/codex-tg/internal/version"
 )
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		log.SetOutput(os.Stderr)
-		log.Printf("ctr-go: %s", telegram.SanitizeLogError(err))
+		log.Printf("ctr-go: %s", err)
 		os.Exit(1)
 	}
 }
@@ -335,7 +334,7 @@ func validateFeishuSetupValues(values map[string]string) (map[string]string, err
 func runDaemon(cfg config.Config) error {
 	adapter := selectedAdapter(cfg)
 	if adapter == "" {
-		return errors.New("configure Telegram or Feishu credentials, or set CTR_GO_ADAPTER explicitly")
+		return errors.New("configure Feishu credentials: CTR_GO_FEISHU_APP_ID and CTR_GO_FEISHU_APP_SECRET are required; run ctr-go feishu setup")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -374,8 +373,6 @@ func newAdapterBot(cfg config.Config, service *daemon.Service, logger *log.Logge
 	switch adapter {
 	case "feishu":
 		return feishu.NewBot(cfg, service, service.Store(), logger)
-	case "telegram":
-		return telegram.NewBot(cfg, service, logger)
 	default:
 		return nil, fmt.Errorf("unsupported adapter: %s", adapter)
 	}
@@ -383,16 +380,13 @@ func newAdapterBot(cfg config.Config, service *daemon.Service, logger *log.Logge
 
 func selectedAdapter(cfg config.Config) string {
 	switch strings.TrimSpace(strings.ToLower(cfg.Adapter)) {
-	case "feishu":
+	case "", "auto", "feishu", "lark":
 		return "feishu"
-	case "telegram":
-		return "telegram"
+	case "telegram", "tg":
+		return ""
 	}
 	if strings.TrimSpace(cfg.FeishuAppID) != "" && strings.TrimSpace(cfg.FeishuAppSecret) != "" {
 		return "feishu"
-	}
-	if strings.TrimSpace(cfg.TelegramBotToken) != "" {
-		return "telegram"
 	}
 	return ""
 }
@@ -437,10 +431,7 @@ func runStatus(cfg config.Config, out io.Writer) error {
 		fmt.Sprintf("DB: %s", cfg.Paths.DBPath),
 		fmt.Sprintf("Codex bin: %s", cfg.CodexBin),
 		fmt.Sprintf("Adapter: %s", selectedAdapterLabel(cfg)),
-		fmt.Sprintf("Telegram configured: %t", strings.TrimSpace(cfg.TelegramBotToken) != ""),
 		fmt.Sprintf("Feishu configured: %t", strings.TrimSpace(cfg.FeishuAppID) != "" && strings.TrimSpace(cfg.FeishuAppSecret) != ""),
-		fmt.Sprintf("Allowed users: %s", formatIDs(cfg.AllowedUserIDs)),
-		fmt.Sprintf("Allowed chats: %s", formatIDs(cfg.AllowedChatIDs)),
 		fmt.Sprintf("Allowed Feishu open ids: %s", formatStrings(cfg.FeishuAllowedOpenIDs)),
 		fmt.Sprintf("Allowed Feishu chats: %s", formatStrings(cfg.FeishuAllowedChatIDs)),
 		fmt.Sprintf("Default cwd: %s", cfg.DefaultCWD),
@@ -469,9 +460,6 @@ func selectedAdapterLabel(cfg config.Config) string {
 	adapter := selectedAdapter(cfg)
 	if adapter == "" {
 		return "(not configured)"
-	}
-	if strings.TrimSpace(strings.ToLower(cfg.Adapter)) == "auto" || strings.TrimSpace(cfg.Adapter) == "" {
-		return adapter + " (auto)"
 	}
 	return adapter
 }
@@ -545,60 +533,32 @@ func runInit(args []string, in io.Reader, out io.Writer) error {
 
 	reader := bufio.NewReader(in)
 	_, _ = fmt.Fprintln(out, "This writes a local codex-tg config file. Keep it private.")
-	adapter, err := prompt(reader, out, "Adapter (telegram or feishu)", "telegram")
+	values := map[string]string{
+		"CTR_GO_ADAPTER": "feishu",
+	}
+	appID, err := promptRequired(reader, out, "Feishu app id")
 	if err != nil {
 		return err
 	}
-	adapter = strings.ToLower(strings.TrimSpace(adapter))
-	values := map[string]string{
-		"CTR_GO_ADAPTER": adapter,
+	appSecret, err := promptRequired(reader, out, "Feishu app secret")
+	if err != nil {
+		return err
 	}
-	switch adapter {
-	case "feishu":
-		appID, err := promptRequired(reader, out, "Feishu app id")
-		if err != nil {
-			return err
-		}
-		appSecret, err := promptRequired(reader, out, "Feishu app secret")
-		if err != nil {
-			return err
-		}
-		allowedOpenIDs, err := prompt(reader, out, "Allowed Feishu open id(s), optional", "")
-		if err != nil {
-			return err
-		}
-		allowedChats, err := prompt(reader, out, "Allowed Feishu chat id(s), optional", "")
-		if err != nil {
-			return err
-		}
-		values["CTR_GO_FEISHU_APP_ID"] = appID
-		values["CTR_GO_FEISHU_APP_SECRET"] = appSecret
-		if strings.TrimSpace(allowedOpenIDs) != "" {
-			values["CTR_GO_FEISHU_ALLOWED_OPEN_IDS"] = allowedOpenIDs
-		}
-		if strings.TrimSpace(allowedChats) != "" {
-			values["CTR_GO_FEISHU_ALLOWED_CHAT_IDS"] = allowedChats
-		}
-	case "telegram":
-		token, err := promptRequired(reader, out, "Telegram bot token")
-		if err != nil {
-			return err
-		}
-		allowedUsers, err := promptRequired(reader, out, "Allowed Telegram user id(s)")
-		if err != nil {
-			return err
-		}
-		allowedChats, err := prompt(reader, out, "Allowed Telegram chat id(s), optional", "")
-		if err != nil {
-			return err
-		}
-		values["CTR_GO_TELEGRAM_BOT_TOKEN"] = token
-		values["CTR_GO_ALLOWED_USER_IDS"] = allowedUsers
-		if strings.TrimSpace(allowedChats) != "" {
-			values["CTR_GO_ALLOWED_CHAT_IDS"] = allowedChats
-		}
-	default:
-		return fmt.Errorf("unsupported adapter %q; use telegram or feishu", adapter)
+	allowedOpenIDs, err := prompt(reader, out, "Allowed Feishu open id(s), optional", "")
+	if err != nil {
+		return err
+	}
+	allowedChats, err := prompt(reader, out, "Allowed Feishu chat id(s), optional", "")
+	if err != nil {
+		return err
+	}
+	values["CTR_GO_FEISHU_APP_ID"] = appID
+	values["CTR_GO_FEISHU_APP_SECRET"] = appSecret
+	if strings.TrimSpace(allowedOpenIDs) != "" {
+		values["CTR_GO_FEISHU_ALLOWED_OPEN_IDS"] = allowedOpenIDs
+	}
+	if strings.TrimSpace(allowedChats) != "" {
+		values["CTR_GO_FEISHU_ALLOWED_CHAT_IDS"] = allowedChats
 	}
 	defaultCWD, err := prompt(reader, out, "Default cwd", cwd)
 	if err != nil {

@@ -468,6 +468,62 @@ func TestThreadsCommandHidesInternalSubAgentThreads(t *testing.T) {
 	}
 }
 
+func TestFeishuShowThreadCallbackReturnsVisibleOpenResponse(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingThreadTopicSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "thread-feishu-open",
+		Title:       "Feishu Open",
+		ProjectName: "Codex",
+		UpdatedAt:   time.Now().UTC().Unix(),
+		Raw:         json.RawMessage(`{"id":"thread-feishu-open"}`),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	snapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-open",
+		LatestTurnStatus: "completed",
+		LatestFinalFP:    "final-open",
+		LatestFinalText:  "Done.",
+	}, time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	token := service.callbackButton(ctx, "Open 1", "show_thread", thread.ID, "", "", nil).CallbackData
+
+	telegramResponse, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, token, model.PanelSourceTelegramInput)
+	if err != nil {
+		t.Fatalf("HandleCallbackFromSource(telegram) failed: %v", err)
+	}
+	if telegramResponse == nil || strings.TrimSpace(telegramResponse.Text) != "" {
+		t.Fatalf("telegramResponse = %#v, want legacy empty text response", telegramResponse)
+	}
+
+	feishuResponse, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, token, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("HandleCallbackFromSource(feishu) failed: %v", err)
+	}
+	if feishuResponse == nil || !strings.Contains(feishuResponse.Text, "已打开会话") || !strings.Contains(feishuResponse.Text, thread.ID) {
+		t.Fatalf("feishuResponse = %#v, want visible open response", feishuResponse)
+	}
+	if sender.topic == nil || sender.topic.ThreadID != thread.ID || sender.topic.RootMessageID == 0 {
+		t.Fatalf("sender.topic = %#v, want Feishu topic for opened thread", sender.topic)
+	}
+	panel, err := service.store.GetCurrentThreadPanel(ctx, 123456789, 0, thread.ID)
+	if err != nil {
+		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
+	}
+	if panel == nil || panel.SourceMode != model.PanelSourceFeishuInput {
+		t.Fatalf("panel = %#v, want feishu_input panel", panel)
+	}
+}
+
 func TestProjectsCommandShowsProjectButtonsGroupedByCWD(t *testing.T) {
 	t.Parallel()
 
@@ -2140,12 +2196,15 @@ func TestPollTrackedSyncsFirstSeenRecentTerminalCatchup(t *testing.T) {
 
 	service.pollTracked(ctx)
 
-	if len(sender.messages) != 4 {
-		t.Fatalf("message count = %d, want 3 live trio messages plus Final for first-seen terminal catchup; messages=%#v", len(sender.messages), sender.messages)
+	if len(sender.messages) != 2 {
+		t.Fatalf("message count = %d, want live summary plus Final for first-seen terminal catchup; messages=%#v", len(sender.messages), sender.messages)
 	}
 	foundFinal := false
 	for _, message := range sender.messages {
-		if hasHeaderKind(message.text, "Final") && strings.Contains(message.text, "[Codex]") && strings.Contains(message.text, "[Catchup terminal]") && strings.Contains(message.text, "CATCHUP_OK") {
+		if hasHeaderKind(message.text, "Final") && strings.Contains(message.text, "[Catchup terminal]") && strings.Contains(message.text, "CATCHUP_OK") {
+			if !strings.Contains(message.text, "[Codex]") {
+				t.Fatalf("final message = %q, want project segment", message.text)
+			}
 			if message.options.Silent {
 				t.Fatalf("final message = %#v, want audible Final", message)
 			}
@@ -2156,8 +2215,8 @@ func TestPollTrackedSyncsFirstSeenRecentTerminalCatchup(t *testing.T) {
 	if !foundFinal {
 		t.Fatalf("final card message not found: %#v", sender.messages)
 	}
-	if len(sender.deletes) != 3 {
-		t.Fatalf("deletes = %#v, want commentary/tool/output cleanup after final", sender.deletes)
+	if len(sender.deletes) != 1 {
+		t.Fatalf("deletes = %#v, want live summary cleanup after final", sender.deletes)
 	}
 }
 
@@ -3284,7 +3343,7 @@ func TestFeishuInputStartsDesktopTurnWhenReplySteerFindsNoActiveTurn(t *testing.
 	service.live = stub
 	service.liveConnected = true
 	desktop := &stubDesktopInputDispatcher{
-		steerErr: fmt.Errorf("no active turn to steer"),
+		steerErr: fmt.Errorf("SteerTurnInactiveError: Cannot steer conversation 01900000-0000-7000-8000-000000000205 because its active turn already ended"),
 		startResult: map[string]any{
 			"result": map[string]any{"turn": map[string]any{"id": "desktop-reply-start"}},
 		},

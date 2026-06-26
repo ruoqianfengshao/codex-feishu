@@ -217,6 +217,26 @@ func (s *Store) ListCurrentPanelsForThread(ctx context.Context, threadID string)
 	return panels, rows.Err()
 }
 
+func (s *Store) SupersedeCurrentThreadPanelsExcept(ctx context.Context, threadID string, keepChatID, keepTopicID int64) error {
+	_, err := s.db.ExecContext(ctx, `
+	UPDATE thread_panels
+	SET is_current = 0, updated_at = ?
+	WHERE thread_id = ? AND is_current = 1 AND NOT (chat_id = ? AND topic_id = ?)`,
+		string(model.NowString()), strings.TrimSpace(threadID), keepChatID, keepTopicID,
+	)
+	return err
+}
+
+func (s *Store) SupersedeThreadPanel(ctx context.Context, panelID int64) error {
+	_, err := s.db.ExecContext(ctx, `
+	UPDATE thread_panels
+	SET is_current = 0, updated_at = ?
+	WHERE id = ?`,
+		string(model.NowString()), panelID,
+	)
+	return err
+}
+
 func (s *Store) UpdateThreadPanelMessages(ctx context.Context, panelID, summaryMessageID, toolMessageID, outputMessageID int64) error {
 	_, err := s.db.ExecContext(ctx, `
 	UPDATE thread_panels

@@ -18,11 +18,8 @@ func TestFromEnvPrefersGoScopedEnvVars(t *testing.T) {
 	t.Setenv("CTR_GO_HOME", `C:\tmp\ctr-go`)
 	t.Setenv("CTR_GO_CODEX_BIN", `C:\tools\codex.exe`)
 	t.Setenv("CTR_GO_APP_SERVER_LISTEN", "stdio://")
-	t.Setenv("CTR_GO_TELEGRAM_BOT_TOKEN", "go-token")
-	t.Setenv("CTR_TELEGRAM_BOT_TOKEN", "legacy-token")
-	t.Setenv("CTR_GO_ALLOWED_USER_IDS", "1,2")
-	t.Setenv("CTR_ALLOWED_USER_IDS", "99")
-	t.Setenv("CTR_GO_ALLOWED_CHAT_IDS", "10 20")
+	t.Setenv("CTR_GO_NUMERIC_ALLOWED_USER_IDS", "1,2")
+	t.Setenv("CTR_GO_NUMERIC_ALLOWED_CHAT_IDS", "10 20")
 	t.Setenv("CTR_GO_DEFAULT_CWD", `C:\workspace`)
 	t.Setenv("CTR_GO_LOG_ENABLED", "off")
 	t.Setenv("CTR_GO_DIAGNOSTIC_LOGS", "no")
@@ -44,9 +41,6 @@ func TestFromEnvPrefersGoScopedEnvVars(t *testing.T) {
 	}
 	if got, want := cfg.CodexBin, `C:\tools\codex.exe`; got != want {
 		t.Fatalf("CodexBin = %q, want %q", got, want)
-	}
-	if got, want := cfg.TelegramBotToken, "go-token"; got != want {
-		t.Fatalf("TelegramBotToken = %q, want %q", got, want)
 	}
 	if got := cfg.AllowedUserIDs; len(got) != 2 || got[0] != 1 || got[1] != 2 {
 		t.Fatalf("AllowedUserIDs = %#v, want [1 2]", got)
@@ -152,20 +146,13 @@ func TestFromEnvInvalidLoggingFlagsFallBackToEnabled(t *testing.T) {
 	}
 }
 
-func TestFromEnvFallsBackToLegacyTelegramVariables(t *testing.T) {
+func TestFromEnvReadsNumericAllowlistVariables(t *testing.T) {
 	isolateLocalConfig(t)
-	t.Setenv("CTR_GO_TELEGRAM_BOT_TOKEN", "")
-	t.Setenv("CTR_TELEGRAM_BOT_TOKEN", "legacy-token")
-	t.Setenv("CTR_GO_ALLOWED_USER_IDS", "")
-	t.Setenv("CTR_ALLOWED_USER_IDS", "123456789")
-	t.Setenv("CTR_GO_ALLOWED_CHAT_IDS", "")
-	t.Setenv("CTR_ALLOWED_CHAT_IDS", "123456789")
+	t.Setenv("CTR_GO_NUMERIC_ALLOWED_USER_IDS", "123456789")
+	t.Setenv("CTR_GO_NUMERIC_ALLOWED_CHAT_IDS", "123456789")
 
 	cfg := config.FromEnv()
 
-	if got, want := cfg.TelegramBotToken, "legacy-token"; got != want {
-		t.Fatalf("TelegramBotToken = %q, want %q", got, want)
-	}
 	if got := cfg.AllowedUserIDs; len(got) != 1 || got[0] != 123456789 {
 		t.Fatalf("AllowedUserIDs = %#v, want [123456789]", got)
 	}

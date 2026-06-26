@@ -81,7 +81,6 @@ func (s *Service) renderFinalCard(ctx context.Context, panelID int64, thread mod
 		},
 		{
 			s.callbackButton(ctx, "Show", "show_thread", thread.ID, snapshot.LatestTurnID, "", nil),
-			s.callbackButton(ctx, "Bind here", "bind_here", thread.ID, snapshot.LatestTurnID, "", nil),
 		},
 	}
 	if s.finalCardShouldShowTurnOffPlan(ctx, thread.ID, snapshot) {
@@ -378,7 +377,7 @@ func (s *Service) sendDetailsToolsFile(ctx context.Context, chatID, topicID, cal
 	if index == 0 {
 		index = 1
 	}
-	body := buildDetailsToolsText(*thread, snapshot, index)
+	body := s.buildDetailsToolsText(*thread, snapshot, index)
 	if strings.TrimSpace(body) == "" {
 		return &DirectResponse{CallbackText: "No related tool/output entries."}, nil
 	}
@@ -437,14 +436,14 @@ type detailSection struct {
 	ToolOnly        bool
 }
 
-func buildDetailsToolsText(thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sectionIndex int) string {
+func (s *Service) buildDetailsToolsText(thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sectionIndex int) string {
 	sections := detailSections(snapshot)
 	if sectionIndex < 1 || sectionIndex > len(sections) {
 		return ""
 	}
 	section := sections[sectionIndex-1]
 	lines := []string{
-		visualFileHeader(thread, snapshot.LatestTurnID, "Details tools"),
+		s.visualFileHeader(thread, snapshot.LatestTurnID, "Details tools"),
 		section.Title,
 	}
 	if text := strings.TrimSpace(cleanTelegramNilLiteral(section.Text)); text != "" {

@@ -32,14 +32,18 @@ type visualMarkerAssignment struct {
 
 func (s *Service) visualHeader(ctx context.Context, kind string, thread model.Thread, turnID string) string {
 	marker := s.visualMarker(ctx, thread.ID)
-	project := compactVisualLabel(firstNonEmpty(thread.ProjectName, "Project"), visualProjectMaxRunes)
+	project := s.visualProjectLabel(thread)
 	title := compactVisualLabel(firstNonEmpty(thread.Title, thread.ShortID()), visualThreadMaxRunes)
 	parts := []string{
 		marker,
-		fmt.Sprintf("[%s]", project),
+	}
+	if project != "" {
+		parts = append(parts, fmt.Sprintf("[%s]", project))
+	}
+	parts = append(parts,
 		fmt.Sprintf("[%s]", title),
 		fmt.Sprintf("[T:%s]", visualShortID(thread.ID)),
-	}
+	)
 	if shortTurnID := visualShortID(turnID); shortTurnID != "" {
 		parts = append(parts, fmt.Sprintf("[R:%s]", shortTurnID))
 	}
@@ -49,16 +53,20 @@ func (s *Service) visualHeader(ctx context.Context, kind string, thread model.Th
 	return strings.Join(parts, " ")
 }
 
-func visualFileHeader(thread model.Thread, turnID, kind string) string {
+func (s *Service) visualFileHeader(thread model.Thread, turnID, kind string) string {
 	marker := visualMarkerPalette[visualHashIndex(thread.ID, len(visualMarkerPalette))]
-	project := compactVisualLabel(firstNonEmpty(thread.ProjectName, "Project"), visualProjectMaxRunes)
+	project := s.visualProjectLabel(thread)
 	title := compactVisualLabel(firstNonEmpty(thread.Title, thread.ShortID()), visualThreadMaxRunes)
 	parts := []string{
 		marker,
-		fmt.Sprintf("[%s]", project),
+	}
+	if project != "" {
+		parts = append(parts, fmt.Sprintf("[%s]", project))
+	}
+	parts = append(parts,
 		fmt.Sprintf("[%s]", title),
 		fmt.Sprintf("[T:%s]", visualShortID(thread.ID)),
-	}
+	)
 	if shortTurnID := visualShortID(turnID); shortTurnID != "" {
 		parts = append(parts, fmt.Sprintf("[R:%s]", shortTurnID))
 	}
@@ -70,19 +78,34 @@ func visualFileHeader(thread model.Thread, turnID, kind string) string {
 
 func (s *Service) visualDividerText(ctx context.Context, thread model.Thread, turnID string) string {
 	marker := s.visualMarker(ctx, thread.ID)
-	project := compactVisualLabel(firstNonEmpty(thread.ProjectName, "Project"), visualProjectMaxRunes)
+	project := s.visualProjectLabel(thread)
 	title := compactVisualLabel(firstNonEmpty(thread.Title, thread.ShortID()), visualThreadMaxRunes)
 	parts := []string{
 		marker,
 		"New run:",
-		fmt.Sprintf("[%s]", project),
+	}
+	if project != "" {
+		parts = append(parts, fmt.Sprintf("[%s]", project))
+	}
+	parts = append(parts,
 		fmt.Sprintf("[%s]", title),
 		fmt.Sprintf("[T:%s]", visualShortID(thread.ID)),
-	}
+	)
 	if shortTurnID := visualShortID(turnID); shortTurnID != "" {
 		parts = append(parts, fmt.Sprintf("[R:%s]", shortTurnID))
 	}
 	return strings.Join(parts, " ")
+}
+
+func (s *Service) visualProjectLabel(thread model.Thread) string {
+	if s.isCodexChatThread(thread) {
+		return ""
+	}
+	project := strings.TrimSpace(thread.ProjectName)
+	if project == "" || strings.EqualFold(project, "Project") || strings.EqualFold(project, "Shared/General") || strings.EqualFold(project, chatsProjectName) {
+		return ""
+	}
+	return compactVisualLabel(project, visualProjectMaxRunes)
 }
 
 func (s *Service) visualMarker(ctx context.Context, threadID string) string {

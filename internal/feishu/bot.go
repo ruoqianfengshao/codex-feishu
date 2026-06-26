@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 
+	"github.com/mideco-tech/codex-tg/internal/appserver"
 	"github.com/mideco-tech/codex-tg/internal/config"
 	"github.com/mideco-tech/codex-tg/internal/daemon"
 	"github.com/mideco-tech/codex-tg/internal/model"
@@ -26,6 +29,8 @@ const (
 	namespaceChat    = "feishu.chat"
 	namespaceMessage = "feishu.message"
 	namespaceUser    = "feishu.user"
+
+	feishuControlRoomName = "Codex 控制室"
 )
 
 type Bot struct {
@@ -104,9 +109,9 @@ func (b *Bot) SendMessage(ctx context.Context, chatID, topicID int64, text strin
 		var id int64
 		var err error
 		if index == len(chunks)-1 && len(buttons) > 0 {
-			id, err = b.sendCard(ctx, chatID, chunk, buttons)
+			id, err = b.sendCardWithOptions(ctx, chatID, chunk, buttons, options)
 		} else {
-			id, err = b.sendMarkdown(ctx, chatID, chunk)
+			id, err = b.sendMarkdownWithOptions(ctx, chatID, chunk, options)
 		}
 		if err != nil {
 			return 0, err
@@ -128,9 +133,9 @@ func (b *Bot) SendRenderedMessages(ctx context.Context, chatID, topicID int64, m
 		var id int64
 		var err error
 		if index == len(messages)-1 && len(buttons) > 0 {
-			id, err = b.sendRenderedCard(ctx, chatID, message, buttons)
+			id, err = b.sendRenderedCardWithOptions(ctx, chatID, message, buttons, options)
 		} else {
-			id, err = b.sendRenderedCard(ctx, chatID, message, nil)
+			id, err = b.sendRenderedCardWithOptions(ctx, chatID, message, nil, options)
 		}
 		if err != nil {
 			return nil, err
@@ -175,16 +180,7 @@ func (b *Bot) EditRenderedMessage(ctx context.Context, chatID, topicID, messageI
 }
 
 func (b *Bot) DeleteMessage(ctx context.Context, chatID, topicID, messageID int64) error {
-	mapped, err := b.store.GetFeishuMessageByNumericID(ctx, messageID)
-	if err != nil {
-		return err
-	}
-	if mapped == nil {
-		return nil
-	}
-	deleteCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	return b.api.Delete(deleteCtx, mapped.OpenMessageID)
+	return nil
 }
 
 func (b *Bot) SendDocumentData(ctx context.Context, chatID, topicID int64, fileName string, data []byte, caption string, options model.SendOptions) (int64, error) {
@@ -201,7 +197,7 @@ func (b *Bot) SendDocumentData(ctx context.Context, chatID, topicID int64, fileN
 		return 0, errors.New("feishu upload file did not return file key")
 	}
 	if strings.TrimSpace(caption) != "" {
-		if _, err := b.sendMarkdown(ctx, chatID, strings.TrimSpace(caption)); err != nil {
+		if _, err := b.sendMarkdownWithOptions(ctx, chatID, strings.TrimSpace(caption), options); err != nil {
 			return 0, err
 		}
 	}
@@ -209,7 +205,236 @@ func (b *Bot) SendDocumentData(ctx context.Context, chatID, topicID int64, fileN
 	if err != nil {
 		return 0, err
 	}
-	return b.send(ctx, chatID, "file", content)
+	return b.sendWithOptions(ctx, chatID, "file", content, options)
+}
+
+func (b *Bot) EnsureThreadTopic(ctx context.Context, chatID int64, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) (*model.FeishuThreadTopic, error) {
+	threadID := strings.TrimSpace(thread.ID)
+	if threadID == "" {
+		return nil, nil
+	}
+	sourceChatID := chatID
+	targetChatID, err := b.threadTopicChatID(ctx, chatID)
+	if err != nil {
+		return nil, err
+	}
+	chatID = targetChatID
+	if existing, err := b.store.GetFeishuThreadTopicByCodexThread(ctx, chatID, threadID); err != nil || existing != nil {
+		if err != nil || existing == nil {
+			return existing, err
+		}
+		if existing.RootMessageID == 0 {
+			return existing, nil
+		}
+		if err := b.activateThreadTopic(ctx, sourceChatID, chatID, threadID, existing, sourceMode); err != nil {
+			return nil, err
+		}
+		return b.store.GetFeishuThreadTopicByCodexThread(ctx, chatID, threadID)
+	}
+	openChatID, err := b.store.ExternalIDForNumeric(ctx, namespaceChat, chatID)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(openChatID) == "" {
+		return nil, fmt.Errorf("feishu chat mapping not found: %d", chatID)
+	}
+	text := renderThreadTopicRootText(thread, snapshot, sourceMode)
+	rootMessageID, err := b.sendCard(ctx, chatID, text, nil)
+	if err != nil {
+		return nil, err
+	}
+	if rootMessageID == 0 {
+		return nil, nil
+	}
+	mapped, err := b.store.GetFeishuMessageByNumericID(ctx, rootMessageID)
+	if err != nil {
+		return nil, err
+	}
+	if mapped == nil {
+		return nil, fmt.Errorf("feishu root message route not found: %d", rootMessageID)
+	}
+	topic := model.FeishuThreadTopic{
+		ChatID:            chatID,
+		OpenChatID:        firstNonEmptyString(mapped.OpenChatID, openChatID),
+		ThreadID:          threadID,
+		RootMessageID:     rootMessageID,
+		RootOpenMessageID: mapped.OpenMessageID,
+		FeishuThreadID:    "",
+	}
+	if err := b.store.UpsertFeishuThreadTopic(ctx, topic); err != nil {
+		return nil, err
+	}
+	stored, err := b.store.GetFeishuThreadTopicByCodexThread(ctx, chatID, threadID)
+	if err != nil {
+		return nil, err
+	}
+	if err := b.activateThreadTopic(ctx, sourceChatID, chatID, threadID, stored, sourceMode); err != nil {
+		return nil, err
+	}
+	return b.store.GetFeishuThreadTopicByCodexThread(ctx, chatID, threadID)
+}
+
+func (b *Bot) ResolveThreadTopicTarget(ctx context.Context, chatID int64) (int64, error) {
+	return b.threadTopicChatID(ctx, chatID)
+}
+
+func (b *Bot) activateThreadTopic(ctx context.Context, sourceChatID, topicChatID int64, threadID string, topic *model.FeishuThreadTopic, sourceMode string) error {
+	if sourceMode != model.PanelSourceFeishuInput || topic == nil || topic.RootMessageID == 0 {
+		return nil
+	}
+	activated, err := b.store.GetState(ctx, feishuThreadTopicActivatedKey(topicChatID, threadID))
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(activated) != "" {
+		return nil
+	}
+	content, err := encodeTextContent(b.threadTopicActivationText(ctx, sourceChatID, topicChatID))
+	if err != nil {
+		return err
+	}
+	_, err = b.sendWithOptions(ctx, topicChatID, "text", content, model.SendOptions{
+		FeishuReplyToMessageID: topic.RootMessageID,
+		FeishuReplyInThread:    true,
+		FeishuCodexThreadID:    threadID,
+	})
+	if err != nil {
+		return err
+	}
+	return b.store.SetState(ctx, feishuThreadTopicActivatedKey(topicChatID, threadID), "1")
+}
+
+func (b *Bot) threadTopicActivationText(ctx context.Context, sourceChatID, topicChatID int64) string {
+	openUserID, _ := b.store.GetState(ctx, feishuControlUserKey(sourceChatID))
+	if strings.TrimSpace(openUserID) == "" && sourceChatID != topicChatID {
+		openUserID, _ = b.store.GetState(ctx, feishuControlUserKey(topicChatID))
+	}
+	if strings.TrimSpace(openUserID) == "" {
+		return "已打开会话"
+	}
+	return fmt.Sprintf(`<at user_id="%s">你</at> 已打开会话`, strings.TrimSpace(openUserID))
+}
+
+func (b *Bot) threadTopicChatID(ctx context.Context, chatID int64) (int64, error) {
+	openChatID, err := b.store.ExternalIDForNumeric(ctx, namespaceChat, chatID)
+	if err != nil {
+		return 0, err
+	}
+	if strings.TrimSpace(openChatID) == "" {
+		return 0, fmt.Errorf("feishu chat mapping not found: %d", chatID)
+	}
+	isP2P := strings.HasPrefix(openChatID, "p2p:")
+	if !isP2P {
+		chatMode, err := b.chatMode(ctx, chatID)
+		if err != nil {
+			return 0, err
+		}
+		if chatMode == "" {
+			infoCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			info, getErr := b.api.GetChat(infoCtx, openChatID)
+			cancel()
+			if getErr != nil {
+				return chatID, nil
+			}
+			chatMode = normalizeChatMode(info.ChatMode)
+			if err := b.rememberChatMode(ctx, chatID, chatMode); err != nil {
+				return 0, err
+			}
+		}
+		isP2P = chatMode == "p2p"
+	}
+	if !isP2P {
+		return chatID, nil
+	}
+	openUserID, err := b.controlRoomUserOpenID(ctx, chatID, openChatID)
+	if err != nil {
+		return 0, err
+	}
+	return b.ensureControlRoom(ctx, chatID, openUserID)
+}
+
+func (b *Bot) controlRoomUserOpenID(ctx context.Context, chatID int64, openChatID string) (string, error) {
+	if strings.HasPrefix(openChatID, "p2p:") {
+		return strings.TrimSpace(strings.TrimPrefix(openChatID, "p2p:")), nil
+	}
+	openUserID, err := b.store.GetState(ctx, feishuControlUserKey(chatID))
+	if err != nil {
+		return "", err
+	}
+	openUserID = strings.TrimSpace(openUserID)
+	if openUserID == "" {
+		return "", fmt.Errorf("feishu p2p operator is not known for chat %d; send any message to the bot first", chatID)
+	}
+	return openUserID, nil
+}
+
+func (b *Bot) ensureControlRoom(ctx context.Context, p2pChatID int64, openUserID string) (int64, error) {
+	openUserID = strings.TrimSpace(openUserID)
+	if openUserID == "" {
+		return 0, errors.New("feishu control room user open_id is empty")
+	}
+	key := feishuControlRoomKey(p2pChatID)
+	if existing, err := b.store.GetState(ctx, key); err != nil {
+		return 0, err
+	} else if strings.TrimSpace(existing) != "" {
+		roomChatID, resolveErr := b.store.ResolveExternalID(ctx, namespaceChat, strings.TrimSpace(existing))
+		if resolveErr != nil {
+			return 0, resolveErr
+		}
+		if err := b.rememberControlRoomSource(ctx, strings.TrimSpace(existing), p2pChatID); err != nil {
+			return 0, err
+		}
+		return roomChatID, nil
+	}
+	createCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	openChatID, err := b.api.CreateThreadRoom(createCtx, feishuControlRoomName, []string{openUserID}, b.cfg.FeishuAppID, feishuControlRoomUUID(openUserID))
+	cancel()
+	if err != nil {
+		return 0, err
+	}
+	openChatID = strings.TrimSpace(openChatID)
+	if openChatID == "" {
+		return 0, errors.New("feishu create control room did not return chat id")
+	}
+	roomChatID, err := b.store.ResolveExternalID(ctx, namespaceChat, openChatID)
+	if err != nil {
+		return 0, err
+	}
+	if err := b.store.SetState(ctx, key, openChatID); err != nil {
+		return 0, err
+	}
+	if err := b.rememberControlRoomSource(ctx, openChatID, p2pChatID); err != nil {
+		return 0, err
+	}
+	return roomChatID, nil
+}
+
+func (b *Bot) rememberChatMode(ctx context.Context, chatID int64, mode string) error {
+	mode = normalizeChatMode(mode)
+	if chatID == 0 || mode == "" {
+		return nil
+	}
+	return b.store.SetState(ctx, feishuChatModeKey(chatID), mode)
+}
+
+func (b *Bot) chatMode(ctx context.Context, chatID int64) (string, error) {
+	mode, err := b.store.GetState(ctx, feishuChatModeKey(chatID))
+	if err != nil {
+		return "", err
+	}
+	return normalizeChatMode(mode), nil
+}
+
+func (b *Bot) rememberControlRoomSource(ctx context.Context, roomOpenChatID string, p2pChatID int64) error {
+	sourceOpenChatID, err := b.store.ExternalIDForNumeric(ctx, namespaceChat, p2pChatID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(roomOpenChatID) == "" || strings.TrimSpace(sourceOpenChatID) == "" {
+		return nil
+	}
+	value := fmt.Sprintf("%d|%s", p2pChatID, strings.TrimSpace(sourceOpenChatID))
+	return b.store.SetState(ctx, feishuControlRoomSourceKey(roomOpenChatID), value)
 }
 
 func (b *Bot) sendText(ctx context.Context, chatID int64, text string) (int64, error) {
@@ -221,22 +446,34 @@ func (b *Bot) sendText(ctx context.Context, chatID int64, text string) (int64, e
 }
 
 func (b *Bot) sendMarkdown(ctx context.Context, chatID int64, text string) (int64, error) {
-	return b.sendCard(ctx, chatID, text, nil)
+	return b.sendMarkdownWithOptions(ctx, chatID, text, model.SendOptions{})
+}
+
+func (b *Bot) sendMarkdownWithOptions(ctx context.Context, chatID int64, text string, options model.SendOptions) (int64, error) {
+	return b.sendCardWithOptions(ctx, chatID, text, nil, options)
 }
 
 func (b *Bot) sendCard(ctx context.Context, chatID int64, text string, buttons [][]model.ButtonSpec) (int64, error) {
+	return b.sendCardWithOptions(ctx, chatID, text, buttons, model.SendOptions{})
+}
+
+func (b *Bot) sendCardWithOptions(ctx context.Context, chatID int64, text string, buttons [][]model.ButtonSpec, options model.SendOptions) (int64, error) {
 	card, err := buildCard(text, buttons)
 	if err != nil {
 		content, contentErr := encodeTextContent(text)
 		if contentErr != nil {
 			return 0, errors.Join(err, contentErr)
 		}
-		return b.send(ctx, chatID, "text", content)
+		return b.sendWithOptions(ctx, chatID, "text", content, options)
 	}
-	return b.send(ctx, chatID, "interactive", card)
+	return b.sendWithOptions(ctx, chatID, "interactive", card, options)
 }
 
 func (b *Bot) sendRenderedCard(ctx context.Context, chatID int64, message model.RenderedMessage, buttons [][]model.ButtonSpec) (int64, error) {
+	return b.sendRenderedCardWithOptions(ctx, chatID, message, buttons, model.SendOptions{})
+}
+
+func (b *Bot) sendRenderedCardWithOptions(ctx context.Context, chatID int64, message model.RenderedMessage, buttons [][]model.ButtonSpec, options model.SendOptions) (int64, error) {
 	card, err := buildRenderedCard(message, buttons)
 	if err != nil {
 		text := renderPlainText(message)
@@ -247,9 +484,9 @@ func (b *Bot) sendRenderedCard(ctx context.Context, chatID int64, message model.
 		if contentErr != nil {
 			return 0, errors.Join(err, contentErr)
 		}
-		return b.send(ctx, chatID, "text", content)
+		return b.sendWithOptions(ctx, chatID, "text", content, options)
 	}
-	return b.send(ctx, chatID, "interactive", card)
+	return b.sendWithOptions(ctx, chatID, "interactive", card, options)
 }
 
 func (b *Bot) sendSectionedCard(ctx context.Context, chatID int64, sections []model.MessageSection) (int64, error) {
@@ -261,6 +498,10 @@ func (b *Bot) sendSectionedCard(ctx context.Context, chatID int64, sections []mo
 }
 
 func (b *Bot) send(ctx context.Context, chatID int64, msgType, content string) (int64, error) {
+	return b.sendWithOptions(ctx, chatID, msgType, content, model.SendOptions{})
+}
+
+func (b *Bot) sendWithOptions(ctx context.Context, chatID int64, msgType, content string, options model.SendOptions) (int64, error) {
 	openChatID, err := b.store.ExternalIDForNumeric(ctx, namespaceChat, chatID)
 	if err != nil {
 		return 0, err
@@ -269,7 +510,22 @@ func (b *Bot) send(ctx context.Context, chatID int64, msgType, content string) (
 		return 0, fmt.Errorf("feishu chat mapping not found: %d", chatID)
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	sent, err := b.api.Send(sendCtx, openChatID, msgType, content)
+	var sent sentMessage
+	if options.FeishuReplyToMessageID != 0 {
+		var root *model.FeishuMessageMap
+		root, err = b.store.GetFeishuMessageByNumericID(ctx, options.FeishuReplyToMessageID)
+		if err != nil {
+			cancel()
+			return 0, err
+		}
+		if root == nil || strings.TrimSpace(root.OpenMessageID) == "" {
+			cancel()
+			return 0, fmt.Errorf("feishu reply root not found: %d", options.FeishuReplyToMessageID)
+		}
+		sent, err = b.api.Reply(sendCtx, root.OpenMessageID, msgType, content, options.FeishuReplyInThread)
+	} else {
+		sent, err = b.api.Send(sendCtx, openChatID, msgType, content)
+	}
 	cancel()
 	if err != nil {
 		return 0, err
@@ -288,6 +544,29 @@ func (b *Bot) send(ctx context.Context, chatID int64, msgType, content string) (
 	}
 	if err := b.store.PutFeishuMessageMap(ctx, messageID, openMessageID, chatID, mappedOpenChatID); err != nil {
 		return 0, err
+	}
+	if options.FeishuReplyToMessageID != 0 && strings.TrimSpace(options.FeishuCodexThreadID) != "" {
+		root, err := b.store.GetFeishuMessageByNumericID(ctx, options.FeishuReplyToMessageID)
+		if err != nil {
+			return 0, err
+		}
+		if root != nil {
+			feishuThreadID := strings.TrimSpace(sent.ThreadID)
+			if feishuThreadID == "" {
+				existing, _ := b.store.GetFeishuThreadTopicByCodexThread(ctx, chatID, options.FeishuCodexThreadID)
+				if existing != nil {
+					feishuThreadID = existing.FeishuThreadID
+				}
+			}
+			_ = b.store.UpsertFeishuThreadTopic(ctx, model.FeishuThreadTopic{
+				ChatID:            chatID,
+				OpenChatID:        firstNonEmptyString(root.OpenChatID, openChatID, mappedOpenChatID),
+				ThreadID:          options.FeishuCodexThreadID,
+				RootMessageID:     options.FeishuReplyToMessageID,
+				RootOpenMessageID: root.OpenMessageID,
+				FeishuThreadID:    feishuThreadID,
+			})
+		}
 	}
 	return messageID, nil
 }
@@ -319,6 +598,12 @@ func (b *Bot) handleMessageEvent(ctx context.Context, event *larkim.P2MessageRec
 	if err := b.store.PutFeishuMessageMap(ctx, messageID, openMessageID, chatID, openChatID); err != nil {
 		return err
 	}
+	if err := b.store.SetState(ctx, feishuControlUserKey(chatID), openUserID); err != nil {
+		return err
+	}
+	if err := b.rememberChatMode(ctx, chatID, value(message.ChatType)); err != nil {
+		return err
+	}
 	replyTo, _ := b.replyToMessageID(ctx, message)
 	b.logInboundMessage(message, chatID, messageID, userID, replyTo, text)
 	claimKey := feishuInboundClaimKey(openMessageID)
@@ -332,6 +617,9 @@ func (b *Bot) handleMessageEvent(ctx context.Context, event *larkim.P2MessageRec
 	}
 	if !b.isAllowed(openUserID, openChatID, userID, chatID) {
 		return b.sendFailureMessage(ctx, chatID, "This Feishu user or chat is not allowed to control codex-tg.")
+	}
+	if replyTo == 0 && isFeishuGroupMessage(message) && !isFeishuCommand(text) {
+		return nil
 	}
 	response, err := b.service.HandleMessageFromSource(ctx, chatID, 0, userID, text, replyTo, model.PanelSourceFeishuInput)
 	if err != nil {
@@ -356,6 +644,12 @@ func (b *Bot) handleBotMenu(ctx context.Context, event *larkapplication.P2BotMen
 	}
 	chatID, err := b.store.ResolveExternalID(ctx, namespaceChat, "p2p:"+openUserID)
 	if err != nil {
+		return err
+	}
+	if err := b.store.SetState(ctx, feishuControlUserKey(chatID), openUserID); err != nil {
+		return err
+	}
+	if err := b.rememberChatMode(ctx, chatID, "p2p"); err != nil {
 		return err
 	}
 	if !b.isBotMenuAllowed(openUserID, userID) {
@@ -393,6 +687,14 @@ func (b *Bot) handleCardAction(ctx context.Context, event *callback.CardActionTr
 	if err := b.store.PutFeishuMessageMap(ctx, messageID, openMessageID, chatID, openChatID); err != nil {
 		return nil, err
 	}
+	if err := b.store.SetState(ctx, feishuControlUserKey(chatID), openUserID); err != nil {
+		return nil, err
+	}
+	if info, err := b.api.GetChat(ctx, openChatID); err == nil && normalizeChatMode(info.ChatMode) == "p2p" {
+		if err := b.rememberChatMode(ctx, chatID, info.ChatMode); err != nil {
+			return nil, err
+		}
+	}
 	if !b.isAllowed(openUserID, openChatID, userID, chatID) {
 		return toast("Not allowed."), nil
 	}
@@ -415,6 +717,12 @@ func (b *Bot) handleCardAction(ctx context.Context, event *callback.CardActionTr
 }
 
 func (b *Bot) replyToMessageID(ctx context.Context, message *larkim.EventMessage) (int64, error) {
+	openChatID := value(message.ChatId)
+	if topic, err := b.feishuThreadTopicFromMessage(ctx, openChatID, message); err != nil {
+		return 0, err
+	} else if topic != nil && topic.RootMessageID != 0 {
+		return topic.RootMessageID, nil
+	}
 	for _, candidate := range []string{value(message.ParentId), value(message.RootId)} {
 		if strings.TrimSpace(candidate) == "" {
 			continue
@@ -433,6 +741,35 @@ func (b *Bot) replyToMessageID(ctx context.Context, message *larkim.EventMessage
 		return id, nil
 	}
 	return 0, nil
+}
+
+func (b *Bot) feishuThreadTopicFromMessage(ctx context.Context, openChatID string, message *larkim.EventMessage) (*model.FeishuThreadTopic, error) {
+	if message == nil {
+		return nil, nil
+	}
+	for _, candidate := range []struct {
+		kind string
+		id   string
+	}{
+		{"root", value(message.RootId)},
+		{"thread", value(message.ThreadId)},
+	} {
+		if strings.TrimSpace(candidate.id) == "" {
+			continue
+		}
+		var topic *model.FeishuThreadTopic
+		var err error
+		switch candidate.kind {
+		case "root":
+			topic, err = b.store.GetFeishuThreadTopicByRootOpenMessageID(ctx, openChatID, candidate.id)
+		case "thread":
+			topic, err = b.store.GetFeishuThreadTopicByFeishuThreadID(ctx, openChatID, candidate.id)
+		}
+		if err != nil || topic != nil {
+			return topic, err
+		}
+	}
+	return nil, nil
 }
 
 func (b *Bot) logInboundMessage(message *larkim.EventMessage, chatID, messageID, userID, replyTo int64, text string) {
@@ -466,8 +803,121 @@ func (b *Bot) logDuplicateInboundMessage(message *larkim.EventMessage, chatID, m
 	)
 }
 
+func isFeishuGroupMessage(message *larkim.EventMessage) bool {
+	if message == nil {
+		return false
+	}
+	switch normalizeChatMode(value(message.ChatType)) {
+	case "group", "topic":
+		return true
+	default:
+		return false
+	}
+}
+
+func isFeishuCommand(text string) bool {
+	return strings.HasPrefix(strings.TrimSpace(text), "/")
+}
+
+func renderThreadTopicRootText(thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) string {
+	title := strings.TrimSpace(thread.Title)
+	if title == "" {
+		title = thread.ShortID()
+	}
+	project := strings.TrimSpace(thread.ProjectName)
+	if project == "" {
+		project = strings.TrimSpace(filepath.Base(strings.TrimSpace(thread.CWD)))
+	}
+	if project == "" || project == "." {
+		project = "Project"
+	}
+	status := strings.TrimSpace(thread.Status)
+	turnID := ""
+	if snapshot != nil {
+		status = firstNonEmptyString(strings.TrimSpace(snapshot.LatestTurnStatus), status)
+		turnID = strings.TrimSpace(snapshot.LatestTurnID)
+	}
+	if status == "" {
+		status = "unknown"
+	}
+	source := "Codex"
+	switch strings.TrimSpace(sourceMode) {
+	case model.PanelSourceFeishuInput:
+		source = "Feishu"
+	case model.PanelSourceTelegramInput:
+		source = "Telegram"
+	case model.PanelSourceGlobalObserver:
+		source = "Codex Desktop"
+	}
+	lines := []string{
+		title,
+		fmt.Sprintf("Project: %s", project),
+		fmt.Sprintf("Status: %s", status),
+		fmt.Sprintf("Source: %s", source),
+	}
+	if turnID != "" {
+		lines = append(lines, fmt.Sprintf("Turn: %s", shortIDForText(turnID)))
+	}
+	lines = append(lines, "", "这个话题对应一个 Codex 会话；在这里直接回复会继续该会话。")
+	return strings.Join(lines, "\n")
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func shortIDForText(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 8 {
+		return value
+	}
+	return value[:8]
+}
+
 func feishuInboundClaimKey(openMessageID string) string {
 	return "feishu.inbound." + shortHashForLog(openMessageID)
+}
+
+func feishuControlUserKey(chatID int64) string {
+	return fmt.Sprintf("feishu.control_user.%d", chatID)
+}
+
+func feishuChatModeKey(chatID int64) string {
+	return fmt.Sprintf("feishu.chat_mode.%d", chatID)
+}
+
+func feishuControlRoomKey(chatID int64) string {
+	return fmt.Sprintf("feishu.control_room.%d", chatID)
+}
+
+func feishuControlRoomSourceKey(openChatID string) string {
+	return "feishu.control_room_source." + shortHashForLog(openChatID)
+}
+
+func feishuThreadTopicActivatedKey(chatID int64, threadID string) string {
+	return fmt.Sprintf("feishu.thread_topic_activated.%d.%s", chatID, shortHashForLog(threadID))
+}
+
+func feishuControlRoomUUID(openUserID string) string {
+	return "codex-control-room-" + shortHashForLog(openUserID)
+}
+
+func normalizeChatMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "p2p":
+		return "p2p"
+	case "topic_group", "topic":
+		return "topic"
+	case "group":
+		return "group"
+	default:
+		return ""
+	}
 }
 
 func (b *Bot) deliverDirectResponse(ctx context.Context, chatID int64, response *daemon.DirectResponse) error {
@@ -607,6 +1057,17 @@ func (b *Bot) sendOpenIDSectionedCard(ctx context.Context, openUserID string, se
 }
 
 func (b *Bot) isAllowed(openUserID, openChatID string, userID, chatID int64) bool {
+	if b.isAllowedDirect(openUserID, openChatID, userID, chatID) {
+		return true
+	}
+	sourceChatID, sourceOpenChatID, err := b.controlRoomSource(context.Background(), openChatID)
+	if err != nil || sourceChatID == 0 || strings.TrimSpace(sourceOpenChatID) == "" {
+		return false
+	}
+	return b.isAllowedDirect(openUserID, sourceOpenChatID, userID, sourceChatID)
+}
+
+func (b *Bot) isAllowedDirect(openUserID, openChatID string, userID, chatID int64) bool {
 	if len(b.cfg.FeishuAllowedOpenIDs) > 0 && !containsString(b.cfg.FeishuAllowedOpenIDs, openUserID) {
 		return false
 	}
@@ -620,6 +1081,22 @@ func (b *Bot) isAllowed(openUserID, openChatID string, userID, chatID int64) boo
 		return false
 	}
 	return true
+}
+
+func (b *Bot) controlRoomSource(ctx context.Context, roomOpenChatID string) (int64, string, error) {
+	raw, err := b.store.GetState(ctx, feishuControlRoomSourceKey(roomOpenChatID))
+	if err != nil {
+		return 0, "", err
+	}
+	parts := strings.SplitN(strings.TrimSpace(raw), "|", 2)
+	if len(parts) != 2 {
+		return 0, "", nil
+	}
+	chatID, err := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
+	if err != nil {
+		return 0, "", nil
+	}
+	return chatID, strings.TrimSpace(parts[1]), nil
 }
 
 func (b *Bot) isBotMenuAllowed(openUserID string, userID int64) bool {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -15,7 +14,6 @@ import (
 	"time"
 
 	"github.com/mideco-tech/codex-tg/internal/config"
-	"github.com/mideco-tech/codex-tg/internal/telegram"
 )
 
 func TestDaemonLogOutputCanBeDisabled(t *testing.T) {
@@ -50,8 +48,7 @@ func TestSelectedAdapterPrefersExplicitValueThenAutoCredentials(t *testing.T) {
 		{
 			name: "explicit feishu",
 			cfg: config.Config{
-				Adapter:          "feishu",
-				TelegramBotToken: "123456:abcdefghijklmnopqrstuvwxyz",
+				Adapter: "feishu",
 			},
 			want: "feishu",
 		},
@@ -65,16 +62,16 @@ func TestSelectedAdapterPrefersExplicitValueThenAutoCredentials(t *testing.T) {
 			want: "feishu",
 		},
 		{
-			name: "auto telegram",
+			name: "telegram no longer supported",
 			cfg: config.Config{
-				TelegramBotToken: "123456:abcdefghijklmnopqrstuvwxyz",
+				Adapter: "telegram",
 			},
-			want: "telegram",
+			want: "",
 		},
 		{
-			name: "not configured",
+			name: "auto is feishu",
 			cfg:  config.Config{Adapter: "auto"},
-			want: "",
+			want: "feishu",
 		},
 	}
 	for _, tt := range tests {
@@ -90,12 +87,12 @@ func TestRunInitWritesPrivateConfigAndRefusesOverwrite(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.env")
 	t.Setenv("CTR_GO_CONFIG", configPath)
-	token := "123456:abcdefghijklmnopqrstuvwxyz"
+	secret := "feishu-secret-value"
 	input := strings.Join([]string{
-		"",
-		token,
-		"42",
-		"",
+		"cli_app_id",
+		secret,
+		"ou_1,ou_2",
+		"oc_chat",
 		filepath.Join(dir, "project"),
 		filepath.Join(dir, "chats"),
 		"codex",
@@ -108,8 +105,8 @@ func TestRunInitWritesPrivateConfigAndRefusesOverwrite(t *testing.T) {
 	if err := runWithIO([]string{"init"}, strings.NewReader(input), &out); err != nil {
 		t.Fatalf("run init failed: %v", err)
 	}
-	if strings.Contains(out.String(), token) {
-		t.Fatal("init output leaked Telegram bot token")
+	if strings.Contains(out.String(), secret) {
+		t.Fatal("init output leaked Feishu app secret")
 	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -117,8 +114,11 @@ func TestRunInitWritesPrivateConfigAndRefusesOverwrite(t *testing.T) {
 	}
 	text := string(data)
 	for _, want := range []string{
-		`CTR_GO_TELEGRAM_BOT_TOKEN="` + token + `"`,
-		`CTR_GO_ALLOWED_USER_IDS="42"`,
+		`CTR_GO_ADAPTER="feishu"`,
+		`CTR_GO_FEISHU_APP_ID="cli_app_id"`,
+		`CTR_GO_FEISHU_APP_SECRET="` + secret + `"`,
+		`CTR_GO_FEISHU_ALLOWED_OPEN_IDS="ou_1,ou_2"`,
+		`CTR_GO_FEISHU_ALLOWED_CHAT_IDS="oc_chat"`,
 		`CTR_GO_CODEX_BIN="codex"`,
 		`CTR_GO_NOTIFY_NEW_RUN="false"`,
 		`CTR_GO_NOTIFY_SYSTEM="false"`,
@@ -147,7 +147,6 @@ func TestRunInitWritesFeishuConfigWithoutLeakingSecret(t *testing.T) {
 	t.Setenv("CTR_GO_CONFIG", configPath)
 	secret := "feishu-secret-value"
 	input := strings.Join([]string{
-		"feishu",
 		"cli_app_id",
 		secret,
 		"ou_1,ou_2",
@@ -196,9 +195,9 @@ func TestRunInitForceOverwritesConfig(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 	input := strings.Join([]string{
+		"cli_app_id",
+		"secret",
 		"",
-		"token",
-		"42",
 		"",
 		filepath.Join(dir, "project"),
 		filepath.Join(dir, "chats"),
@@ -318,15 +317,15 @@ func serverURL(r *http.Request) string {
 	return "http://" + r.Host
 }
 
-func TestStatusAndDoctorDoNotLeakConfigFileToken(t *testing.T) {
+func TestStatusAndDoctorDoNotLeakConfigFileSecret(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.env")
 	home := filepath.Join(dir, "home")
-	token := "123456:abcdefghijklmnopqrstuvwxyz"
+	secret := "feishu-secret-value"
 	if err := os.WriteFile(configPath, []byte(strings.Join([]string{
 		`CTR_GO_HOME="` + home + `"`,
-		`CTR_GO_TELEGRAM_BOT_TOKEN="` + token + `"`,
-		`CTR_GO_ALLOWED_USER_IDS="42"`,
+		`CTR_GO_FEISHU_APP_ID="cli_app_id"`,
+		`CTR_GO_FEISHU_APP_SECRET="` + secret + `"`,
 		`CTR_GO_DEFAULT_CWD="` + dir + `"`,
 		"",
 	}, "\n")), 0o600); err != nil {
@@ -339,19 +338,8 @@ func TestStatusAndDoctorDoNotLeakConfigFileToken(t *testing.T) {
 		if err := runWithIO(command, strings.NewReader(""), &out); err != nil {
 			t.Fatalf("%v failed: %v", command, err)
 		}
-		if strings.Contains(out.String(), token) {
-			t.Fatalf("%v leaked token:\n%s", command, out.String())
+		if strings.Contains(out.String(), secret) {
+			t.Fatalf("%v leaked secret:\n%s", command, out.String())
 		}
-	}
-}
-
-func TestFatalErrorSanitizerRedactsTelegramBotURL(t *testing.T) {
-	errText := `Post "https://api.telegram.org/bot123456:abcdefghijklmnopqrstuvwxyz/getMe": context deadline exceeded`
-	got := telegram.SanitizeLogError(errors.New(errText))
-	if strings.Contains(got, "123456:abcdefghijklmnopqrstuvwxyz") {
-		t.Fatalf("fatal error sanitizer leaked token: %q", got)
-	}
-	if !strings.Contains(got, "bot<redacted>") {
-		t.Fatalf("fatal error sanitizer = %q, want redacted Telegram bot URL", got)
 	}
 }

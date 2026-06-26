@@ -236,6 +236,18 @@ func (s *Store) initialize(ctx context.Context) error {
 		updated_at TEXT NOT NULL
 	);
 
+	CREATE TABLE IF NOT EXISTS feishu_thread_topics (
+		chat_id INTEGER NOT NULL,
+		open_chat_id TEXT NOT NULL,
+		codex_thread_id TEXT NOT NULL,
+		root_message_id INTEGER NOT NULL,
+		root_open_message_id TEXT NOT NULL,
+		feishu_thread_id TEXT,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY(chat_id, codex_thread_id)
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_threads_updated_at ON threads(updated_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_threads_project_updated_at ON threads(project_name, updated_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_bindings_thread_id ON thread_bindings(thread_id);
@@ -245,6 +257,8 @@ func (s *Store) initialize(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_thread_panels_thread_current ON thread_panels(chat_id, topic_id, thread_id, is_current, updated_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_chat_steer_expires_at ON chat_steer_state(expires_at);
 	CREATE INDEX IF NOT EXISTS idx_feishu_message_maps_open_chat_id ON feishu_message_maps(open_chat_id);
+	CREATE INDEX IF NOT EXISTS idx_feishu_thread_topics_open_root ON feishu_thread_topics(open_chat_id, root_open_message_id);
+	CREATE INDEX IF NOT EXISTS idx_feishu_thread_topics_thread ON feishu_thread_topics(feishu_thread_id);
 	`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return err
@@ -706,6 +720,63 @@ func (s *Store) GetFeishuMessageByOpenID(ctx context.Context, openMessageID stri
 func scanFeishuMessageMap(scanner interface{ Scan(...any) error }) (*model.FeishuMessageMap, error) {
 	var item model.FeishuMessageMap
 	err := scanner.Scan(&item.MessageID, &item.OpenMessageID, &item.ChatID, &item.OpenChatID, &item.CreatedAt, &item.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (s *Store) UpsertFeishuThreadTopic(ctx context.Context, topic model.FeishuThreadTopic) error {
+	topic.OpenChatID = strings.TrimSpace(topic.OpenChatID)
+	topic.ThreadID = strings.TrimSpace(topic.ThreadID)
+	topic.RootOpenMessageID = strings.TrimSpace(topic.RootOpenMessageID)
+	topic.FeishuThreadID = strings.TrimSpace(topic.FeishuThreadID)
+	if topic.ChatID == 0 || topic.ThreadID == "" || topic.RootMessageID == 0 || topic.RootOpenMessageID == "" {
+		return nil
+	}
+	now := string(model.NowString())
+	_, err := s.db.ExecContext(ctx, `
+	INSERT INTO feishu_thread_topics(chat_id, open_chat_id, codex_thread_id, root_message_id, root_open_message_id, feishu_thread_id, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(chat_id, codex_thread_id) DO UPDATE SET
+		open_chat_id = excluded.open_chat_id,
+		root_message_id = excluded.root_message_id,
+		root_open_message_id = excluded.root_open_message_id,
+		feishu_thread_id = excluded.feishu_thread_id,
+		updated_at = excluded.updated_at`,
+		topic.ChatID, topic.OpenChatID, topic.ThreadID, topic.RootMessageID, topic.RootOpenMessageID, nullable(topic.FeishuThreadID), now, now)
+	return err
+}
+
+func (s *Store) GetFeishuThreadTopicByCodexThread(ctx context.Context, chatID int64, threadID string) (*model.FeishuThreadTopic, error) {
+	row := s.db.QueryRowContext(ctx, `
+	SELECT chat_id, open_chat_id, codex_thread_id, root_message_id, root_open_message_id, coalesce(feishu_thread_id, ''), created_at, updated_at
+	FROM feishu_thread_topics WHERE chat_id = ? AND codex_thread_id = ?`, chatID, strings.TrimSpace(threadID))
+	return scanFeishuThreadTopic(row)
+}
+
+func (s *Store) GetFeishuThreadTopicByRootOpenMessageID(ctx context.Context, openChatID, rootOpenMessageID string) (*model.FeishuThreadTopic, error) {
+	row := s.db.QueryRowContext(ctx, `
+	SELECT chat_id, open_chat_id, codex_thread_id, root_message_id, root_open_message_id, coalesce(feishu_thread_id, ''), created_at, updated_at
+	FROM feishu_thread_topics WHERE open_chat_id = ? AND root_open_message_id = ?`,
+		strings.TrimSpace(openChatID), strings.TrimSpace(rootOpenMessageID))
+	return scanFeishuThreadTopic(row)
+}
+
+func (s *Store) GetFeishuThreadTopicByFeishuThreadID(ctx context.Context, openChatID, feishuThreadID string) (*model.FeishuThreadTopic, error) {
+	row := s.db.QueryRowContext(ctx, `
+	SELECT chat_id, open_chat_id, codex_thread_id, root_message_id, root_open_message_id, coalesce(feishu_thread_id, ''), created_at, updated_at
+	FROM feishu_thread_topics WHERE open_chat_id = ? AND feishu_thread_id = ?`,
+		strings.TrimSpace(openChatID), strings.TrimSpace(feishuThreadID))
+	return scanFeishuThreadTopic(row)
+}
+
+func scanFeishuThreadTopic(scanner interface{ Scan(...any) error }) (*model.FeishuThreadTopic, error) {
+	var item model.FeishuThreadTopic
+	err := scanner.Scan(&item.ChatID, &item.OpenChatID, &item.ThreadID, &item.RootMessageID, &item.RootOpenMessageID, &item.FeishuThreadID, &item.CreatedAt, &item.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

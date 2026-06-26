@@ -33,6 +33,14 @@ type Sender interface {
 	SendDocumentData(ctx context.Context, chatID, topicID int64, fileName string, data []byte, caption string, options model.SendOptions) (int64, error)
 }
 
+type ThreadTopicSender interface {
+	EnsureThreadTopic(ctx context.Context, chatID int64, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) (*model.FeishuThreadTopic, error)
+}
+
+type ThreadTopicTargetResolver interface {
+	ResolveThreadTopicTarget(ctx context.Context, chatID int64) (int64, error)
+}
+
 type DirectResponse struct {
 	Text         string
 	Sections     []model.MessageSection
@@ -370,7 +378,14 @@ func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID,
 	case "chats_open", "chats_page":
 		return s.chatsPage(ctx, chatID, topicID, messageID, payload)
 	case "chat_open":
-		return s.openChatThread(ctx, chatID, topicID, route.ThreadID)
+		response, err := s.openChatThread(ctx, chatID, topicID, route.ThreadID, sourceMode)
+		if err != nil {
+			return nil, err
+		}
+		if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
+			return s.feishuVisibleOpenResponse(ctx, response, route.ThreadID), nil
+		}
+		return response, nil
 	case "project_open":
 		return s.projectMenu(ctx, payload)
 	case "project_new_thread":
@@ -380,7 +395,14 @@ func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID,
 	case "project_bind_latest":
 		return s.bindLatestProjectThread(ctx, chatID, topicID, payload)
 	case "show_thread":
-		return s.showThread(ctx, chatID, topicID, route.ThreadID, true)
+		response, err := s.showThread(ctx, chatID, topicID, route.ThreadID, true, sourceMode)
+		if err != nil {
+			return nil, err
+		}
+		if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
+			return s.feishuVisibleOpenResponse(ctx, response, route.ThreadID), nil
+		}
+		return response, nil
 	case "show_context":
 		text, err := s.contextCard(ctx, chatID, topicID)
 		if err != nil {
@@ -434,6 +456,33 @@ func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID,
 	default:
 		return &DirectResponse{Text: "This button is not implemented in the Go core yet."}, nil
 	}
+}
+
+func (s *Service) feishuVisibleOpenResponse(ctx context.Context, response *DirectResponse, threadID string) *DirectResponse {
+	threadID = strings.TrimSpace(threadID)
+	if response == nil {
+		response = &DirectResponse{ThreadID: threadID}
+	}
+	if strings.TrimSpace(response.Text) != "" {
+		return response
+	}
+	if strings.TrimSpace(response.ThreadID) == "" {
+		response.ThreadID = threadID
+	}
+	label := strings.TrimSpace(response.ThreadID)
+	if thread, _ := s.store.GetThread(ctx, response.ThreadID); thread != nil {
+		label = firstNonEmpty(strings.TrimSpace(thread.Title), thread.ShortID())
+	}
+	response.Text = strings.Join([]string{
+		"已打开会话",
+		fmt.Sprintf("Thread: %s", label),
+		fmt.Sprintf("Thread ID: %s", response.ThreadID),
+		"后续消息会在对应飞书话题中更新。",
+	}, "\n")
+	if strings.TrimSpace(response.CallbackText) == "" {
+		response.CallbackText = "已打开"
+	}
+	return response
 }
 
 func (s *Service) RegisterDirectDelivery(ctx context.Context, chatID, topicID, messageID int64, response *DirectResponse) error {
@@ -1438,7 +1487,7 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 		if decision.ThreadID == "" {
 			return &DirectResponse{Text: "Usage: /show <thread> or reply to a thread message."}, nil
 		}
-		return s.showThread(ctx, chatID, topicID, decision.ThreadID, true)
+		return s.showThread(ctx, chatID, topicID, decision.ThreadID, true, sourceMode)
 	case "/bind":
 		decision, err := s.resolveRoute(ctx, chatID, topicID, rest, replyToMessageID)
 		if err != nil {
@@ -2280,7 +2329,8 @@ func steerFailureMeansNoActiveTurn(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "no active turn") ||
 		strings.Contains(msg, "no active run") ||
-		strings.Contains(msg, "turn is not active")
+		strings.Contains(msg, "turn is not active") ||
+		strings.Contains(msg, "active turn already ended")
 }
 
 func activeTurnIDFromSteerMismatch(err error) string {
@@ -2495,7 +2545,7 @@ func (s *Service) threadsOverview(ctx context.Context, rest string) (*DirectResp
 	return &DirectResponse{Text: strings.Join(lines, "\n"), Sections: sections, Buttons: buttons}, nil
 }
 
-func (s *Service) showThread(ctx context.Context, chatID, topicID int64, threadID string, forceNew bool) (*DirectResponse, error) {
+func (s *Service) showThread(ctx context.Context, chatID, topicID int64, threadID string, forceNew bool, sourceMode string) (*DirectResponse, error) {
 	thread, err := s.store.GetThread(ctx, threadID)
 	if err != nil {
 		return nil, err
@@ -2525,7 +2575,7 @@ func (s *Service) showThread(ctx context.Context, chatID, topicID int64, threadI
 		TopicID: topicID,
 		Enabled: true,
 	}
-	s.syncThreadPanelToTarget(ctx, target, thread.ID, forceNew, model.PanelSourceExplicit)
+	s.syncThreadPanelToTarget(ctx, target, thread.ID, forceNew, sourceMode)
 	return &DirectResponse{ThreadID: thread.ID}, nil
 }
 
@@ -3138,9 +3188,6 @@ func (s *Service) renderObserverEvent(ctx context.Context, event model.ObserverE
 	buttons := [][]model.ButtonSpec{
 		{
 			s.callbackButton(ctx, "Show", "show_thread", event.ThreadID, event.TurnID, "", nil),
-			s.callbackButton(ctx, "Bind here", "bind_here", event.ThreadID, event.TurnID, "", nil),
-		},
-		{
 			s.callbackButton(ctx, "Reply", "reply_hint", event.ThreadID, event.TurnID, "", nil),
 			s.callbackButton(ctx, "Observe here", "observe_all", event.ThreadID, event.TurnID, "", nil),
 		},
