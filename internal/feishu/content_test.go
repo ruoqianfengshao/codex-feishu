@@ -131,6 +131,63 @@ func TestBuildCardKeepsProvidedButtonLabels(t *testing.T) {
 	}
 }
 
+func TestBuildCodexPanelCardUsesDocumentedCollapsiblePanelFields(t *testing.T) {
+	t.Parallel()
+
+	card, err := buildRenderedCard(model.RenderedMessage{
+		Style:                 model.MessageStyleCodexPanel,
+		Text:                  "Running",
+		CodexStatus:           "运行中",
+		CodexProgressMarkdown: "思考中...\n\n工具调用中...",
+		CodexProgressExpanded: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("buildRenderedCard failed: %v", err)
+	}
+	if strings.Contains(card, "background_style") {
+		t.Fatalf("card = %s, want no unsupported background_style on collapsible_panel", card)
+	}
+
+	var decoded struct {
+		Body struct {
+			Elements []struct {
+				Tag             string `json:"tag"`
+				BackgroundColor string `json:"background_color"`
+				Header          struct {
+					BackgroundColor string `json:"background_color"`
+					Title           struct {
+						Tag     string `json:"tag"`
+						Content string `json:"content"`
+					} `json:"title"`
+				} `json:"header"`
+				Border struct {
+					Color        string `json:"color"`
+					CornerRadius string `json:"corner_radius"`
+				} `json:"border"`
+			} `json:"elements"`
+		} `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(card), &decoded); err != nil {
+		t.Fatalf("card JSON invalid: %v", err)
+	}
+	var panelFound bool
+	for _, element := range decoded.Body.Elements {
+		if element.Tag != "collapsible_panel" {
+			continue
+		}
+		panelFound = true
+		if element.BackgroundColor != "grey" || element.Header.BackgroundColor != "grey" || element.Border.Color != "grey" || element.Border.CornerRadius != "8px" {
+			t.Fatalf("collapsible panel = %#v, want documented color/border fields", element)
+		}
+		if element.Header.Title.Tag != "markdown" || element.Header.Title.Content != "运行中" {
+			t.Fatalf("collapsible panel header title = %#v, want markdown title under header", element.Header.Title)
+		}
+	}
+	if !panelFound {
+		t.Fatalf("card = %s, want collapsible_panel element", card)
+	}
+}
+
 func TestBuildSectionedCardKeepsButtonsAfterEachSection(t *testing.T) {
 	t.Parallel()
 

@@ -1167,8 +1167,8 @@ func TestProjectNewThreadArmsThenFirstPromptCreatesThreadAndFeishuTopic(t *testi
 	if got := stub.turnStartCalls[0]; got.threadID != "new-thread-id" || got.message != "first prompt" || got.cwd != "/Users/example/project" {
 		t.Fatalf("turnStartCall = %#v, want new thread first prompt in project cwd", got)
 	}
-	if len(sender.messages) == 0 || !strings.Contains(sender.messages[0].text, "Real title from first prompt") {
-		t.Fatalf("sender messages = %#v, want topic root created from refreshed title", sender.messages)
+	if len(sender.messages) == 0 || sender.messages[0].style != model.MessageStyleCodexPanel {
+		t.Fatalf("sender messages = %#v, want Codex panel created for refreshed topic", sender.messages)
 	}
 }
 
@@ -4981,8 +4981,8 @@ func TestFinalSummaryPanelHasGetThreadIDButton(t *testing.T) {
 	}
 
 	_, buttons, _ := service.renderSummaryPanel(ctx, thread, snapshot, nil)
-	if token := callbackTokenForButton(buttons, "Get thread id"); token == "" {
-		t.Fatalf("Get thread id button not found in final summary buttons %#v", buttons)
+	if len(buttons) != 0 {
+		t.Fatalf("final summary buttons = %#v, want none", buttons)
 	}
 }
 

@@ -52,6 +52,7 @@ const (
 
 const (
 	MessageStyleDesktopUser = "desktop_user"
+	MessageStyleCodexPanel  = "codex_panel"
 )
 
 func NowString() TimeString {
@@ -324,11 +325,15 @@ type MessageEntity struct {
 }
 
 type RenderedMessage struct {
-	Text      string          `json:"text"`
-	Entities  []MessageEntity `json:"entities,omitempty"`
-	Style     string          `json:"style,omitempty"`
-	ImagePath string          `json:"image_path,omitempty"`
-	ImageKey  string          `json:"image_key,omitempty"`
+	Text                  string          `json:"text"`
+	Entities              []MessageEntity `json:"entities,omitempty"`
+	Style                 string          `json:"style,omitempty"`
+	ImagePath             string          `json:"image_path,omitempty"`
+	ImageKey              string          `json:"image_key,omitempty"`
+	CodexStatus           string          `json:"codex_status,omitempty"`
+	CodexProgressMarkdown string          `json:"codex_progress_markdown,omitempty"`
+	CodexFinalMarkdown    string          `json:"codex_final_markdown,omitempty"`
+	CodexProgressExpanded bool            `json:"codex_progress_expanded,omitempty"`
 }
 
 type DetailItem struct {

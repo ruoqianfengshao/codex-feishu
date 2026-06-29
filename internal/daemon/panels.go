@@ -108,7 +108,12 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 	}
 	sender = senderWithThreadTopic{Sender: sender, topic: threadTopic}
 	panel, err := s.ensureCurrentPanel(ctx, sender, target, *thread, snapshot, pending, effectiveForceNew, sourceMode, renderSourceMode)
-	if err != nil || panel == nil {
+	if err != nil {
+		s.setError(ctx, fmt.Errorf("ensure current panel: %w", err))
+		return
+	}
+	if panel == nil {
+		s.setError(ctx, fmt.Errorf("ensure current panel returned nil for thread %s turn %s", thread.ID, snapshot.LatestTurnID))
 		return
 	}
 	if isDirectInputSourceMode(sourceMode) && panel.SourceMode != sourceMode && samePanelTurn(panel, snapshot.LatestTurnID) {
@@ -131,15 +136,15 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 			s.setError(ctx, err)
 			return
 		}
-		if err := s.maybeRenderFinalCard(ctx, sender, target, panel, *thread, snapshot); err != nil {
-			s.setError(ctx, err)
-		}
-		return
 	}
 	if err := s.updateCurrentPanel(ctx, sender, panel, *thread, snapshot, pending, renderSourceMode); err != nil {
 		panel, recreateErr := s.createCurrentPanel(ctx, sender, target, *thread, snapshot, pending, sourceMode, renderSourceMode)
 		if recreateErr != nil || panel == nil {
-			s.setError(ctx, err)
+			if recreateErr != nil {
+				s.setError(ctx, fmt.Errorf("recreate current panel after update error %v: %w", err, recreateErr))
+			} else {
+				s.setError(ctx, fmt.Errorf("recreate current panel returned nil after update error: %w", err))
+			}
 			return
 		}
 		legacyTerminalReplay = false
@@ -147,9 +152,6 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 			s.setError(ctx, err)
 			return
 		}
-	}
-	if err := s.maybeRenderFinalCard(ctx, sender, target, panel, *thread, snapshot); err != nil {
-		s.setError(ctx, err)
 	}
 }
 
@@ -260,6 +262,9 @@ func (s *Service) effectivePanelRenderSourceMode(ctx context.Context, existingPa
 	if isDirectInputSourceMode(origin) {
 		return origin
 	}
+	if isDirectInputSourceMode(sourceMode) && existingPanel != nil && strings.TrimSpace(turnID) != "" && strings.TrimSpace(existingPanel.CurrentTurnID) != strings.TrimSpace(turnID) {
+		return model.PanelSourceExplicit
+	}
 	if isDirectInputSourceMode(sourceMode) {
 		return sourceMode
 	}
@@ -309,6 +314,9 @@ func isLegacyTerminalReplay(panel *model.ThreadPanel, snapshot *appserver.Thread
 	if panel.CurrentTurnID != strings.TrimSpace(snapshot.LatestTurnID) {
 		return false
 	}
+	if strings.EqualFold(strings.TrimSpace(panel.Status), "interrupted") {
+		return false
+	}
 	return isTerminalStatus(panel.Status) && isTerminalStatus(snapshot.LatestTurnStatus)
 }
 
@@ -329,9 +337,21 @@ func (s *Service) createCurrentPanel(ctx context.Context, sender Sender, target 
 	if err != nil {
 		return nil, err
 	}
+	userMessageID, userNoticeFP, err := s.sendUserRequestNotice(ctx, sender, target, thread, snapshot, renderSourceMode)
+	if err != nil {
+		return nil, err
+	}
 	summaryMessage, summaryButtons, summaryHash := s.renderSummaryPanel(ctx, thread, snapshot, nil)
 	toolText, toolHash, shouldSendTool := s.renderToolPanelIfNeeded(ctx, thread, snapshot)
 	outputText, outputHash, shouldSendOutput := s.renderOutputPanelIfNeeded(ctx, thread, snapshot)
+	finalNoticeFP := ""
+	finalCardHash := ""
+	if isTerminalStatus(cardDisplayStatus(snapshot, thread)) {
+		if _, fp := terminalCardTextAndFP(snapshot); strings.TrimSpace(fp) != "" {
+			finalNoticeFP = strings.TrimSpace(fp)
+			finalCardHash = summaryHash
+		}
+	}
 
 	s.logChatRenderedMessagesContainsNil(thread.ID, snapshot.LatestTurnID, "summary", 0, []model.RenderedMessage{summaryMessage})
 	summaryIDs, err := sender.SendRenderedMessages(ctx, target.ChatID, target.TopicID, []model.RenderedMessage{summaryMessage}, summaryButtons, silentSendOptions())
@@ -365,14 +385,18 @@ func (s *Service) createCurrentPanel(ctx context.Context, sender Sender, target 
 		SummaryMessageID:    summaryID,
 		ToolMessageID:       toolID,
 		OutputMessageID:     outputID,
+		UserMessageID:       userMessageID,
+		LastUserNoticeFP:    userNoticeFP,
 		CurrentTurnID:       snapshot.LatestTurnID,
 		Status:              snapshot.LatestTurnStatus,
 		ArchiveEnabled:      true,
 		LastSummaryHash:     summaryHash,
 		LastToolHash:        toolHash,
 		LastOutputHash:      outputHash,
+		LastFinalNoticeFP:   finalNoticeFP,
 		PlanPromptMessageID: planPromptMessageID,
 		LastPlanPromptFP:    planPromptFP,
+		LastFinalCardHash:   finalCardHash,
 	})
 	if err != nil {
 		return nil, err
@@ -397,8 +421,10 @@ func (s *Service) maybeSendUserRequestNotice(ctx context.Context, sender Sender,
 	if !shouldSendUserRequestNotice(renderSourceMode, snapshot) || s.isDirectInputOriginTurn(ctx, thread.ID, snapshot.LatestTurnID) {
 		return nil
 	}
-	if panel.SourceMode == model.PanelSourceFeishuInput && renderSourceMode == model.PanelSourceFeishuInput {
-		return nil
+	if existing, err := s.store.FindMessageRouteByEvent(ctx, thread.ID, snapshot.LatestTurnID, snapshot.LatestUserMessageID, snapshot.LatestUserMessageFP); err == nil && existing != nil && existing.MessageID != 0 {
+		panel.UserMessageID = existing.MessageID
+		panel.LastUserNoticeFP = snapshot.LatestUserMessageFP
+		return s.store.UpdateThreadPanelUserNotice(ctx, panel.ID, panel.UserMessageID, panel.LastUserNoticeFP)
 	}
 	noticeSourceMode := s.userRequestNoticeSourceMode(ctx, thread.ID, snapshot.LatestTurnID, renderSourceMode)
 	if panel.UserMessageID != 0 {
@@ -499,6 +525,9 @@ func (s *Service) sendUserRequestNotice(ctx context.Context, sender Sender, targ
 	if !shouldSendUserRequestNotice(sourceMode, snapshot) || s.isDirectInputOriginTurn(ctx, thread.ID, snapshot.LatestTurnID) {
 		return 0, "", nil
 	}
+	if existing, err := s.store.FindMessageRouteByEvent(ctx, thread.ID, "", "", snapshot.LatestUserMessageFP); err == nil && existing != nil && existing.MessageID != 0 {
+		return existing.MessageID, snapshot.LatestUserMessageFP, nil
+	}
 	messages := s.renderUserRequestNoticeCard(ctx, thread, snapshot, s.userRequestNoticeSourceMode(ctx, thread.ID, snapshot.LatestTurnID, sourceMode))
 	s.logChatRenderedMessagesContainsNil(thread.ID, snapshot.LatestTurnID, "user", 0, messages)
 	messageIDs, err := sender.SendRenderedMessages(ctx, target.ChatID, target.TopicID, messages, nil, silentSendOptions())
@@ -522,7 +551,14 @@ func (s *Service) sendUserRequestNotice(ctx context.Context, sender Sender, targ
 }
 
 func (s *Service) renderUserRequestNoticeCard(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, renderSourceMode string) []model.RenderedMessage {
-	messages := msgformat.RenderMarkdownWithHeader(s.visualHeader(ctx, s.t(ctx, "用户", "User"), thread, snapshot.LatestTurnID), snapshot.LatestUserMessageText)
+	messages := msgformat.RenderSegments([]msgformat.Segment{
+		msgformat.Markdown(snapshot.LatestUserMessageText),
+	}, msgformat.MessageLimit)
+	if renderSourceMode != model.PanelSourceFeishuInput {
+		for i := range messages {
+			messages[i].Style = model.MessageStyleDesktopUser
+		}
+	}
 	if len(messages) > 0 && strings.TrimSpace(snapshot.LatestUserMessageImagePath) != "" {
 		messages[0].ImagePath = strings.TrimSpace(snapshot.LatestUserMessageImagePath)
 	}
@@ -530,6 +566,9 @@ func (s *Service) renderUserRequestNoticeCard(ctx context.Context, thread model.
 }
 
 func (s *Service) userRequestNoticeSourceMode(ctx context.Context, threadID, turnID, fallback string) string {
+	if isDirectInputSourceMode(fallback) && !s.isDirectInputOriginTurn(ctx, threadID, turnID) {
+		return model.PanelSourceExplicit
+	}
 	return fallback
 }
 
@@ -598,8 +637,10 @@ func normalizeInputSourceMode(sourceMode string) string {
 	switch strings.TrimSpace(sourceMode) {
 	case model.PanelSourceFeishuInput:
 		return model.PanelSourceFeishuInput
+	case model.PanelSourceExplicit:
+		return model.PanelSourceExplicit
 	default:
-		return model.PanelSourceFeishuInput
+		return model.PanelSourceExplicit
 	}
 }
 
@@ -692,27 +733,32 @@ func (s *Service) updateCurrentPanel(ctx context.Context, sender Sender, panel *
 
 	panel.CurrentTurnID = snapshot.LatestTurnID
 	panel.Status = snapshot.LatestTurnStatus
+	if isTerminalStatus(cardDisplayStatus(snapshot, thread)) {
+		if _, fp := terminalCardTextAndFP(snapshot); strings.TrimSpace(fp) != "" {
+			panel.LastFinalNoticeFP = strings.TrimSpace(fp)
+			panel.LastFinalCardHash = panel.LastSummaryHash
+			panel.DetailsViewJSON = model.MustJSON(model.DetailsViewState{})
+			return s.store.UpdateThreadPanelFinalCard(ctx, panel.ID, panel.SummaryMessageID, panel.CurrentTurnID, panel.Status, panel.LastSummaryHash, panel.LastToolHash, panel.LastOutputHash, panel.LastFinalNoticeFP, panel.DetailsViewJSON, panel.LastFinalCardHash)
+		}
+	}
 	return s.store.UpdateThreadPanelState(ctx, panel.ID, panel.CurrentTurnID, panel.Status, panel.LastSummaryHash, panel.LastToolHash, panel.LastOutputHash, panel.LastFinalNoticeFP)
 }
 
 func (s *Service) renderSummaryPanel(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, pending *model.PendingApproval) (model.RenderedMessage, [][]model.ButtonSpec, string) {
 	pending = pendingForSnapshot(pending, snapshot)
-	buttons := [][]model.ButtonSpec{
-		{
+	buttons := [][]model.ButtonSpec{}
+	if !isTerminalStatus(cardDisplayStatus(snapshot, thread)) {
+		buttons = append(buttons, []model.ButtonSpec{
 			s.callbackButton(ctx, s.t(ctx, "停止", "Stop"), "stop_turn", thread.ID, snapshot.LatestTurnID, "", nil),
 			s.callbackButton(ctx, s.t(ctx, "引导", "Steer"), "arm_steer", thread.ID, snapshot.LatestTurnID, "", nil),
-		},
-	}
-	if compactFeishuTopicCard(ctx) {
-		buttons = append(buttons, []model.ButtonSpec{
 			s.callbackButton(ctx, s.t(ctx, "查看上下文", "Show context"), "show_context", thread.ID, snapshot.LatestTurnID, "", nil),
 		})
-	} else {
-		buttons = append(buttons, []model.ButtonSpec{
-			s.callbackButton(ctx, s.t(ctx, "查看", "Show"), "show_thread", thread.ID, snapshot.LatestTurnID, "", nil),
-			s.callbackButton(ctx, s.t(ctx, "查看上下文", "Show context"), "show_context", thread.ID, snapshot.LatestTurnID, "", nil),
-			s.callbackButton(ctx, s.t(ctx, "获取线程 ID", "Get thread id"), "get_thread_id", thread.ID, snapshot.LatestTurnID, "", nil),
-		})
+		if !compactFeishuTopicCard(ctx) {
+			buttons = append(buttons, []model.ButtonSpec{
+				s.callbackButton(ctx, s.t(ctx, "查看", "Show"), "show_thread", thread.ID, snapshot.LatestTurnID, "", nil),
+				s.callbackButton(ctx, s.t(ctx, "获取线程 ID", "Get thread id"), "get_thread_id", thread.ID, snapshot.LatestTurnID, "", nil),
+			})
+		}
 	}
 	if pending != nil {
 		switch pending.PromptKind {
@@ -786,16 +832,14 @@ func (s *Service) renderSummaryPanelMarkdown(ctx context.Context, thread model.T
 func (s *Service) renderSummaryPanelMarkdownAt(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, entries []appserver.AgentMessageEntry, pending *model.PendingApproval, now time.Time) []model.RenderedMessage {
 	pending = pendingForSnapshot(pending, snapshot)
 	status := cardDisplayStatus(snapshot, thread)
-	segments := []msgformat.Segment{msgformat.Plain(strings.Join([]string{
-		s.visualHeader(ctx, s.t(ctx, "进展", "Progress"), thread, snapshot.LatestTurnID),
-		fmt.Sprintf("%s: %s", s.t(ctx, "状态", "Status"), readableProgressStatusLang(s.botLanguage(ctx), status)),
-	}, "\n"))}
+	statusText := readableProgressStatusLang(s.botLanguage(ctx), status)
+	progressSegments := []msgformat.Segment{}
 	if detailSegments, ok := s.summaryDetailTimelineSegments(ctx, snapshot); ok {
-		segments = append(segments, detailSegments...)
+		progressSegments = append(progressSegments, detailSegments...)
 	} else if statusLogText := s.interruptedStatusLogText(ctx, snapshot); statusLogText != "" {
-		segments = append(segments, msgformat.Plain("\n\n"), msgformat.Markdown(statusLogText))
+		progressSegments = append(progressSegments, msgformat.Markdown(statusLogText))
 	} else if len(entries) == 0 {
-		segments = append(segments, msgformat.Plain(s.t(ctx, "\n\n还没有 agent 消息。", "\n\nNo agent messages yet.")))
+		progressSegments = append(progressSegments, msgformat.Markdown(s.t(ctx, "还没有 agent 消息。", "No agent messages yet.")))
 	} else {
 		displayEntries := chronologicalAgentEntries(entries)
 		for _, message := range displayEntries {
@@ -803,12 +847,13 @@ func (s *Service) renderSummaryPanelMarkdownAt(ctx context.Context, thread model
 			if text == "" {
 				continue
 			}
-			segments = append(segments,
+			progressSegments = append(progressSegments,
 				summaryAgentPrefix(message),
 				msgformat.Markdown(text),
 			)
 		}
 	}
+	segments := []msgformat.Segment{}
 	if pending != nil {
 		switch pending.PromptKind {
 		case "approval":
@@ -820,9 +865,30 @@ func (s *Service) renderSummaryPanelMarkdownAt(ctx context.Context, thread model
 		segments = append(segments, msgformat.Plain(s.t(ctx, "\n\n[Plan]\n等待输入。请回复 [Plan] 消息或使用 /reply。", "\n\n[Plan]\nWaiting for input. Reply to the [Plan] message or use /reply.")))
 	}
 	if line := s.runTimingFooter(ctx, snapshot, now); line != "" {
-		segments = append(segments, msgformat.Plain("\n\n"+line))
+		progressSegments = append(progressSegments, msgformat.Plain("\n\n"+line))
 	}
-	return msgformat.RenderSegments(segments, msgformat.MessageLimit)
+	progress := strings.TrimSpace(firstRenderedMessage(msgformat.RenderSegments(progressSegments, msgformat.MessageLimit)).Text)
+	finalText, _ := terminalCardTextAndFP(snapshot)
+	finalText = strings.TrimSpace(finalText)
+	if finalText != "" && isTerminalStatus(status) {
+		segments = append(segments, msgformat.Markdown(finalText))
+	}
+	displaySegments := []msgformat.Segment{msgformat.Markdown(statusText), msgformat.Plain("\n\n")}
+	displaySegments = append(displaySegments, progressSegments...)
+	if len(segments) > 0 {
+		displaySegments = append(displaySegments, msgformat.Plain("\n\n"))
+	}
+	displaySegments = append(displaySegments, segments...)
+	message := firstRenderedMessage(msgformat.RenderSegments(displaySegments, msgformat.MessageLimit))
+	message.Style = model.MessageStyleCodexPanel
+	message.CodexStatus = statusText
+	message.CodexProgressMarkdown = progress
+	message.CodexFinalMarkdown = finalText
+	message.CodexProgressExpanded = !isTerminalStatus(status)
+	if finalText == "" || !isTerminalStatus(status) {
+		message.CodexFinalMarkdown = ""
+	}
+	return []model.RenderedMessage{message}
 }
 
 func (s *Service) summaryDetailTimelineSegments(ctx context.Context, snapshot *appserver.ThreadReadSnapshot) ([]msgformat.Segment, bool) {

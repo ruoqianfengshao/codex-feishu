@@ -24,7 +24,80 @@ func buildRenderedCard(message model.RenderedMessage, buttons [][]model.ButtonSp
 	if strings.TrimSpace(message.ImageKey) != "" {
 		return buildRenderedCardWithImage(message, buttons)
 	}
+	if strings.TrimSpace(message.Style) == model.MessageStyleCodexPanel {
+		return buildCodexPanelCard(message, buttons)
+	}
 	return buildCardWithStyle(renderPlainText(message), buttons, message.Style)
+}
+
+func buildCodexPanelCard(message model.RenderedMessage, buttons [][]model.ButtonSpec) (string, error) {
+	status := strings.TrimSpace(message.CodexStatus)
+	if status == "" {
+		status = strings.TrimSpace(message.Text)
+	}
+	if status == "" {
+		status = " "
+	}
+	progress := strings.TrimSpace(message.CodexProgressMarkdown)
+	final := strings.TrimSpace(message.CodexFinalMarkdown)
+	elements := []map[string]any{}
+	if progress == "" {
+		progress = status
+	}
+	elements = append(elements, collapsiblePanelElement(status, progress, message.CodexProgressExpanded))
+	if final != "" {
+		elements = append(elements, markdownElementV2(final))
+	}
+	elements = append(elements, buttonElementsV2(buttons)...)
+	card := map[string]any{
+		"schema": "2.0",
+		"config": map[string]any{
+			"width_mode": "fill",
+		},
+		"body": map[string]any{
+			"direction":        "vertical",
+			"padding":          "12px 12px 12px 12px",
+			"vertical_spacing": "8px",
+			"elements":         elements,
+		},
+	}
+	data, err := json.Marshal(card)
+	if err != nil {
+		return "", err
+	}
+	out := string(data)
+	if err := checkCardSize(out); err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+func collapsiblePanelElement(title, content string, expanded bool) map[string]any {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = " "
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		content = " "
+	}
+	return map[string]any{
+		"tag":              "collapsible_panel",
+		"expanded":         expanded,
+		"background_color": "grey",
+		"padding":          "8px 10px 8px 10px",
+		"header": map[string]any{
+			"title":            markdownElementV2(title),
+			"background_color": "grey",
+		},
+		"border": map[string]any{
+			"color":         "grey",
+			"corner_radius": "8px",
+		},
+		"elements": []map[string]any{
+			markdownElementV2(content),
+		},
+	}
 }
 
 func buildRenderedCardWithImage(message model.RenderedMessage, buttons [][]model.ButtonSpec) (string, error) {

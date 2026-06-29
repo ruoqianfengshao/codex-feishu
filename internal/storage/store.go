@@ -562,6 +562,38 @@ func (s *Store) ResolveMessageRoute(ctx context.Context, chatID, topicID, messag
 	return &route, nil
 }
 
+func (s *Store) FindMessageRouteByEvent(ctx context.Context, threadID, turnID, itemID, eventID string) (*model.MessageRoute, error) {
+	threadID = strings.TrimSpace(threadID)
+	eventID = strings.TrimSpace(eventID)
+	if threadID == "" || eventID == "" {
+		return nil, nil
+	}
+	query := `
+	SELECT chat_id, topic_id, message_id, thread_id, coalesce(turn_id, ''), coalesce(item_id, ''), coalesce(event_id, ''), created_at
+	FROM message_routes
+	WHERE thread_id = ? AND event_id = ?`
+	args := []any{threadID, eventID}
+	if strings.TrimSpace(turnID) != "" {
+		query += ` AND coalesce(turn_id, '') = ?`
+		args = append(args, strings.TrimSpace(turnID))
+	}
+	if strings.TrimSpace(itemID) != "" {
+		query += ` AND coalesce(item_id, '') = ?`
+		args = append(args, strings.TrimSpace(itemID))
+	}
+	query += ` ORDER BY created_at DESC LIMIT 1`
+	row := s.db.QueryRowContext(ctx, query, args...)
+	var route model.MessageRoute
+	err := row.Scan(&route.ChatID, &route.TopicID, &route.MessageID, &route.ThreadID, &route.TurnID, &route.ItemID, &route.EventID, &route.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &route, nil
+}
+
 func (s *Store) ResolveExternalID(ctx context.Context, namespace, externalID string) (int64, error) {
 	namespace = strings.TrimSpace(namespace)
 	externalID = strings.TrimSpace(externalID)

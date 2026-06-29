@@ -26,19 +26,15 @@ func (s *Service) maybeRenderFinalCard(ctx context.Context, sender Sender, targe
 		return nil
 	}
 
-	message, buttons, cardHash := s.renderFinalCard(ctx, panel.ID, thread, snapshot)
-	messageIDs, err := sender.SendRenderedMessages(ctx, target.ChatID, target.TopicID, []model.RenderedMessage{message}, buttons, notifySendOptions())
-	if err != nil {
+	message, buttons, cardHash := s.renderSummaryPanel(ctx, thread, snapshot, nil)
+	s.logChatRenderedMessagesContainsNil(thread.ID, snapshot.LatestTurnID, "summary_final", panel.SummaryMessageID, []model.RenderedMessage{message})
+	if err := sender.EditRenderedMessage(ctx, panel.ChatID, panel.TopicID, panel.SummaryMessageID, message, buttons); err != nil {
 		return err
 	}
-	finalMessageID := lastMessageID(messageIDs)
-	if finalMessageID == 0 {
-		return fmt.Errorf("final card send returned no message id")
-	}
 	_ = s.store.PutMessageRoute(ctx, model.MessageRoute{
-		ChatID:    target.ChatID,
-		TopicID:   target.TopicID,
-		MessageID: finalMessageID,
+		ChatID:    panel.ChatID,
+		TopicID:   panel.TopicID,
+		MessageID: panel.SummaryMessageID,
 		ThreadID:  thread.ID,
 		TurnID:    snapshot.LatestTurnID,
 		EventID:   finalFP,
@@ -49,17 +45,15 @@ func (s *Service) maybeRenderFinalCard(ctx context.Context, sender Sender, targe
 	panel.LastFinalCardHash = cardHash
 	panel.LastFinalNoticeFP = finalFP
 	panel.DetailsViewJSON = model.MustJSON(model.DetailsViewState{})
-	if err := s.store.UpdateThreadPanelState(ctx, panel.ID, panel.CurrentTurnID, panel.Status, panel.LastSummaryHash, panel.LastToolHash, panel.LastOutputHash, panel.LastFinalNoticeFP); err != nil {
-		return err
-	}
-	if err := s.store.UpdateThreadPanelDetails(ctx, panel.ID, panel.DetailsViewJSON, panel.LastFinalCardHash); err != nil {
+	panel.LastSummaryHash = cardHash
+	if err := s.store.UpdateThreadPanelFinalCard(ctx, panel.ID, panel.SummaryMessageID, panel.CurrentTurnID, panel.Status, panel.LastSummaryHash, panel.LastToolHash, panel.LastOutputHash, panel.LastFinalNoticeFP, panel.DetailsViewJSON, panel.LastFinalCardHash); err != nil {
 		return err
 	}
 	if panel.ToolMessageID != 0 {
-		_ = sender.DeleteMessage(ctx, target.ChatID, target.TopicID, panel.ToolMessageID)
+		_ = sender.DeleteMessage(ctx, panel.ChatID, panel.TopicID, panel.ToolMessageID)
 	}
 	if panel.OutputMessageID != 0 {
-		_ = sender.DeleteMessage(ctx, target.ChatID, target.TopicID, panel.OutputMessageID)
+		_ = sender.DeleteMessage(ctx, panel.ChatID, panel.TopicID, panel.OutputMessageID)
 	}
 	return nil
 }
