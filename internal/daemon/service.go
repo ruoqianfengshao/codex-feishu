@@ -115,8 +115,8 @@ const (
 	botLanguageStateKey       = "bot.language"
 	botLanguageEnglish        = "en"
 	botLanguageChinese        = "zh"
-	telegramOriginHotPollMax  = 75 * time.Second
-	telegramOriginHotPollTick = 3 * time.Second
+	chatOriginHotPollMax      = 75 * time.Second
+	chatOriginHotPollTick     = 3 * time.Second
 	appServerStdioListen      = "stdio://"
 )
 
@@ -340,7 +340,7 @@ func startedAtLabel(startedAt time.Time) string {
 }
 
 func (s *Service) HandleMessage(ctx context.Context, chatID, topicID, userID int64, text string, replyToMessageID int64) (*DirectResponse, error) {
-	return s.HandleMessageFromSource(ctx, chatID, topicID, userID, text, replyToMessageID, model.PanelSourceTelegramInput)
+	return s.HandleMessageFromSource(ctx, chatID, topicID, userID, text, replyToMessageID, model.PanelSourceChatInput)
 }
 
 func (s *Service) HandleMessageFromSource(ctx context.Context, chatID, topicID, userID int64, text string, replyToMessageID int64, sourceMode string) (*DirectResponse, error) {
@@ -358,7 +358,7 @@ func (s *Service) HandleMessageFromSource(ctx context.Context, chatID, topicID, 
 }
 
 func (s *Service) HandleCallback(ctx context.Context, chatID, topicID, messageID, userID int64, token string) (*DirectResponse, error) {
-	return s.HandleCallbackFromSource(ctx, chatID, topicID, messageID, userID, token, model.PanelSourceTelegramInput)
+	return s.HandleCallbackFromSource(ctx, chatID, topicID, messageID, userID, token, model.PanelSourceChatInput)
 }
 
 func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID, messageID, userID int64, token, sourceMode string) (*DirectResponse, error) {
@@ -959,7 +959,7 @@ func (s *Service) applyLiveToolSnapshot(ctx context.Context, threadID string, li
 	return true
 }
 
-func (s *Service) preserveTelegramOriginLiveCurrentTool(ctx context.Context, current *appserver.ThreadReadSnapshot, previous *model.ThreadSnapshotState) {
+func (s *Service) preserveChatOriginLiveCurrentTool(ctx context.Context, current *appserver.ThreadReadSnapshot, previous *model.ThreadSnapshotState) {
 	if current == nil || previous == nil || len(previous.CompactJSON) == 0 {
 		return
 	}
@@ -981,11 +981,11 @@ func (s *Service) preserveTelegramOriginLiveCurrentTool(ctx context.Context, cur
 	if threadID == "" || !s.isDirectInputOriginTurn(ctx, threadID, turnID) {
 		return
 	}
-	label := strings.TrimSpace(cleanTelegramNilLiteral(prev.LatestToolLabel))
+	label := strings.TrimSpace(cleanNilLiteral(prev.LatestToolLabel))
 	if label == "" || strings.TrimSpace(prev.LatestToolFP) == "" {
 		return
 	}
-	if !shouldPreserveTelegramOriginLiveCurrentTool(*current, prev) {
+	if !shouldPreserveChatOriginLiveCurrentTool(*current, prev) {
 		return
 	}
 	current.LatestToolID = prev.LatestToolID
@@ -1002,7 +1002,7 @@ func (s *Service) preserveTelegramOriginLiveCurrentTool(ctx context.Context, cur
 	current.DetailItems = upsertLiveToolDetails(current.DetailItems, toolOutputDetailItems(prev.DetailItems))
 }
 
-func shouldPreserveTelegramOriginLiveCurrentTool(current, previous appserver.ThreadReadSnapshot) bool {
+func shouldPreserveChatOriginLiveCurrentTool(current, previous appserver.ThreadReadSnapshot) bool {
 	if !snapshotHasToolEvidence(current) {
 		return true
 	}
@@ -1015,9 +1015,9 @@ func shouldPreserveTelegramOriginLiveCurrentTool(current, previous appserver.Thr
 }
 
 func snapshotHasToolEvidence(snapshot appserver.ThreadReadSnapshot) bool {
-	if strings.TrimSpace(cleanTelegramNilLiteral(snapshot.LatestToolID)) != "" ||
-		strings.TrimSpace(cleanTelegramNilLiteral(snapshot.LatestToolLabel)) != "" ||
-		strings.TrimSpace(cleanTelegramNilLiteral(snapshot.LatestToolOutput)) != "" ||
+	if strings.TrimSpace(cleanNilLiteral(snapshot.LatestToolID)) != "" ||
+		strings.TrimSpace(cleanNilLiteral(snapshot.LatestToolLabel)) != "" ||
+		strings.TrimSpace(cleanNilLiteral(snapshot.LatestToolOutput)) != "" ||
 		strings.TrimSpace(snapshot.LatestToolFP) != "" {
 		return true
 	}
@@ -1422,10 +1422,10 @@ func (s *Service) pollTracked(ctx context.Context) {
 		if stored, err := s.store.GetSnapshot(ctx, thread.ID); err == nil && stored != nil {
 			latestSnapshot = stored
 		}
-		gateHandled, gateDecision := s.applyTelegramOriginTerminalGate(ctx, "poll_tracked", &current, latestSnapshot)
+		gateHandled, gateDecision := s.applyChatOriginTerminalGate(ctx, "poll_tracked", &current, latestSnapshot)
 		if gateHandled {
 			if gateDecision.DeferredDisplayableProgress() {
-				s.preserveTelegramOriginLiveCurrentTool(ctx, &current, latestSnapshot)
+				s.preserveChatOriginLiveCurrentTool(ctx, &current, latestSnapshot)
 				_ = s.store.UpsertThread(ctx, current.Thread)
 				nextSnapshot := s.compactDeferredProgressSnapshot(latestSnapshot, current, time.Now().UTC(), gateDecision)
 				_ = s.store.UpsertSnapshot(ctx, current.Thread.ID, nextSnapshot)
@@ -1436,7 +1436,7 @@ func (s *Service) pollTracked(ctx context.Context) {
 			}
 			continue
 		}
-		s.preserveTelegramOriginLiveCurrentTool(ctx, &current, latestSnapshot)
+		s.preserveChatOriginLiveCurrentTool(ctx, &current, latestSnapshot)
 		_ = s.store.UpsertThread(ctx, current.Thread)
 		nextSnapshot := appserver.CompactSnapshot(latestSnapshot, current, time.Now().UTC())
 		if current.LatestTurnStatus == "inProgress" || current.WaitingOnApproval || current.WaitingOnReply {
@@ -1447,7 +1447,7 @@ func (s *Service) pollTracked(ctx context.Context) {
 		applyTerminalGateHotPolling(&nextSnapshot, gateDecision)
 		_ = s.store.UpsertSnapshot(ctx, current.Thread.ID, nextSnapshot)
 		s.logObserverSyncResult("poll_tracked", current)
-		s.maybeLogTelegramOriginTerminal(ctx, current)
+		s.maybeLogChatOriginTerminal(ctx, current)
 		if catchup || s.threadNeedsLiveSync(ctx, current.Thread.ID) || snapshotHasPassiveChange(latestSnapshot, &current) {
 			s.syncThreadPanel(ctx, current.Thread.ID)
 		}
@@ -1486,7 +1486,7 @@ func (s *Service) processDeliveryBatch(ctx context.Context) {
 			_ = s.store.FailDelivery(ctx, item.ID, item.RetryCount+1, time.Now().UTC().Add(s.cfg.DeliveryRetryBase), err.Error(), true)
 			continue
 		}
-		s.logTelegramRenderContainsNil(payload.ThreadID, payload.TurnID, "delivery", 0, payload.Text)
+		s.logChatRenderContainsNil(payload.ThreadID, payload.TurnID, "delivery", 0, payload.Text)
 		messageID, err := sender.SendMessage(ctx, item.ChatID, item.TopicID, payload.Text, payload.Buttons, silentSendOptions())
 		if err != nil {
 			attempt := item.RetryCount + 1
@@ -1515,7 +1515,7 @@ func (s *Service) processDeliveryBatch(ctx context.Context) {
 }
 
 func (s *Service) handleCommand(ctx context.Context, chatID, topicID int64, raw string, replyToMessageID int64) (*DirectResponse, error) {
-	return s.handleCommandFromSource(ctx, chatID, topicID, raw, replyToMessageID, model.PanelSourceTelegramInput)
+	return s.handleCommandFromSource(ctx, chatID, topicID, raw, replyToMessageID, model.PanelSourceChatInput)
 }
 
 func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID int64, raw string, replyToMessageID int64, sourceMode string) (*DirectResponse, error) {
@@ -1594,7 +1594,7 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 	case "/goal":
 		return s.goalCommand(ctx, chatID, topicID, rest, replyToMessageID, sourceMode)
 	case "/repair":
-		if err := s.RequestRepair(ctx, "telegram"); err != nil {
+		if err := s.RequestRepair(ctx, "chat"); err != nil {
 			return nil, err
 		}
 		return &DirectResponse{Text: s.t(ctx, "已请求修复。App-server 会话会在后台重建。", "Repair requested. App-server sessions will be recreated in the background.")}, nil
@@ -1616,7 +1616,7 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 }
 
 func (s *Service) handlePlainText(ctx context.Context, chatID, topicID int64, text string, replyToMessageID int64) (*DirectResponse, error) {
-	return s.handlePlainTextFromSource(ctx, chatID, topicID, text, replyToMessageID, model.PanelSourceTelegramInput)
+	return s.handlePlainTextFromSource(ctx, chatID, topicID, text, replyToMessageID, model.PanelSourceChatInput)
 }
 
 func (s *Service) handlePlainTextFromSource(ctx context.Context, chatID, topicID int64, text string, replyToMessageID int64, sourceMode string) (*DirectResponse, error) {
@@ -2249,7 +2249,7 @@ func (s *Service) resolveGoalCommand(ctx context.Context, chatID, topicID int64,
 }
 
 func (s *Service) sendInputToThreadTurn(ctx context.Context, chatID, topicID int64, threadID, routeTurnID, text, collaborationMode string) (*DirectResponse, error) {
-	return s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, threadID, routeTurnID, text, collaborationMode, model.PanelSourceTelegramInput)
+	return s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, threadID, routeTurnID, text, collaborationMode, model.PanelSourceChatInput)
 }
 
 func (s *Service) desktopInputHandledResponse(ctx context.Context, chatID, topicID int64, live Session, liveConnected bool, thread *model.Thread, routeTurnID, sourceMode string, desktopResult map[string]any, startedNewTurn bool, desktopCollaborationMode string) *DirectResponse {
@@ -2299,14 +2299,14 @@ func (s *Service) desktopInputHandledResponse(ctx context.Context, chatID, topic
 		"turn_id":     turn,
 	})
 	if strings.TrimSpace(turn) != "" {
-		s.startTelegramOriginHotPoll(ctx, threadID, turn)
+		s.startChatOriginHotPoll(ctx, threadID, turn)
 	}
 	return &DirectResponse{ThreadID: threadID, TurnID: turn}
 }
 
 func (s *Service) sendInputToThreadTurnFromSource(ctx context.Context, chatID, topicID int64, threadID, routeTurnID, text, collaborationMode, sourceMode string) (*DirectResponse, error) {
 	sourceMode = normalizeInputSourceMode(sourceMode)
-	s.logLifecycle("telegram_turn_input_start", lifecycleFields{
+	s.logLifecycle("chat_turn_input_start", lifecycleFields{
 		"chat_key":           model.ChatKey(chatID, topicID),
 		"source_mode":        sourceMode,
 		"thread_id":          threadID,
@@ -2340,7 +2340,7 @@ func (s *Service) sendInputToThreadTurnFromSource(ctx context.Context, chatID, t
 		}
 	}
 	if !connected || live == nil {
-		s.logLifecycle("telegram_turn_input_rejected", lifecycleFields{
+		s.logLifecycle("chat_turn_input_rejected", lifecycleFields{
 			"thread_id": threadID,
 			"reason":    "live_session_not_ready",
 		})
@@ -2424,7 +2424,7 @@ func (s *Service) sendInputToThreadTurnFromSource(ctx context.Context, chatID, t
 		}
 	}
 	if result == nil && !steerFailureMeansNoActiveTurn(steerErr) && (threadLooksActiveForInput(thread) || steerFailureImpliesActive(steerErr)) {
-		s.logLifecycle("telegram_turn_input_rejected", lifecycleFields{
+		s.logLifecycle("chat_turn_input_rejected", lifecycleFields{
 			"thread_id": threadID,
 			"turn_id":   thread.ActiveTurnID,
 			"reason":    "thread_still_active",
@@ -2494,14 +2494,14 @@ func (s *Service) sendInputToThreadTurnFromSource(ctx context.Context, chatID, t
 		Enabled: true,
 	}
 	s.syncThreadPanelToTarget(ctx, explicitTarget, threadID, true, sourceMode)
-	s.logLifecycle("telegram_turn_input_dispatched", lifecycleFields{
+	s.logLifecycle("chat_turn_input_dispatched", lifecycleFields{
 		"chat_key":    model.ChatKey(chatID, topicID),
 		"source_mode": sourceMode,
 		"thread_id":   threadID,
 		"turn_id":     turn,
 	})
 	if strings.TrimSpace(turn) != "" {
-		s.startTelegramOriginHotPoll(ctx, threadID, turn)
+		s.startChatOriginHotPoll(ctx, threadID, turn)
 	}
 	return &DirectResponse{ThreadID: threadID, TurnID: turn}, nil
 }
@@ -2571,13 +2571,13 @@ func (s *Service) ensureStartedTurnSnapshot(ctx context.Context, thread *model.T
 	nextSnapshot.NextPollAfter = model.TimeString(time.Now().UTC().Add(s.cfg.ObserverPollInterval).Format(time.RFC3339Nano))
 	_ = s.store.UpsertThread(ctx, startedThread)
 	_ = s.store.UpsertSnapshot(ctx, startedThread.ID, nextSnapshot)
-	s.logLifecycle("telegram_started_turn_snapshot_seeded", lifecycleFields{
+	s.logLifecycle("chat_started_turn_snapshot_seeded", lifecycleFields{
 		"thread_id": startedThread.ID,
 		"turn_id":   turnID,
 	})
 }
 
-func (s *Service) startTelegramOriginHotPoll(ctx context.Context, threadID, turnID string) {
+func (s *Service) startChatOriginHotPoll(ctx context.Context, threadID, turnID string) {
 	threadID = strings.TrimSpace(threadID)
 	turnID = strings.TrimSpace(turnID)
 	if threadID == "" || turnID == "" {
@@ -2590,14 +2590,14 @@ func (s *Service) startTelegramOriginHotPoll(ctx context.Context, threadID, turn
 		return
 	}
 	s.spawn(ctx, func(ctx context.Context) {
-		s.telegramOriginHotPollLoop(ctx, threadID, turnID)
+		s.chatOriginHotPollLoop(ctx, threadID, turnID)
 	})
 }
 
-func (s *Service) telegramOriginHotPollLoop(ctx context.Context, threadID, turnID string) {
-	timer := time.NewTimer(telegramOriginHotPollMax)
+func (s *Service) chatOriginHotPollLoop(ctx context.Context, threadID, turnID string) {
+	timer := time.NewTimer(chatOriginHotPollMax)
 	defer timer.Stop()
-	ticker := time.NewTicker(telegramOriginHotPollTick)
+	ticker := time.NewTicker(chatOriginHotPollTick)
 	defer ticker.Stop()
 	for {
 		select {
@@ -2606,14 +2606,14 @@ func (s *Service) telegramOriginHotPollLoop(ctx context.Context, threadID, turnI
 		case <-timer.C:
 			return
 		case <-ticker.C:
-			if !s.telegramOriginHotPollOnce(ctx, threadID, turnID) {
+			if !s.chatOriginHotPollOnce(ctx, threadID, turnID) {
 				return
 			}
 		}
 	}
 }
 
-func (s *Service) telegramOriginHotPollOnce(ctx context.Context, threadID, turnID string) bool {
+func (s *Service) chatOriginHotPollOnce(ctx context.Context, threadID, turnID string) bool {
 	threadID = strings.TrimSpace(threadID)
 	turnID = strings.TrimSpace(turnID)
 	if threadID == "" || turnID == "" {
@@ -2626,8 +2626,8 @@ func (s *Service) telegramOriginHotPollOnce(ctx context.Context, threadID, turnI
 	if !connected || poll == nil {
 		return true
 	}
-	if _, err := s.refreshThreadForOperation(ctx, poll, threadID, "telegram_hot_poll"); err != nil {
-		s.logLifecycle("telegram_hot_poll_failed", lifecycleFields{
+	if _, err := s.refreshThreadForOperation(ctx, poll, threadID, "chat_hot_poll"); err != nil {
+		s.logLifecycle("chat_hot_poll_failed", lifecycleFields{
 			"thread_id": threadID,
 			"turn_id":   turnID,
 			"error":     err,
@@ -2657,7 +2657,7 @@ func (s *Service) threadHasDeferredTerminal(ctx context.Context, threadID, turnI
 	if threadID == "" || turnID == "" {
 		return false
 	}
-	state, ok, err := s.loadTelegramOriginEmptyInterruptedDefer(ctx, threadID, turnID, time.Now().UTC())
+	state, ok, err := s.loadChatOriginEmptyInterruptedDefer(ctx, threadID, turnID, time.Now().UTC())
 	if err != nil || !ok {
 		return false
 	}
@@ -2805,7 +2805,7 @@ func (s *Service) interruptTurn(ctx context.Context, chatID, topicID int64, thre
 		})
 		return nil, err
 	}
-	_ = s.markTelegramOriginExplicitInterrupt(ctx, threadID, turnID)
+	_ = s.markChatOriginExplicitInterrupt(ctx, threadID, turnID)
 	s.logAppServerCall("TurnInterrupt", started, nil, live, lifecycleFields{
 		"thread_id": threadID,
 		"turn_id":   turnID,
@@ -3082,7 +3082,7 @@ func (s *Service) threadIDResponse(ctx context.Context, threadID, turnID string)
 }
 
 func (s *Service) resolveRoute(ctx context.Context, chatID, topicID int64, explicitThreadID string, replyToMessageID int64) (model.RouteDecision, error) {
-	return s.resolveRouteFromSource(ctx, chatID, topicID, explicitThreadID, replyToMessageID, model.PanelSourceTelegramInput)
+	return s.resolveRouteFromSource(ctx, chatID, topicID, explicitThreadID, replyToMessageID, model.PanelSourceChatInput)
 }
 
 func (s *Service) resolveRouteFromSource(ctx context.Context, chatID, topicID int64, explicitThreadID string, replyToMessageID int64, sourceMode string) (model.RouteDecision, error) {
@@ -3593,10 +3593,10 @@ func (s *Service) refreshThreadForOperation(ctx context.Context, client Session,
 	if err != nil {
 		return nil, err
 	}
-	gateHandled, gateDecision := s.applyTelegramOriginTerminalGate(ctx, operation, &current, previous)
+	gateHandled, gateDecision := s.applyChatOriginTerminalGate(ctx, operation, &current, previous)
 	if gateHandled {
 		if gateDecision.DeferredDisplayableProgress() {
-			s.preserveTelegramOriginLiveCurrentTool(ctx, &current, previous)
+			s.preserveChatOriginLiveCurrentTool(ctx, &current, previous)
 			if err := s.store.UpsertThread(ctx, thread); err != nil {
 				return nil, err
 			}
@@ -3612,7 +3612,7 @@ func (s *Service) refreshThreadForOperation(ctx context.Context, client Session,
 		}
 		return &thread, nil
 	}
-	s.preserveTelegramOriginLiveCurrentTool(ctx, &current, previous)
+	s.preserveChatOriginLiveCurrentTool(ctx, &current, previous)
 	if err := s.store.UpsertThread(ctx, thread); err != nil {
 		return nil, err
 	}
@@ -3625,7 +3625,7 @@ func (s *Service) refreshThreadForOperation(ctx context.Context, client Session,
 		return nil, err
 	}
 	s.logObserverSyncResult(operation, current)
-	s.maybeLogTelegramOriginTerminal(ctx, current)
+	s.maybeLogChatOriginTerminal(ctx, current)
 	return &thread, nil
 }
 

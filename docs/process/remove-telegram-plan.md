@@ -26,16 +26,16 @@ Verification:
 
 ## Phase 2: Source Modes And Runtime Naming
 
-- [ ] Delete `PanelSourceTelegramInput`.
-- [ ] Rename or remove `telegram_origin_*` state keys, functions, and log events.
-- [ ] Remove Telegram-origin hot poll naming.
-- [ ] Remove Telegram terminal gate naming.
-- [ ] Replace surviving source modes with Feishu-only or neutral names.
+- [x] Delete `PanelSourceTelegramInput`.
+- [x] Rename or remove `telegram_origin_*` state keys, functions, and log events.
+- [x] Remove Telegram-origin hot poll naming.
+- [x] Remove Telegram terminal gate naming.
+- [x] Replace surviving source modes with Feishu-only or neutral names.
 
 Verification:
 
-- [ ] `rg -n "PanelSourceTelegram|telegram_origin|TelegramOrigin|telegramOrigin" internal`
-- [ ] `go test ./internal/daemon ./internal/model ./internal/storage`
+- [x] `rg -n "PanelSourceTelegram|telegram_origin|TelegramOrigin|telegramOrigin" internal`
+- [x] `go test ./internal/daemon ./internal/model ./internal/storage`
 
 ## Phase 3: Runtime Behavior
 

@@ -772,7 +772,7 @@ func (s *Store) PutCallbackRoute(ctx context.Context, route model.CallbackRoute)
 	_, err := s.db.ExecContext(ctx, `
 	INSERT OR REPLACE INTO callback_routes(route_token, action, thread_id, turn_id, request_id, telegram_message_id, status, expires_at, payload_json, created_at)
 	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		route.Token, route.Action, route.ThreadID, nullable(route.TurnID), nullable(route.RequestID), route.TelegramMessageID, route.Status, nullable(route.ExpiresAt), route.PayloadJSON, route.CreatedAt,
+		route.Token, route.Action, route.ThreadID, nullable(route.TurnID), nullable(route.RequestID), route.ChatMessageID, route.Status, nullable(route.ExpiresAt), route.PayloadJSON, route.CreatedAt,
 	)
 	return err
 }
@@ -782,7 +782,7 @@ func (s *Store) GetCallbackRoute(ctx context.Context, token string) (*model.Call
 	SELECT route_token, action, thread_id, coalesce(turn_id,''), coalesce(request_id,''), coalesce(telegram_message_id,0), status, coalesce(expires_at,''), payload_json, created_at
 	FROM callback_routes WHERE route_token = ?`, token)
 	var route model.CallbackRoute
-	err := row.Scan(&route.Token, &route.Action, &route.ThreadID, &route.TurnID, &route.RequestID, &route.TelegramMessageID, &route.Status, &route.ExpiresAt, &route.PayloadJSON, &route.CreatedAt)
+	err := row.Scan(&route.Token, &route.Action, &route.ThreadID, &route.TurnID, &route.RequestID, &route.ChatMessageID, &route.Status, &route.ExpiresAt, &route.PayloadJSON, &route.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -807,7 +807,7 @@ func (s *Store) SavePendingApproval(ctx context.Context, approval model.PendingA
 		payload_json = excluded.payload_json,
 		updated_at = excluded.updated_at`,
 		approval.RequestID, approval.ThreadID, nullable(approval.TurnID), nullable(approval.ItemID), approval.PromptKind, nullable(approval.Question), approval.Status,
-		approval.TelegramMessageID, approval.PayloadJSON, approval.UpdatedAt,
+		approval.ChatMessageID, approval.PayloadJSON, approval.UpdatedAt,
 	)
 	return err
 }
@@ -817,7 +817,7 @@ func (s *Store) GetPendingApproval(ctx context.Context, requestID string) (*mode
 	SELECT request_id, thread_id, coalesce(turn_id,''), coalesce(item_id,''), prompt_kind, coalesce(question,''), status, coalesce(telegram_message_id,0), payload_json, updated_at
 	FROM pending_approvals WHERE request_id = ?`, requestID)
 	var approval model.PendingApproval
-	err := row.Scan(&approval.RequestID, &approval.ThreadID, &approval.TurnID, &approval.ItemID, &approval.PromptKind, &approval.Question, &approval.Status, &approval.TelegramMessageID, &approval.PayloadJSON, &approval.UpdatedAt)
+	err := row.Scan(&approval.RequestID, &approval.ThreadID, &approval.TurnID, &approval.ItemID, &approval.PromptKind, &approval.Question, &approval.Status, &approval.ChatMessageID, &approval.PayloadJSON, &approval.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

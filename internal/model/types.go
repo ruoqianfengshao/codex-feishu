@@ -11,7 +11,7 @@ import (
 const (
 	PanelSourceExplicit       = "explicit"
 	PanelSourceGlobalObserver = "global_observer"
-	PanelSourceTelegramInput  = "telegram_input"
+	PanelSourceChatInput      = "chat_input"
 	PanelSourceFeishuInput    = "feishu_input"
 
 	PromptSourceServerRequest = "server_request"
@@ -48,9 +48,8 @@ type SendOptions struct {
 }
 
 const (
-	AdapterAuto     = "auto"
-	AdapterTelegram = "telegram"
-	AdapterFeishu   = "feishu"
+	AdapterAuto   = "auto"
+	AdapterFeishu = "feishu"
 )
 
 const (
@@ -179,29 +178,29 @@ type ObserverTarget struct {
 }
 
 type CallbackRoute struct {
-	Token             string
-	Action            string
-	ThreadID          string
-	TurnID            string
-	RequestID         string
-	TelegramMessageID int64
-	Status            string
-	ExpiresAt         string
-	PayloadJSON       string
-	CreatedAt         TimeString
+	Token         string
+	Action        string
+	ThreadID      string
+	TurnID        string
+	RequestID     string
+	ChatMessageID int64
+	Status        string
+	ExpiresAt     string
+	PayloadJSON   string
+	CreatedAt     TimeString
 }
 
 type PendingApproval struct {
-	RequestID         string
-	ThreadID          string
-	TurnID            string
-	ItemID            string
-	PromptKind        string
-	Question          string
-	Status            string
-	TelegramMessageID int64
-	PayloadJSON       string
-	UpdatedAt         TimeString
+	RequestID     string
+	ThreadID      string
+	TurnID        string
+	ItemID        string
+	PromptKind    string
+	Question      string
+	Status        string
+	ChatMessageID int64
+	PayloadJSON   string
+	UpdatedAt     TimeString
 }
 
 type PlanPrompt struct {

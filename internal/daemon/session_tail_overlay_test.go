@@ -81,7 +81,7 @@ func TestPollTrackedIgnoresStaleSessionTailTool(t *testing.T) {
 		t.Fatalf("compact snapshot leaked stale session-tail command: %s", snapshot.CompactJSON)
 	}
 	if strings.Contains(sender.allText(), "Start-Sleep -Seconds 1800") {
-		t.Fatalf("telegram messages leaked stale session-tail command: %s", sender.allText())
+		t.Fatalf("chat messages leaked stale session-tail command: %s", sender.allText())
 	}
 }
 

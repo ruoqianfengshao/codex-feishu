@@ -618,7 +618,7 @@ func (s *Service) createProjectThread(ctx context.Context, chatID, topicID int64
 }
 
 func (s *Service) newChatCommand(ctx context.Context, chatID, topicID int64, rest string) (*DirectResponse, error) {
-	return s.newChatCommandFromSource(ctx, chatID, topicID, rest, model.PanelSourceTelegramInput)
+	return s.newChatCommandFromSource(ctx, chatID, topicID, rest, model.PanelSourceChatInput)
 }
 
 func (s *Service) newChatCommandFromSource(ctx context.Context, chatID, topicID int64, rest, sourceMode string) (*DirectResponse, error) {
@@ -700,7 +700,7 @@ func codexChatSlugFromPrompt(prompt string, now time.Time) string {
 }
 
 func (s *Service) maybeConsumeNewThreadPrompt(ctx context.Context, chatID, topicID int64, text string) (*DirectResponse, bool, error) {
-	return s.maybeConsumeNewThreadPromptFromSource(ctx, chatID, topicID, text, model.PanelSourceTelegramInput)
+	return s.maybeConsumeNewThreadPromptFromSource(ctx, chatID, topicID, text, model.PanelSourceChatInput)
 }
 
 func (s *Service) maybeConsumeNewThreadPromptFromSource(ctx context.Context, chatID, topicID int64, text, sourceMode string) (*DirectResponse, bool, error) {
@@ -808,7 +808,7 @@ func (s *Service) createThreadFromProjectPrompt(ctx context.Context, chatID, top
 	target := model.ObserverTarget{ChatKey: model.ChatKey(chatID, topicID), ChatID: chatID, TopicID: topicID, Enabled: true}
 	s.syncThreadPanelToTarget(ctx, target, thread.ID, true, sourceMode)
 	if strings.TrimSpace(turnID) != "" {
-		s.startTelegramOriginHotPoll(ctx, thread.ID, turnID)
+		s.startChatOriginHotPoll(ctx, thread.ID, turnID)
 	}
 	response := &DirectResponse{ThreadID: thread.ID, TurnID: turnID}
 	if sourceMode == model.PanelSourceFeishuInput {

@@ -390,7 +390,7 @@ func (s *Store) GetLatestPendingApprovalForThread(ctx context.Context, threadID 
 		threadID,
 	)
 	var approval model.PendingApproval
-	err := row.Scan(&approval.RequestID, &approval.ThreadID, &approval.TurnID, &approval.ItemID, &approval.PromptKind, &approval.Question, &approval.Status, &approval.TelegramMessageID, &approval.PayloadJSON, &approval.UpdatedAt)
+	err := row.Scan(&approval.RequestID, &approval.ThreadID, &approval.TurnID, &approval.ItemID, &approval.PromptKind, &approval.Question, &approval.Status, &approval.ChatMessageID, &approval.PayloadJSON, &approval.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

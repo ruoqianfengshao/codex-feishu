@@ -32,7 +32,7 @@ func cleanPayloadString(value string) string {
 	return value
 }
 
-func cleanTelegramNilLiteral(value string) string {
+func cleanNilLiteral(value string) string {
 	return strings.ReplaceAll(value, "<nil>", "")
 }
 

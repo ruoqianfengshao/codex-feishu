@@ -90,12 +90,12 @@ func TestResolveRouteFromFeishuPlainTextUsesLatestCurrentPanelOnly(t *testing.T)
 		t.Fatalf("feishu route = %#v, want panel-thread / panel without turn route", feishu)
 	}
 
-	telegram, err := service.resolveRouteFromSource(ctx, 123456789, 0, "", 0, model.PanelSourceTelegramInput)
+	chatRoute, err := service.resolveRouteFromSource(ctx, 123456789, 0, "", 0, model.PanelSourceChatInput)
 	if err != nil {
-		t.Fatalf("resolveRouteFromSource(telegram) failed: %v", err)
+		t.Fatalf("resolveRouteFromSource(chat) failed: %v", err)
 	}
-	if telegram.ThreadID != "" || telegram.Source != model.RouteSourceNone {
-		t.Fatalf("telegram route = %#v, want no route", telegram)
+	if chatRoute.ThreadID != "" || chatRoute.Source != model.RouteSourceNone {
+		t.Fatalf("chat route = %#v, want no route", chatRoute)
 	}
 }
 
@@ -746,12 +746,12 @@ func TestFeishuShowThreadCallbackReturnsVisibleOpenResponse(t *testing.T) {
 	}
 	token := service.callbackButton(ctx, "Open 1", "show_thread", thread.ID, "", "", nil).CallbackData
 
-	telegramResponse, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, token, model.PanelSourceTelegramInput)
+	chatResponse, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, token, model.PanelSourceChatInput)
 	if err != nil {
-		t.Fatalf("HandleCallbackFromSource(telegram) failed: %v", err)
+		t.Fatalf("HandleCallbackFromSource(chat) failed: %v", err)
 	}
-	if telegramResponse == nil || strings.TrimSpace(telegramResponse.Text) != "" {
-		t.Fatalf("telegramResponse = %#v, want legacy empty text response", telegramResponse)
+	if chatResponse == nil || strings.TrimSpace(chatResponse.Text) != "" {
+		t.Fatalf("chatResponse = %#v, want legacy empty text response", chatResponse)
 	}
 
 	feishuResponse, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, token, model.PanelSourceFeishuInput)
@@ -1882,7 +1882,7 @@ func TestLiveToolNotificationStoresRunningCommandWithoutRenderingItAsCurrent(t *
 		TopicID:          0,
 		ProjectName:      thread.ProjectName,
 		ThreadID:         thread.ID,
-		SourceMode:       model.PanelSourceTelegramInput,
+		SourceMode:       model.PanelSourceChatInput,
 		SummaryMessageID: 201,
 		ToolMessageID:    202,
 		OutputMessageID:  203,
@@ -2241,23 +2241,23 @@ func TestPollSnapshotWithoutToolDoesNotPreserveSameTurnRunningToolAsCurrent(t *t
 	}
 }
 
-func TestPollSnapshotWithoutToolPreservesTelegramOriginLiveCurrentTool(t *testing.T) {
+func TestPollSnapshotWithoutToolPreservesChatOriginLiveCurrentTool(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
 	ctx := context.Background()
-	turnID := "turn-telegram-live-current-preserve"
+	turnID := "turn-chat-live-current-preserve"
 	thread := model.Thread{
-		ID:           "thread-telegram-live-current-preserve",
-		Title:        "Telegram live preserve",
+		ID:           "thread-chat-live-current-preserve",
+		Title:        "chat live preserve",
 		ProjectName:  "Codex",
 		CWD:          "/Users/example/project",
 		UpdatedAt:    time.Now().UTC().Unix(),
 		Status:       "active",
 		ActiveTurnID: turnID,
 	}
-	if err := service.markTelegramOriginTurn(ctx, thread.ID, turnID); err != nil {
-		t.Fatalf("markTelegramOriginTurn failed: %v", err)
+	if err := service.markChatOriginTurn(ctx, thread.ID, turnID); err != nil {
+		t.Fatalf("markChatOriginTurn failed: %v", err)
 	}
 	firstSeen := time.Date(2026, time.May, 1, 23, 46, 1, 0, time.UTC)
 	previousCurrent := appserver.ThreadReadSnapshot{
@@ -2287,7 +2287,7 @@ func TestPollSnapshotWithoutToolPreservesTelegramOriginLiveCurrentTool(t *testin
 		},
 	}
 
-	service.preserveTelegramOriginLiveCurrentTool(ctx, &pollWithoutTool, &previous)
+	service.preserveChatOriginLiveCurrentTool(ctx, &pollWithoutTool, &previous)
 
 	if !pollWithoutTool.LatestToolLiveCurrent {
 		t.Fatal("LatestToolLiveCurrent = false, want preserved live current tool")
@@ -2304,23 +2304,23 @@ func TestPollSnapshotWithoutToolPreservesTelegramOriginLiveCurrentTool(t *testin
 	}
 }
 
-func TestPollSnapshotWithOlderCompletedToolPreservesTelegramOriginLiveCurrentTool(t *testing.T) {
+func TestPollSnapshotWithOlderCompletedToolPreservesChatOriginLiveCurrentTool(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
 	ctx := context.Background()
-	turnID := "turn-telegram-live-current-over-completed"
+	turnID := "turn-chat-live-current-over-completed"
 	thread := model.Thread{
-		ID:           "thread-telegram-live-current-over-completed",
-		Title:        "Telegram live preserve over completed",
+		ID:           "thread-chat-live-current-over-completed",
+		Title:        "chat live preserve over completed",
 		ProjectName:  "Codex",
 		CWD:          "/Users/example/project",
 		UpdatedAt:    time.Now().UTC().Unix(),
 		Status:       "active",
 		ActiveTurnID: turnID,
 	}
-	if err := service.markTelegramOriginTurn(ctx, thread.ID, turnID); err != nil {
-		t.Fatalf("markTelegramOriginTurn failed: %v", err)
+	if err := service.markChatOriginTurn(ctx, thread.ID, turnID); err != nil {
+		t.Fatalf("markChatOriginTurn failed: %v", err)
 	}
 	firstSeen := time.Date(2026, time.May, 1, 23, 48, 1, 0, time.UTC)
 	previousCurrent := appserver.ThreadReadSnapshot{
@@ -2363,7 +2363,7 @@ func TestPollSnapshotWithOlderCompletedToolPreservesTelegramOriginLiveCurrentToo
 		},
 	}
 
-	service.preserveTelegramOriginLiveCurrentTool(ctx, &pollWithOlderCompleted, &previous)
+	service.preserveChatOriginLiveCurrentTool(ctx, &pollWithOlderCompleted, &previous)
 
 	if !pollWithOlderCompleted.LatestToolLiveCurrent {
 		t.Fatal("LatestToolLiveCurrent = false, want preserved live current tool")
@@ -2475,7 +2475,7 @@ func TestPollTrackedSkipsFirstSeenRecentTerminalAfterObserverRemoval(t *testing.
 	}
 }
 
-func TestPollTrackedDefersTelegramOriginEmptyInterruptedAndKeepsActiveState(t *testing.T) {
+func TestPollTrackedDefersChatOriginEmptyInterruptedAndKeepsActiveState(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -2503,8 +2503,8 @@ func TestPollTrackedDefersTelegramOriginEmptyInterruptedAndKeepsActiveState(t *t
 	if err := service.store.UpsertSnapshot(ctx, thread.ID, previous); err != nil {
 		t.Fatalf("UpsertSnapshot failed: %v", err)
 	}
-	if err := service.markTelegramOriginTurn(ctx, thread.ID, turnID); err != nil {
-		t.Fatalf("markTelegramOriginTurn failed: %v", err)
+	if err := service.markChatOriginTurn(ctx, thread.ID, turnID); err != nil {
+		t.Fatalf("markChatOriginTurn failed: %v", err)
 	}
 	service.poll = &stubSession{
 		threadReads: map[string]map[string]any{
@@ -2539,8 +2539,8 @@ func TestPollTrackedDefersTelegramOriginEmptyInterruptedAndKeepsActiveState(t *t
 		t.Fatalf("defer state = %#v, want one deferred empty interrupted", state)
 	}
 	got := logs.String()
-	requireLogContains(t, got, `"event":"telegram_origin_terminal_deferred"`)
-	if strings.Contains(got, `"event":"telegram_origin_turn_terminal"`) {
+	requireLogContains(t, got, `"event":"chat_origin_terminal_deferred"`)
+	if strings.Contains(got, `"event":"chat_origin_turn_terminal"`) {
 		t.Fatalf("terminal log should be deferred, got:\n%s", got)
 	}
 }
@@ -2563,8 +2563,8 @@ func TestPollTrackedDeferredInterruptedDoesNotOverwriteFreshLiveToolSnapshot(t *
 	if err := service.store.UpsertThread(ctx, thread); err != nil {
 		t.Fatalf("UpsertThread failed: %v", err)
 	}
-	if err := service.markTelegramOriginTurn(ctx, thread.ID, turnID); err != nil {
-		t.Fatalf("markTelegramOriginTurn failed: %v", err)
+	if err := service.markChatOriginTurn(ctx, thread.ID, turnID); err != nil {
+		t.Fatalf("markChatOriginTurn failed: %v", err)
 	}
 	stalePrevious := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
 		Thread:           thread,
@@ -2601,9 +2601,9 @@ func TestPollTrackedDeferredInterruptedDoesNotOverwriteFreshLiveToolSnapshot(t *
 		},
 	}
 
-	handled, _ := service.applyTelegramOriginTerminalGate(ctx, "poll_tracked", &emptyInterrupted, &stalePrevious)
+	handled, _ := service.applyChatOriginTerminalGate(ctx, "poll_tracked", &emptyInterrupted, &stalePrevious)
 	if !handled {
-		t.Fatal("applyTelegramOriginTerminalGate = false, want deferred interrupted")
+		t.Fatal("applyChatOriginTerminalGate = false, want deferred interrupted")
 	}
 
 	stored, err := service.store.GetSnapshot(ctx, thread.ID)
@@ -2625,7 +2625,7 @@ func TestPollTrackedDeferredInterruptedDoesNotOverwriteFreshLiveToolSnapshot(t *
 	}
 }
 
-func TestTelegramOriginHotPollContinuesForDeferredInterrupted(t *testing.T) {
+func TestChatOriginHotPollContinuesForDeferredInterrupted(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -2651,8 +2651,8 @@ func TestTelegramOriginHotPollContinuesForDeferredInterrupted(t *testing.T) {
 	if err := service.store.UpsertSnapshot(ctx, thread.ID, previous); err != nil {
 		t.Fatalf("UpsertSnapshot failed: %v", err)
 	}
-	if err := service.markTelegramOriginTurn(ctx, thread.ID, turnID); err != nil {
-		t.Fatalf("markTelegramOriginTurn failed: %v", err)
+	if err := service.markChatOriginTurn(ctx, thread.ID, turnID); err != nil {
+		t.Fatalf("markChatOriginTurn failed: %v", err)
 	}
 	service.poll = &stubSession{
 		threadReads: map[string]map[string]any{
@@ -2661,10 +2661,10 @@ func TestTelegramOriginHotPollContinuesForDeferredInterrupted(t *testing.T) {
 	}
 	service.pollConnected = true
 
-	keepGoing := service.telegramOriginHotPollOnce(ctx, thread.ID, turnID)
+	keepGoing := service.chatOriginHotPollOnce(ctx, thread.ID, turnID)
 
 	if !keepGoing {
-		t.Fatal("telegramOriginHotPollOnce returned false, want continued polling for deferred interrupted")
+		t.Fatal("chatOriginHotPollOnce returned false, want continued polling for deferred interrupted")
 	}
 	stored, err := service.store.GetSnapshot(ctx, thread.ID)
 	if err != nil {
@@ -2678,7 +2678,7 @@ func TestTelegramOriginHotPollContinuesForDeferredInterrupted(t *testing.T) {
 	}
 }
 
-func TestPollTrackedDefersTelegramOriginPartialInterruptedAndKeepsActiveState(t *testing.T) {
+func TestPollTrackedDefersChatOriginPartialInterruptedAndKeepsActiveState(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -2729,8 +2729,8 @@ func TestPollTrackedDefersTelegramOriginPartialInterruptedAndKeepsActiveState(t 
 		t.Fatalf("CreateThreadPanel failed: %v", err)
 	}
 	_ = summaryMessage
-	if err := service.markTelegramOriginTurn(ctx, thread.ID, turnID); err != nil {
-		t.Fatalf("markTelegramOriginTurn failed: %v", err)
+	if err := service.markChatOriginTurn(ctx, thread.ID, turnID); err != nil {
+		t.Fatalf("markChatOriginTurn failed: %v", err)
 	}
 	service.poll = &stubSession{
 		threadReads: map[string]map[string]any{
@@ -2778,9 +2778,9 @@ func TestPollTrackedDefersTelegramOriginPartialInterruptedAndKeepsActiveState(t 
 		t.Fatalf("defer state = %#v, want partial_interrupted defer", state)
 	}
 	got := logs.String()
-	requireLogContains(t, got, `"event":"telegram_origin_terminal_deferred"`)
+	requireLogContains(t, got, `"event":"chat_origin_terminal_deferred"`)
 	requireLogContains(t, got, `"reason":"partial_interrupted"`)
-	if strings.Contains(got, `"event":"telegram_origin_turn_terminal"`) {
+	if strings.Contains(got, `"event":"chat_origin_turn_terminal"`) {
 		t.Fatalf("terminal log should be deferred, got:\n%s", got)
 	}
 }
@@ -2824,7 +2824,7 @@ func compactDeferredProgressForTest(snapshot appserver.ThreadReadSnapshot) model
 	return state
 }
 
-func TestPollTrackedAcceptsTelegramOriginFinalInterruptedAndStopsHotPolling(t *testing.T) {
+func TestPollTrackedAcceptsChatOriginFinalInterruptedAndStopsHotPolling(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -2857,8 +2857,8 @@ func TestPollTrackedAcceptsTelegramOriginFinalInterruptedAndStopsHotPolling(t *t
 	if err := service.store.UpsertSnapshot(ctx, thread.ID, previous); err != nil {
 		t.Fatalf("UpsertSnapshot failed: %v", err)
 	}
-	if err := service.markTelegramOriginTurn(ctx, thread.ID, turnID); err != nil {
-		t.Fatalf("markTelegramOriginTurn failed: %v", err)
+	if err := service.markChatOriginTurn(ctx, thread.ID, turnID); err != nil {
+		t.Fatalf("markChatOriginTurn failed: %v", err)
 	}
 	service.poll = &stubSession{
 		threadReads: map[string]map[string]any{
@@ -2890,12 +2890,12 @@ func TestPollTrackedAcceptsTelegramOriginFinalInterruptedAndStopsHotPolling(t *t
 	}
 	got := logs.String()
 	requireLogContains(t, got, `"event":"observer_sync_result"`)
-	if strings.Contains(got, `"event":"telegram_origin_terminal_deferred"`) {
+	if strings.Contains(got, `"event":"chat_origin_terminal_deferred"`) {
 		t.Fatalf("final interrupted should not be deferred, got:\n%s", got)
 	}
 }
 
-func TestTelegramOriginHotPollCapturesRunningTool(t *testing.T) {
+func TestChatOriginHotPollCapturesRunningTool(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -2921,8 +2921,8 @@ func TestTelegramOriginHotPollCapturesRunningTool(t *testing.T) {
 	if err := service.store.UpsertSnapshot(ctx, thread.ID, previous); err != nil {
 		t.Fatalf("UpsertSnapshot failed: %v", err)
 	}
-	if err := service.markTelegramOriginTurn(ctx, thread.ID, turnID); err != nil {
-		t.Fatalf("markTelegramOriginTurn failed: %v", err)
+	if err := service.markChatOriginTurn(ctx, thread.ID, turnID); err != nil {
+		t.Fatalf("markChatOriginTurn failed: %v", err)
 	}
 	payload := diagnosticThreadReadPayloadWithTool(thread, turnID, "inProgress")
 	threadPayload := payload["thread"].(map[string]any)
@@ -2940,10 +2940,10 @@ func TestTelegramOriginHotPollCapturesRunningTool(t *testing.T) {
 	}
 	service.pollConnected = true
 
-	keepGoing := service.telegramOriginHotPollOnce(ctx, thread.ID, turnID)
+	keepGoing := service.chatOriginHotPollOnce(ctx, thread.ID, turnID)
 
 	if !keepGoing {
-		t.Fatal("telegramOriginHotPollOnce returned false for in-progress turn")
+		t.Fatal("chatOriginHotPollOnce returned false for in-progress turn")
 	}
 	stored, err := service.store.GetSnapshot(ctx, thread.ID)
 	if err != nil {
@@ -2994,8 +2994,8 @@ func TestRefreshThreadForOperationDefersEmptyInterrupted(t *testing.T) {
 	if err := service.store.UpsertSnapshot(ctx, thread.ID, previous); err != nil {
 		t.Fatalf("UpsertSnapshot failed: %v", err)
 	}
-	if err := service.markTelegramOriginTurn(ctx, thread.ID, turnID); err != nil {
-		t.Fatalf("markTelegramOriginTurn failed: %v", err)
+	if err := service.markChatOriginTurn(ctx, thread.ID, turnID); err != nil {
+		t.Fatalf("markChatOriginTurn failed: %v", err)
 	}
 	stub := &stubSession{
 		threadReads: map[string]map[string]any{
@@ -3064,8 +3064,8 @@ func TestRefreshThreadForOperationTerminalCompletedToolReplacesLiveCurrent(t *te
 	if err := service.store.UpsertSnapshot(ctx, thread.ID, previous); err != nil {
 		t.Fatalf("UpsertSnapshot failed: %v", err)
 	}
-	if err := service.markTelegramOriginTurn(ctx, thread.ID, turnID); err != nil {
-		t.Fatalf("markTelegramOriginTurn failed: %v", err)
+	if err := service.markChatOriginTurn(ctx, thread.ID, turnID); err != nil {
+		t.Fatalf("markChatOriginTurn failed: %v", err)
 	}
 	stub := &stubSession{
 		threadReads: map[string]map[string]any{
@@ -4128,7 +4128,7 @@ func TestPlanCommandKnownThreadHeadStaysExplicit(t *testing.T) {
 	}
 }
 
-func TestTelegramTurnLifecycleLogsSuccessfulStart(t *testing.T) {
+func TestChatTurnLifecycleLogsSuccessfulStart(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
 	logs := captureServiceLogs(service)
@@ -4159,10 +4159,10 @@ func TestTelegramTurnLifecycleLogsSuccessfulStart(t *testing.T) {
 		t.Fatalf("response = %#v, want started-turn", response)
 	}
 	got := logs.String()
-	requireLogContains(t, got, `"event":"telegram_turn_input_start"`)
+	requireLogContains(t, got, `"event":"chat_turn_input_start"`)
 	requireLogContains(t, got, `"method":"ThreadResume"`)
 	requireLogContains(t, got, `"method":"TurnStart"`)
-	requireLogContains(t, got, `"event":"telegram_origin_turn_marked"`)
+	requireLogContains(t, got, `"event":"chat_origin_turn_marked"`)
 	requireLogContains(t, got, `"collaboration_mode":"plan"`)
 	requireLogContains(t, got, `"model":"gpt-test"`)
 	requireLogContains(t, got, `"text_len":24`)
@@ -4220,7 +4220,7 @@ func TestSnapshotHasPassiveChangeIgnoresRepeatedTerminalSnapshot(t *testing.T) {
 	}
 }
 
-func TestTelegramTurnLifecycleLogsThreadResumeFailure(t *testing.T) {
+func TestChatTurnLifecycleLogsThreadResumeFailure(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
 	logs := captureServiceLogs(service)
@@ -4242,7 +4242,7 @@ func TestTelegramTurnLifecycleLogsThreadResumeFailure(t *testing.T) {
 	requireLogContains(t, got, `"error":"resume failed"`)
 }
 
-func TestTelegramTurnLifecycleLogsTurnStartFailure(t *testing.T) {
+func TestChatTurnLifecycleLogsTurnStartFailure(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
 	logs := captureServiceLogs(service)
@@ -4265,7 +4265,7 @@ func TestTelegramTurnLifecycleLogsTurnStartFailure(t *testing.T) {
 	requireLogContains(t, got, `"error":"start failed"`)
 }
 
-func TestTelegramTurnLifecycleLogsRefreshFailuresAroundStart(t *testing.T) {
+func TestChatTurnLifecycleLogsRefreshFailuresAroundStart(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
 	logs := captureServiceLogs(service)
@@ -5488,7 +5488,7 @@ func TestAnswerChoiceMissingTextDoesNotSendNil(t *testing.T) {
 		ThreadID:    "thread-missing-text",
 		TurnID:      "turn-missing-text",
 		PayloadJSON: `{}`,
-	}, model.PanelSourceTelegramInput)
+	}, model.PanelSourceChatInput)
 	if err != nil {
 		t.Fatalf("answerChoice(missing text) failed: %v", err)
 	}

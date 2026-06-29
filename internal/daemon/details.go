@@ -33,7 +33,7 @@ func (s *Service) maybeRenderFinalCard(ctx context.Context, sender Sender, targe
 	}
 	finalMessageID := lastMessageID(messageIDs)
 	if finalMessageID == 0 {
-		return fmt.Errorf("telegram final card send returned no message id")
+		return fmt.Errorf("final card send returned no message id")
 	}
 	_ = s.store.PutMessageRoute(ctx, model.MessageRoute{
 		ChatID:    target.ChatID,
@@ -144,7 +144,7 @@ func latestTerminalDetailText(items []model.DetailItem) (string, string) {
 }
 
 func renderSingleMarkdownCard(header, markdown string) model.RenderedMessage {
-	body := strings.TrimSpace(cleanTelegramNilLiteral(markdown))
+	body := strings.TrimSpace(cleanNilLiteral(markdown))
 	truncated := false
 	for attempts := 0; attempts < 12; attempts++ {
 		candidate := body
@@ -271,9 +271,9 @@ func (s *Service) editPanelCard(ctx context.Context, chatID, topicID, messageID 
 	sender := s.sender
 	s.mu.RUnlock()
 	if sender == nil {
-		return fmt.Errorf("telegram sender is not ready")
+		return fmt.Errorf("message sender is not ready")
 	}
-	s.logTelegramRenderedMessagesContainsNil(panel.ThreadID, snapshot.LatestTurnID, "details", messageID, []model.RenderedMessage{message})
+	s.logChatRenderedMessagesContainsNil(panel.ThreadID, snapshot.LatestTurnID, "details", messageID, []model.RenderedMessage{message})
 	if err := sender.EditRenderedMessage(ctx, chatID, topicID, messageID, message, buttons); err != nil {
 		return err
 	}
@@ -323,7 +323,7 @@ func (s *Service) renderDetailsCard(ctx context.Context, panelID int64, thread m
 
 func appendDetailSectionHeaderSegments(segments []tgformat.Segment, section detailSection) []tgformat.Segment {
 	segments = append(segments, tgformat.Plain("\n\n"+section.Title))
-	if text := strings.TrimSpace(cleanTelegramNilLiteral(section.Text)); text != "" {
+	if text := strings.TrimSpace(cleanNilLiteral(section.Text)); text != "" {
 		segments = append(segments, tgformat.Plain("\n"), tgformat.Markdown(text))
 	}
 	return segments
@@ -348,9 +348,9 @@ func appendToolDetailSegments(segments []tgformat.Segment, items []model.DetailI
 	for _, item := range items {
 		switch item.Kind {
 		case model.DetailItemTool:
-			label := strings.TrimSpace(cleanTelegramNilLiteral(item.Label))
+			label := strings.TrimSpace(cleanNilLiteral(item.Label))
 			if label == "" {
-				label = strings.TrimSpace(cleanTelegramNilLiteral(item.Text))
+				label = strings.TrimSpace(cleanNilLiteral(item.Text))
 			}
 			segments = append(segments, tgformat.Plain("\n\n[Tool]\n"))
 			if label != "" {
@@ -360,9 +360,9 @@ func appendToolDetailSegments(segments []tgformat.Segment, items []model.DetailI
 				segments = append(segments, tgformat.Plain("\nStatus: "+status))
 			}
 		case model.DetailItemOutput:
-			output := strings.TrimSpace(cleanTelegramNilLiteral(item.Output))
+			output := strings.TrimSpace(cleanNilLiteral(item.Output))
 			if output == "" {
-				output = strings.TrimSpace(cleanTelegramNilLiteral(item.Text))
+				output = strings.TrimSpace(cleanNilLiteral(item.Text))
 			}
 			if output != "" {
 				segments = append(segments, tgformat.Plain("\n\n[Output]\n"), tgformat.Markdown("```\n"+trimOutputTail(output, perItem)+"\n```"))
@@ -420,7 +420,7 @@ func (s *Service) sendDetailsToolsFile(ctx context.Context, chatID, topicID, cal
 	sender := s.sender
 	s.mu.RUnlock()
 	if sender == nil {
-		return &DirectResponse{Text: s.t(ctx, "消息发送器尚未就绪。", "Telegram sender is not ready yet.")}, nil
+		return &DirectResponse{Text: s.t(ctx, "消息发送器尚未就绪。", "Message sender is not ready yet.")}, nil
 	}
 	fileName := fmt.Sprintf("%s-%s-details-%d.txt", sanitizeFileName(thread.ProjectName), sanitizeFileName(thread.ShortID()), index)
 	caption := s.visualHeader(ctx, s.t(ctx, "详情工具", "Details tools"), *thread, snapshot.LatestTurnID)
@@ -502,7 +502,7 @@ func (s *Service) buildDetailsToolsText(thread model.Thread, snapshot *appserver
 		s.visualFileHeader(thread, snapshot.LatestTurnID, "Details tools"),
 		section.Title,
 	}
-	if text := strings.TrimSpace(cleanTelegramNilLiteral(section.Text)); text != "" {
+	if text := strings.TrimSpace(cleanNilLiteral(section.Text)); text != "" {
 		lines = append(lines, text)
 	}
 	items := detailsItemsForSection(snapshot, section)

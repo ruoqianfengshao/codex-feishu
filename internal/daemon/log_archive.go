@@ -56,7 +56,7 @@ func (s *Service) sendFullLogArchive(ctx context.Context, chatID, topicID, messa
 	sender := s.sender
 	s.mu.RUnlock()
 	if sender == nil {
-		return &DirectResponse{Text: s.t(ctx, "消息发送器尚未就绪。", "Telegram sender is not ready yet.")}, nil
+		return &DirectResponse{Text: s.t(ctx, "消息发送器尚未就绪。", "Message sender is not ready yet.")}, nil
 	}
 	thread, err := s.store.GetThread(ctx, threadID)
 	if err != nil {

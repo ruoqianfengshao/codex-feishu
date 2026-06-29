@@ -170,7 +170,7 @@ func snapshotHasMeaningfulTerminalSignal(snapshot *appserver.ThreadReadSnapshot)
 	return false
 }
 
-func (s *Service) markTelegramOriginExplicitInterrupt(ctx context.Context, threadID, turnID string) error {
+func (s *Service) markChatOriginExplicitInterrupt(ctx context.Context, threadID, turnID string) error {
 	key := terminalGateExplicitInterruptKey(threadID, turnID)
 	if key == "" {
 		return nil
@@ -191,7 +191,7 @@ func (s *Service) markTelegramOriginExplicitInterrupt(ctx context.Context, threa
 	return s.store.SetState(ctx, key, string(payload))
 }
 
-func (s *Service) decideTelegramOriginEmptyInterruptedTerminal(ctx context.Context, snapshot *appserver.ThreadReadSnapshot, now time.Time) (terminalGateDecision, error) {
+func (s *Service) decideChatOriginEmptyInterruptedTerminal(ctx context.Context, snapshot *appserver.ThreadReadSnapshot, now time.Time) (terminalGateDecision, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
@@ -211,7 +211,7 @@ func (s *Service) decideTelegramOriginEmptyInterruptedTerminal(ctx context.Conte
 		return decision, nil
 	}
 
-	explicit, err := s.hasTelegramOriginExplicitInterrupt(ctx, threadID, turnID)
+	explicit, err := s.hasChatOriginExplicitInterrupt(ctx, threadID, turnID)
 	if err != nil {
 		return decision, err
 	}
@@ -221,13 +221,13 @@ func (s *Service) decideTelegramOriginEmptyInterruptedTerminal(ctx context.Conte
 	decision.EmptyInterrupted = emptyInterrupted
 	deferrableInterrupted := isDeferrableInterruptedSnapshot(snapshot)
 	decision.DeferrableInterrupted = deferrableInterrupted
-	existing, hasExisting, err := s.loadTelegramOriginEmptyInterruptedDefer(ctx, threadID, turnID, now)
+	existing, hasExisting, err := s.loadChatOriginEmptyInterruptedDefer(ctx, threadID, turnID, now)
 	if err != nil {
 		return decision, err
 	}
 	if !deferrableInterrupted {
 		if hasExisting {
-			_ = s.clearTelegramOriginEmptyInterruptedDefer(ctx, threadID, turnID)
+			_ = s.clearChatOriginEmptyInterruptedDefer(ctx, threadID, turnID)
 			decision.Action = terminalGateRecover
 			decision.Reason = "snapshot_recovered"
 			decision.FirstSeenAt = parseTime(existing.FirstSeenAt)
@@ -243,7 +243,7 @@ func (s *Service) decideTelegramOriginEmptyInterruptedTerminal(ctx context.Conte
 	}
 
 	if explicit {
-		_ = s.clearTelegramOriginEmptyInterruptedDefer(ctx, threadID, turnID)
+		_ = s.clearChatOriginEmptyInterruptedDefer(ctx, threadID, turnID)
 		decision.Reason = "explicit_interrupt"
 		return decision, nil
 	}
@@ -254,7 +254,7 @@ func (s *Service) decideTelegramOriginEmptyInterruptedTerminal(ctx context.Conte
 	}
 
 	if snapshotHasFinalSignal(snapshot) {
-		_ = s.clearTelegramOriginEmptyInterruptedDefer(ctx, threadID, turnID)
+		_ = s.clearChatOriginEmptyInterruptedDefer(ctx, threadID, turnID)
 		decision.Action = terminalGateAccept
 		decision.Reason = "final_interrupted"
 		return decision, nil
@@ -295,7 +295,7 @@ func (s *Service) decideTelegramOriginEmptyInterruptedTerminal(ctx context.Conte
 		decision.Reason = "grace_expired"
 		state.LastDecision = string(terminalGateAccept)
 		state.LastReason = decision.Reason
-		if err := s.saveTelegramOriginEmptyInterruptedDefer(ctx, threadID, turnID, state); err != nil {
+		if err := s.saveChatOriginEmptyInterruptedDefer(ctx, threadID, turnID, state); err != nil {
 			return decision, err
 		}
 		return decision, nil
@@ -309,7 +309,7 @@ func (s *Service) decideTelegramOriginEmptyInterruptedTerminal(ctx context.Conte
 	state.HotPollIntervalMillis = terminalGateHotPollInterval(s.cfg.ObserverPollInterval).Milliseconds()
 	state.LastDecision = string(decision.Action)
 	state.LastReason = decision.Reason
-	if err := s.saveTelegramOriginEmptyInterruptedDefer(ctx, threadID, turnID, state); err != nil {
+	if err := s.saveChatOriginEmptyInterruptedDefer(ctx, threadID, turnID, state); err != nil {
 		return decision, err
 	}
 	return decision, nil
@@ -322,10 +322,10 @@ func applyTerminalGateHotPolling(snapshot *model.ThreadSnapshotState, decision t
 	snapshot.NextPollAfter = decision.NextPollAfter
 }
 
-func (s *Service) applyTelegramOriginTerminalGate(ctx context.Context, operation string, current *appserver.ThreadReadSnapshot, previous *model.ThreadSnapshotState) (bool, terminalGateDecision) {
-	decision, err := s.decideTelegramOriginEmptyInterruptedTerminal(ctx, current, time.Now().UTC())
+func (s *Service) applyChatOriginTerminalGate(ctx context.Context, operation string, current *appserver.ThreadReadSnapshot, previous *model.ThreadSnapshotState) (bool, terminalGateDecision) {
+	decision, err := s.decideChatOriginEmptyInterruptedTerminal(ctx, current, time.Now().UTC())
 	if err != nil {
-		s.logLifecycle("telegram_origin_terminal_gate_error", lifecycleFields{
+		s.logLifecycle("chat_origin_terminal_gate_error", lifecycleFields{
 			"operation": operation,
 			"thread_id": decision.ThreadID,
 			"turn_id":   decision.TurnID,
@@ -349,14 +349,14 @@ func (s *Service) applyTelegramOriginTerminalGate(ctx context.Context, operation
 		fields["reason"] = decision.Reason
 		fields["defer_until"] = decision.ExpiresAt
 		fields["next_poll_after"] = decision.NextPollAfter
-		s.logLifecycle("telegram_origin_terminal_deferred", fields)
+		s.logLifecycle("chat_origin_terminal_deferred", fields)
 		return true, decision
 	case terminalGateRecover:
 		fields := snapshotDiagnosticFields(*current)
 		fields["operation"] = operation
 		fields["reason"] = decision.Reason
 		fields["first_seen_at"] = decision.FirstSeenAt
-		s.logLifecycle("telegram_origin_terminal_recovered", fields)
+		s.logLifecycle("chat_origin_terminal_recovered", fields)
 	case terminalGateAccept:
 		if decision.DeferrableInterrupted && decision.Reason == "grace_expired" {
 			fields := snapshotDiagnosticFields(*current)
@@ -364,7 +364,7 @@ func (s *Service) applyTelegramOriginTerminalGate(ctx context.Context, operation
 			fields["reason"] = decision.Reason
 			fields["first_seen_at"] = decision.FirstSeenAt
 			fields["defer_until"] = decision.ExpiresAt
-			s.logLifecycle("telegram_origin_terminal_defer_expired", fields)
+			s.logLifecycle("chat_origin_terminal_defer_expired", fields)
 		}
 	}
 	return false, decision
@@ -388,7 +388,7 @@ func (s *Service) threadHasDeferredEmptyInterrupted(ctx context.Context, thread 
 			continue
 		}
 		seen[turnID] = struct{}{}
-		state, ok, err := s.loadTelegramOriginEmptyInterruptedDefer(ctx, thread.ID, turnID, now)
+		state, ok, err := s.loadChatOriginEmptyInterruptedDefer(ctx, thread.ID, turnID, now)
 		if err != nil || !ok {
 			continue
 		}
@@ -400,8 +400,8 @@ func (s *Service) threadHasDeferredEmptyInterrupted(ctx context.Context, thread 
 	return false
 }
 
-func (s *Service) clearTelegramOriginTerminalGate(ctx context.Context, threadID, turnID string) error {
-	if err := s.clearTelegramOriginEmptyInterruptedDefer(ctx, threadID, turnID); err != nil {
+func (s *Service) clearChatOriginTerminalGate(ctx context.Context, threadID, turnID string) error {
+	if err := s.clearChatOriginEmptyInterruptedDefer(ctx, threadID, turnID); err != nil {
 		return err
 	}
 	key := terminalGateExplicitInterruptKey(threadID, turnID)
@@ -411,7 +411,7 @@ func (s *Service) clearTelegramOriginTerminalGate(ctx context.Context, threadID,
 	return s.store.SetState(ctx, key, "")
 }
 
-func (s *Service) clearTelegramOriginEmptyInterruptedDefer(ctx context.Context, threadID, turnID string) error {
+func (s *Service) clearChatOriginEmptyInterruptedDefer(ctx context.Context, threadID, turnID string) error {
 	key := terminalGateDeferKey(threadID, turnID)
 	if key == "" {
 		return nil
@@ -419,7 +419,7 @@ func (s *Service) clearTelegramOriginEmptyInterruptedDefer(ctx context.Context, 
 	return s.store.SetState(ctx, key, "")
 }
 
-func (s *Service) hasTelegramOriginExplicitInterrupt(ctx context.Context, threadID, turnID string) (bool, error) {
+func (s *Service) hasChatOriginExplicitInterrupt(ctx context.Context, threadID, turnID string) (bool, error) {
 	key := terminalGateExplicitInterruptKey(threadID, turnID)
 	if key == "" {
 		return false, nil
@@ -431,7 +431,7 @@ func (s *Service) hasTelegramOriginExplicitInterrupt(ctx context.Context, thread
 	return strings.TrimSpace(value) != "", nil
 }
 
-func (s *Service) loadTelegramOriginEmptyInterruptedDefer(ctx context.Context, threadID, turnID string, now time.Time) (terminalGateState, bool, error) {
+func (s *Service) loadChatOriginEmptyInterruptedDefer(ctx context.Context, threadID, turnID string, now time.Time) (terminalGateState, bool, error) {
 	key := terminalGateDeferKey(threadID, turnID)
 	if key == "" {
 		return terminalGateState{}, false, nil
@@ -462,7 +462,7 @@ func (s *Service) loadTelegramOriginEmptyInterruptedDefer(ctx context.Context, t
 	}, true, nil
 }
 
-func (s *Service) saveTelegramOriginEmptyInterruptedDefer(ctx context.Context, threadID, turnID string, state terminalGateState) error {
+func (s *Service) saveChatOriginEmptyInterruptedDefer(ctx context.Context, threadID, turnID string, state terminalGateState) error {
 	key := terminalGateDeferKey(threadID, turnID)
 	if key == "" {
 		return nil

@@ -166,12 +166,12 @@ func (s *Service) logThreadReadSkipped(threadID, reason string) {
 	})
 }
 
-func (s *Service) logTelegramInbound(kind string, chatID, topicID int64, replyToMessageID int64, decision model.RouteDecision, text, collaborationMode string) {
-	s.logInputInbound(model.PanelSourceTelegramInput, kind, chatID, topicID, replyToMessageID, decision, text, collaborationMode)
+func (s *Service) logChatInbound(kind string, chatID, topicID int64, replyToMessageID int64, decision model.RouteDecision, text, collaborationMode string) {
+	s.logInputInbound(model.PanelSourceChatInput, kind, chatID, topicID, replyToMessageID, decision, text, collaborationMode)
 }
 
 func (s *Service) logInputInbound(sourceMode, kind string, chatID, topicID int64, replyToMessageID int64, decision model.RouteDecision, text, collaborationMode string) {
-	s.logLifecycle("telegram_inbound", lifecycleFields{
+	s.logLifecycle("chat_inbound", lifecycleFields{
 		"kind":               kind,
 		"chat_key":           model.ChatKey(chatID, topicID),
 		"source_mode":        normalizeInputSourceMode(sourceMode),
@@ -186,13 +186,13 @@ func (s *Service) logInputInbound(sourceMode, kind string, chatID, topicID int64
 	})
 }
 
-func (s *Service) logTelegramRenderContainsNil(threadID, turnID, panelKind string, messageID int64, text string) {
+func (s *Service) logChatRenderContainsNil(threadID, turnID, panelKind string, messageID int64, text string) {
 	if !strings.Contains(text, "<nil>") {
 		return
 	}
 	textHash := shortTextHash(text)
 	key := strings.Join([]string{
-		"telegram_render_contains_nil",
+		"chat_render_contains_nil",
 		strings.TrimSpace(threadID),
 		strings.TrimSpace(turnID),
 		strings.TrimSpace(panelKind),
@@ -201,7 +201,7 @@ func (s *Service) logTelegramRenderContainsNil(threadID, turnID, panelKind strin
 	if !s.allowDiagnosticRepeat(key, diagnosticRepeatWindow) {
 		return
 	}
-	s.logLifecycle("telegram_render_contains_nil", lifecycleFields{
+	s.logLifecycle("chat_render_contains_nil", lifecycleFields{
 		"thread_id":    threadID,
 		"turn_id":      turnID,
 		"panel_kind":   panelKind,
@@ -212,13 +212,13 @@ func (s *Service) logTelegramRenderContainsNil(threadID, turnID, panelKind strin
 	})
 }
 
-func (s *Service) logTelegramRenderedMessagesContainsNil(threadID, turnID, panelKind string, messageID int64, messages []model.RenderedMessage) {
+func (s *Service) logChatRenderedMessagesContainsNil(threadID, turnID, panelKind string, messageID int64, messages []model.RenderedMessage) {
 	for index, message := range messages {
 		kind := strings.TrimSpace(panelKind)
 		if len(messages) > 1 {
 			kind = fmt.Sprintf("%s:%d", kind, index+1)
 		}
-		s.logTelegramRenderContainsNil(threadID, turnID, kind, messageID, message.Text)
+		s.logChatRenderContainsNil(threadID, turnID, kind, messageID, message.Text)
 	}
 }
 
@@ -287,7 +287,7 @@ func (s *Service) logObserverSyncResult(operation string, snapshot appserver.Thr
 	s.logLifecycle("observer_sync_result", fields)
 }
 
-func (s *Service) maybeLogTelegramOriginTerminal(ctx context.Context, snapshot appserver.ThreadReadSnapshot) {
+func (s *Service) maybeLogChatOriginTerminal(ctx context.Context, snapshot appserver.ThreadReadSnapshot) {
 	threadID := strings.TrimSpace(snapshot.Thread.ID)
 	turnID := strings.TrimSpace(snapshot.LatestTurnID)
 	status := strings.TrimSpace(snapshot.LatestTurnStatus)
@@ -295,15 +295,15 @@ func (s *Service) maybeLogTelegramOriginTerminal(ctx context.Context, snapshot a
 	if threadID == "" || turnID == "" || !isTerminalTurnStatus(status) || !isDirectInputSourceMode(sourceMode) {
 		return
 	}
-	if sourceMode != model.PanelSourceTelegramInput {
+	if sourceMode != model.PanelSourceChatInput {
 		return
 	}
-	if decision, err := s.decideTelegramOriginEmptyInterruptedTerminal(ctx, &snapshot, time.Now().UTC()); err == nil {
+	if decision, err := s.decideChatOriginEmptyInterruptedTerminal(ctx, &snapshot, time.Now().UTC()); err == nil {
 		if decision.Action == terminalGateDefer {
 			return
 		}
 	}
-	key := telegramOriginTerminalLoggedKey(threadID, turnID)
+	key := chatOriginTerminalLoggedKey(threadID, turnID)
 	if key == "" {
 		return
 	}
@@ -312,9 +312,9 @@ func (s *Service) maybeLogTelegramOriginTerminal(ctx context.Context, snapshot a
 	}
 	fields := snapshotDiagnosticFields(snapshot)
 	fields["chat_source"] = sourceMode
-	s.logLifecycle("telegram_origin_turn_terminal", fields)
+	s.logLifecycle("chat_origin_turn_terminal", fields)
 	_ = s.store.SetState(ctx, key, string(model.NowString()))
-	_ = s.clearTelegramOriginEmptyInterruptedDefer(ctx, threadID, turnID)
+	_ = s.clearChatOriginEmptyInterruptedDefer(ctx, threadID, turnID)
 }
 
 func snapshotDiagnosticFields(snapshot appserver.ThreadReadSnapshot) lifecycleFields {
@@ -351,13 +351,13 @@ func isTerminalTurnStatus(status string) bool {
 	}
 }
 
-func telegramOriginTerminalLoggedKey(threadID, turnID string) string {
+func chatOriginTerminalLoggedKey(threadID, turnID string) string {
 	threadID = strings.TrimSpace(threadID)
 	turnID = strings.TrimSpace(turnID)
 	if threadID == "" || turnID == "" {
 		return ""
 	}
-	return "turn_origin.telegram_terminal_logged." + threadID + "." + turnID
+	return "turn_origin.chat_terminal_logged." + threadID + "." + turnID
 }
 
 func shortTextHash(text string) string {

@@ -1144,7 +1144,7 @@ func TestLateUserPromptEditsExistingUserPlaceholder(t *testing.T) {
 	}
 }
 
-func TestTelegramInputSyncDoesNotDuplicateUserRequestNotice(t *testing.T) {
+func TestChatInputSyncDoesNotDuplicateUserRequestNotice(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -1153,8 +1153,8 @@ func TestTelegramInputSyncDoesNotDuplicateUserRequestNotice(t *testing.T) {
 	ctx := context.Background()
 
 	thread := model.Thread{
-		ID:          "thread-telegram-input",
-		Title:       "Telegram prompt",
+		ID:          "thread-chat-input",
+		Title:       "Chat prompt",
 		ProjectName: "Codex",
 		CWD:         `C:\Users\you\Projects\Codex`,
 		UpdatedAt:   time.Now().UTC().Unix(),
@@ -1164,39 +1164,39 @@ func TestTelegramInputSyncDoesNotDuplicateUserRequestNotice(t *testing.T) {
 	}
 	snapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
 		Thread:                thread,
-		LatestTurnID:          "turn-telegram-input",
+		LatestTurnID:          "turn-chat-input",
 		LatestTurnStatus:      "inProgress",
-		LatestUserMessageID:   "user-telegram",
-		LatestUserMessageText: "This was already sent in Telegram.",
-		LatestUserMessageFP:   "user-telegram-fp",
+		LatestUserMessageID:   "user-chat",
+		LatestUserMessageText: "This was already sent in chat.",
+		LatestUserMessageFP:   "user-chat-fp",
 	}, time.Now().UTC())
 	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
 		t.Fatalf("UpsertSnapshot failed: %v", err)
 	}
 
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
-	service.syncThreadPanelToTarget(ctx, target, thread.ID, true, model.PanelSourceTelegramInput)
+	service.syncThreadPanelToTarget(ctx, target, thread.ID, true, model.PanelSourceChatInput)
 
 	if len(sender.messages) != 2 {
 		t.Fatalf("message count = %d, want New run + summary without [User] duplicate; messages=%#v", len(sender.messages), sender.messages)
 	}
-	if !strings.Contains(sender.messages[0].text, "New run:") || !strings.Contains(sender.messages[0].text, "Source: Telegram") {
-		t.Fatalf("first message = %q, want Telegram New run notice", sender.messages[0].text)
+	if !strings.Contains(sender.messages[0].text, "New run:") || !strings.Contains(sender.messages[0].text, "Source: Chat") {
+		t.Fatalf("first message = %q, want chat New run notice", sender.messages[0].text)
 	}
 	if strings.Contains(sender.messages[0].text, "Status:") {
 		t.Fatalf("run notice text = %q, want no status", sender.messages[0].text)
 	}
 	for _, message := range sender.messages {
 		if hasHeaderKind(message.text, "User") {
-			t.Fatalf("unexpected user notice for Telegram-originated input: %#v", sender.messages)
+			t.Fatalf("unexpected user notice for chat-originated input: %#v", sender.messages)
 		}
 	}
 	panel, err := service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
 	if err != nil {
 		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
 	}
-	if panel == nil || panel.SourceMode != model.PanelSourceTelegramInput || panel.RunNoticeMessageID != sender.messages[0].messageID || panel.LastUserNoticeFP != "" {
-		t.Fatalf("panel = %#v, want telegram_input with empty user notice fp", panel)
+	if panel == nil || panel.SourceMode != model.PanelSourceChatInput || panel.RunNoticeMessageID != sender.messages[0].messageID || panel.LastUserNoticeFP != "" {
+		t.Fatalf("panel = %#v, want chat_input with empty user notice fp", panel)
 	}
 }
 
@@ -1802,7 +1802,7 @@ func TestFeishuTopicSyncSendsDesktopUserRequestForSameTurnWithoutFeishuOrigin(t 
 	}
 }
 
-func TestGlobalObserverDoesNotRecreateTelegramOriginPanelOnEditFailure(t *testing.T) {
+func TestGlobalObserverDoesNotRecreateChatOriginPanelOnEditFailure(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -1811,8 +1811,8 @@ func TestGlobalObserverDoesNotRecreateTelegramOriginPanelOnEditFailure(t *testin
 	ctx := context.Background()
 
 	thread := model.Thread{
-		ID:          "thread-telegram-origin-no-global-duplicate",
-		Title:       "Telegram prompt",
+		ID:          "thread-chat-origin-no-global-duplicate",
+		Title:       "Chat prompt",
 		ProjectName: "Codex",
 		CWD:         `C:\Users\you\Projects\Codex`,
 		UpdatedAt:   time.Now().UTC().Unix(),
@@ -1820,12 +1820,12 @@ func TestGlobalObserverDoesNotRecreateTelegramOriginPanelOnEditFailure(t *testin
 	if err := service.store.UpsertThread(ctx, thread); err != nil {
 		t.Fatalf("UpsertThread failed: %v", err)
 	}
-	if err := service.markTelegramOriginTurn(ctx, thread.ID, "turn-telegram-origin-no-global-duplicate"); err != nil {
-		t.Fatalf("markTelegramOriginTurn failed: %v", err)
+	if err := service.markChatOriginTurn(ctx, thread.ID, "turn-chat-origin-no-global-duplicate"); err != nil {
+		t.Fatalf("markChatOriginTurn failed: %v", err)
 	}
 	snapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
 		Thread:           thread,
-		LatestTurnID:     "turn-telegram-origin-no-global-duplicate",
+		LatestTurnID:     "turn-chat-origin-no-global-duplicate",
 		LatestTurnStatus: "inProgress",
 	}, time.Now().UTC())
 	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
@@ -1833,7 +1833,7 @@ func TestGlobalObserverDoesNotRecreateTelegramOriginPanelOnEditFailure(t *testin
 	}
 
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
-	service.syncThreadPanelToTarget(ctx, target, thread.ID, true, model.PanelSourceTelegramInput)
+	service.syncThreadPanelToTarget(ctx, target, thread.ID, true, model.PanelSourceChatInput)
 	if len(sender.messages) != 2 {
 		t.Fatalf("initial message count = %d, want New run + summary; messages=%#v", len(sender.messages), sender.messages)
 	}
@@ -1841,13 +1841,13 @@ func TestGlobalObserverDoesNotRecreateTelegramOriginPanelOnEditFailure(t *testin
 	if err != nil {
 		t.Fatalf("GetCurrentThreadPanel(before) failed: %v", err)
 	}
-	if panelBefore == nil || panelBefore.SourceMode != model.PanelSourceTelegramInput {
-		t.Fatalf("panel before = %#v, want telegram_input", panelBefore)
+	if panelBefore == nil || panelBefore.SourceMode != model.PanelSourceChatInput {
+		t.Fatalf("panel before = %#v, want chat_input", panelBefore)
 	}
 
 	nextSnapshot := appserver.CompactSnapshot(&snapshot, appserver.ThreadReadSnapshot{
 		Thread:           thread,
-		LatestTurnID:     "turn-telegram-origin-no-global-duplicate",
+		LatestTurnID:     "turn-chat-origin-no-global-duplicate",
 		LatestTurnStatus: "inProgress",
 		LatestAgentMessageEntries: []appserver.AgentMessageEntry{
 			{ID: "agent-1", Phase: model.DetailItemCommentary, Text: "Working.", FP: "agent-1-fp"},
@@ -1866,12 +1866,12 @@ func TestGlobalObserverDoesNotRecreateTelegramOriginPanelOnEditFailure(t *testin
 	if err != nil {
 		t.Fatalf("GetCurrentThreadPanel(after) failed: %v", err)
 	}
-	if panelAfter == nil || panelAfter.ID != panelBefore.ID || panelAfter.SourceMode != model.PanelSourceTelegramInput {
-		t.Fatalf("panel after = %#v, want original telegram_input panel %#v", panelAfter, panelBefore)
+	if panelAfter == nil || panelAfter.ID != panelBefore.ID || panelAfter.SourceMode != model.PanelSourceChatInput {
+		t.Fatalf("panel after = %#v, want original chat_input panel %#v", panelAfter, panelBefore)
 	}
 }
 
-func TestMarkedTelegramOriginTurnDoesNotDuplicateUserRequestNoticeOnObserverResync(t *testing.T) {
+func TestMarkedChatOriginTurnDoesNotDuplicateUserRequestNoticeOnObserverResync(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -1880,8 +1880,8 @@ func TestMarkedTelegramOriginTurnDoesNotDuplicateUserRequestNoticeOnObserverResy
 	ctx := context.Background()
 
 	thread := model.Thread{
-		ID:          "thread-marked-telegram-input",
-		Title:       "Marked Telegram prompt",
+		ID:          "thread-marked-chat-input",
+		Title:       "Marked Chat prompt",
 		ProjectName: "Codex",
 		CWD:         `C:\Users\you\Projects\Codex`,
 		UpdatedAt:   time.Now().UTC().Unix(),
@@ -1889,8 +1889,8 @@ func TestMarkedTelegramOriginTurnDoesNotDuplicateUserRequestNoticeOnObserverResy
 	if err := service.store.UpsertThread(ctx, thread); err != nil {
 		t.Fatalf("UpsertThread failed: %v", err)
 	}
-	if err := service.markTelegramOriginTurn(ctx, thread.ID, "turn-marked-telegram"); err != nil {
-		t.Fatalf("markTelegramOriginTurn failed: %v", err)
+	if err := service.markChatOriginTurn(ctx, thread.ID, "turn-marked-chat"); err != nil {
+		t.Fatalf("markChatOriginTurn failed: %v", err)
 	}
 	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
 		ChatID:           123456789,
@@ -1909,11 +1909,11 @@ func TestMarkedTelegramOriginTurnDoesNotDuplicateUserRequestNoticeOnObserverResy
 	}
 	snapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
 		Thread:                thread,
-		LatestTurnID:          "turn-marked-telegram",
+		LatestTurnID:          "turn-marked-chat",
 		LatestTurnStatus:      "inProgress",
-		LatestUserMessageID:   "user-marked-telegram",
-		LatestUserMessageText: "This was sent from Telegram and later re-polled.",
-		LatestUserMessageFP:   "user-marked-telegram-fp",
+		LatestUserMessageID:   "user-marked-chat",
+		LatestUserMessageText: "This was sent from chat and later re-polled.",
+		LatestUserMessageFP:   "user-marked-chat-fp",
 	}, time.Now().UTC())
 	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
 		t.Fatalf("UpsertSnapshot failed: %v", err)
@@ -1924,7 +1924,7 @@ func TestMarkedTelegramOriginTurnDoesNotDuplicateUserRequestNoticeOnObserverResy
 
 	for _, message := range sender.messages {
 		if hasHeaderKind(message.text, "User") {
-			t.Fatalf("unexpected user notice for marked Telegram-origin turn: %#v", sender.messages)
+			t.Fatalf("unexpected user notice for marked chat-origin turn: %#v", sender.messages)
 		}
 	}
 	panel, err := service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
@@ -1932,11 +1932,11 @@ func TestMarkedTelegramOriginTurnDoesNotDuplicateUserRequestNoticeOnObserverResy
 		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
 	}
 	if panel == nil || panel.LastUserNoticeFP != "" {
-		t.Fatalf("panel = %#v, want no user notice fp for marked Telegram-origin turn", panel)
+		t.Fatalf("panel = %#v, want no user notice fp for marked chat-origin turn", panel)
 	}
 }
 
-func TestTelegramInputSyncAdoptsObserverPanelForSameTurn(t *testing.T) {
+func TestChatInputSyncAdoptsObserverPanelForSameTurn(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -1946,7 +1946,7 @@ func TestTelegramInputSyncAdoptsObserverPanelForSameTurn(t *testing.T) {
 
 	thread := model.Thread{
 		ID:          "thread-adopt-observer-panel",
-		Title:       "Telegram race",
+		Title:       "chat race",
 		ProjectName: "Codex",
 		CWD:         `C:\Users\you\Projects\Codex`,
 		UpdatedAt:   time.Now().UTC().Unix(),
@@ -1963,7 +1963,7 @@ func TestTelegramInputSyncAdoptsObserverPanelForSameTurn(t *testing.T) {
 		SummaryMessageID: 101,
 		ToolMessageID:    102,
 		OutputMessageID:  103,
-		CurrentTurnID:    "turn-telegram-race",
+		CurrentTurnID:    "turn-chat-race",
 		Status:           "inProgress",
 		ArchiveEnabled:   true,
 		LastSummaryHash:  "old-summary",
@@ -1972,25 +1972,25 @@ func TestTelegramInputSyncAdoptsObserverPanelForSameTurn(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateThreadPanel failed: %v", err)
 	}
-	if err := service.markTelegramOriginTurn(ctx, thread.ID, "turn-telegram-race"); err != nil {
-		t.Fatalf("markTelegramOriginTurn failed: %v", err)
+	if err := service.markChatOriginTurn(ctx, thread.ID, "turn-chat-race"); err != nil {
+		t.Fatalf("markChatOriginTurn failed: %v", err)
 	}
 	snapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
 		Thread:                thread,
-		LatestTurnID:          "turn-telegram-race",
+		LatestTurnID:          "turn-chat-race",
 		LatestTurnStatus:      "completed",
-		LatestUserMessageID:   "user-telegram-race",
+		LatestUserMessageID:   "user-chat-race",
 		LatestUserMessageText: "Проверка, ответь: Test",
-		LatestUserMessageFP:   "user-telegram-race-fp",
+		LatestUserMessageFP:   "user-chat-race-fp",
 		LatestFinalText:       "Test",
-		LatestFinalFP:         "final-telegram-race-fp",
+		LatestFinalFP:         "final-chat-race-fp",
 	}, time.Now().UTC())
 	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
 		t.Fatalf("UpsertSnapshot failed: %v", err)
 	}
 
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
-	service.syncThreadPanelToTarget(ctx, target, thread.ID, true, model.PanelSourceTelegramInput)
+	service.syncThreadPanelToTarget(ctx, target, thread.ID, true, model.PanelSourceChatInput)
 
 	if len(finalMessages(sender.messages)) != 1 {
 		t.Fatalf("messages = %#v, want one new Final message without replacement trio", sender.messages)
@@ -2006,7 +2006,7 @@ func TestTelegramInputSyncAdoptsObserverPanelForSameTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
 	}
-	if panel == nil || panel.SummaryMessageID != 101 || panel.SourceMode != model.PanelSourceTelegramInput || panel.LastFinalNoticeFP != "final-telegram-race-fp" || panel.LastFinalCardHash == "" {
+	if panel == nil || panel.SummaryMessageID != 101 || panel.SourceMode != model.PanelSourceChatInput || panel.LastFinalNoticeFP != "final-chat-race-fp" || panel.LastFinalCardHash == "" {
 		t.Fatalf("panel = %#v, want adopted panel retaining summary id 101 with final fp/hash", panel)
 	}
 }
@@ -2345,19 +2345,19 @@ func TestRenderToolPanelShowsLastCompletedToolInsteadOfRunningTool(t *testing.T)
 	}
 }
 
-func TestRenderToolPanelShowsTelegramOriginCurrentTool(t *testing.T) {
+func TestRenderToolPanelShowsChatOriginCurrentTool(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
 	ctx := context.Background()
 	thread := model.Thread{
-		ID:          "thread-telegram-current-tool",
+		ID:          "thread-chat-current-tool",
 		Title:       "Long command",
 		ProjectName: "Codex",
 	}
-	turnID := "turn-telegram-current-tool"
-	if err := service.markTelegramOriginTurn(ctx, thread.ID, turnID); err != nil {
-		t.Fatalf("markTelegramOriginTurn failed: %v", err)
+	turnID := "turn-chat-current-tool"
+	if err := service.markChatOriginTurn(ctx, thread.ID, turnID); err != nil {
+		t.Fatalf("markChatOriginTurn failed: %v", err)
 	}
 	text, _ := service.renderToolPanelAt(ctx, thread, &appserver.ThreadReadSnapshot{
 		LatestTurnID:          turnID,
