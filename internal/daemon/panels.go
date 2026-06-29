@@ -21,36 +21,16 @@ const (
 	steerTTL           = 10 * time.Minute
 )
 
-func (s *Service) currentBackgroundTarget(ctx context.Context) (*model.ObserverTarget, error) {
-	target, configured, err := s.store.GetGlobalObserverTarget(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if configured {
-		return target, nil
-	}
-	return nil, nil
-}
-
 func (s *Service) syncThreadPanel(ctx context.Context, threadID string) {
 	seen := map[string]struct{}{}
 	s.mu.RLock()
 	sender := s.sender
 	s.mu.RUnlock()
-	target, err := s.currentBackgroundTarget(ctx)
-	if err == nil && target != nil && target.Enabled {
-		target = canonicalThreadPanelTarget(ctx, sender, *target)
-		seen[target.ChatKey] = struct{}{}
-		s.syncThreadPanelToTarget(ctx, *target, threadID, false, model.PanelSourceGlobalObserver)
-	}
 	panels, err := s.store.ListCurrentPanelsForThread(ctx, threadID)
 	if err != nil {
 		return
 	}
 	for _, panel := range panels {
-		if panel.SourceMode == model.PanelSourceGlobalObserver && (target == nil || !target.Enabled) {
-			continue
-		}
 		canonicalTarget := canonicalThreadPanelTarget(ctx, sender, model.ObserverTarget{
 			ChatKey: model.ChatKey(panel.ChatID, panel.TopicID),
 			ChatID:  panel.ChatID,
@@ -111,11 +91,6 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 	if isDirectInputSourceMode(sourceMode) && samePanelTurn(existingPanel, snapshot.LatestTurnID) {
 		effectiveForceNew = false
 	}
-	protectChatOriginPanel := sourceMode == model.PanelSourceGlobalObserver &&
-		existingPanel != nil &&
-		isDirectInputSourceMode(existingPanel.SourceMode) &&
-		samePanelTurn(existingPanel, snapshot.LatestTurnID) &&
-		s.isDirectInputOriginTurn(ctx, thread.ID, snapshot.LatestTurnID)
 	threadTopic, err := s.ensureThreadTopic(ctx, sender, target, *thread, snapshot, sourceMode)
 	if err != nil {
 		s.setError(ctx, err)
@@ -130,11 +105,6 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 		if isDirectInputSourceMode(sourceMode) && samePanelTurn(existingPanel, snapshot.LatestTurnID) {
 			effectiveForceNew = false
 		}
-		protectChatOriginPanel = sourceMode == model.PanelSourceGlobalObserver &&
-			existingPanel != nil &&
-			isDirectInputSourceMode(existingPanel.SourceMode) &&
-			samePanelTurn(existingPanel, snapshot.LatestTurnID) &&
-			s.isDirectInputOriginTurn(ctx, thread.ID, snapshot.LatestTurnID)
 	}
 	sender = senderWithThreadTopic{Sender: sender, topic: threadTopic}
 	panel, err := s.ensureCurrentPanel(ctx, sender, target, *thread, snapshot, pending, effectiveForceNew, sourceMode, renderSourceMode)
@@ -167,10 +137,6 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 		return
 	}
 	if err := s.updateCurrentPanel(ctx, sender, panel, *thread, snapshot, pending, renderSourceMode); err != nil {
-		if protectChatOriginPanel {
-			s.setError(ctx, err)
-			return
-		}
 		panel, recreateErr := s.createCurrentPanel(ctx, sender, target, *thread, snapshot, pending, sourceMode, renderSourceMode)
 		if recreateErr != nil || panel == nil {
 			s.setError(ctx, err)
@@ -280,14 +246,6 @@ func (s *Service) ensureCurrentPanel(ctx context.Context, sender Sender, target 
 	}
 	turnID := strings.TrimSpace(snapshot.LatestTurnID)
 	status := strings.TrimSpace(snapshot.LatestTurnStatus)
-	if panel == nil &&
-		renderSourceMode == model.PanelSourceGlobalObserver &&
-		isTerminalStatus(status) &&
-		!snapshot.WaitingOnApproval &&
-		!snapshot.WaitingOnReply &&
-		!s.allowRecentTerminalObserverCreate(ctx, thread) {
-		return nil, nil
-	}
 	if forceNew || panel == nil || panelNeedsRefresh(panel, turnID, status) {
 		panel, err = s.createCurrentPanel(ctx, sender, target, thread, snapshot, pending, sourceMode, renderSourceMode)
 		if err != nil {
@@ -303,23 +261,9 @@ func (s *Service) effectivePanelRenderSourceMode(ctx context.Context, existingPa
 		return origin
 	}
 	if isDirectInputSourceMode(sourceMode) {
-		if existingPanel == nil || samePanelTurn(existingPanel, turnID) {
-			return sourceMode
-		}
-		return model.PanelSourceGlobalObserver
+		return sourceMode
 	}
 	return sourceMode
-}
-
-func (s *Service) allowRecentTerminalObserverCreate(ctx context.Context, thread model.Thread) bool {
-	updatedAt := time.Unix(thread.UpdatedAt, 0).UTC()
-	if thread.UpdatedAt <= 0 || updatedAt.IsZero() {
-		return false
-	}
-	if sinceUnix := s.globalObserverSinceUnix(ctx); sinceUnix > 0 && thread.UpdatedAt < sinceUnix {
-		return false
-	}
-	return time.Since(updatedAt) <= s.catchupWindow()
 }
 
 func panelNeedsRefresh(panel *model.ThreadPanel, turnID, status string) bool {
@@ -356,9 +300,6 @@ func isLegacyTerminalReplay(panel *model.ThreadPanel, snapshot *appserver.Thread
 	if panel.RunNoticeMessageID != 0 || panel.UserMessageID != 0 {
 		return false
 	}
-	if strings.TrimSpace(panel.SourceMode) != model.PanelSourceGlobalObserver {
-		return false
-	}
 	if strings.TrimSpace(panel.LastFinalNoticeFP) != "" || strings.TrimSpace(snapshot.LatestFinalFP) == "" {
 		return false
 	}
@@ -384,14 +325,6 @@ func shouldRenderFinalCardNow(panel *model.ThreadPanel, snapshot *appserver.Thre
 }
 
 func (s *Service) createCurrentPanel(ctx context.Context, sender Sender, target model.ObserverTarget, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, pending *model.PendingApproval, sourceMode, renderSourceMode string) (*model.ThreadPanel, error) {
-	runNoticeMessageID, runNoticeFP, err := s.sendRunNotice(ctx, sender, target, thread, snapshot, renderSourceMode)
-	if err != nil {
-		return nil, err
-	}
-	userMessageID, userNoticeFP, err := s.sendInitialUserRequestNotice(ctx, sender, target, thread, snapshot, renderSourceMode)
-	if err != nil {
-		return nil, err
-	}
 	planPromptMessageID, planPromptFP, err := s.sendPlanPromptNotice(ctx, sender, target, thread, effectivePlanPrompt(pending, snapshot))
 	if err != nil {
 		return nil, err
@@ -438,10 +371,6 @@ func (s *Service) createCurrentPanel(ctx context.Context, sender Sender, target 
 		LastSummaryHash:     summaryHash,
 		LastToolHash:        toolHash,
 		LastOutputHash:      outputHash,
-		RunNoticeMessageID:  runNoticeMessageID,
-		LastRunNoticeFP:     runNoticeFP,
-		UserMessageID:       userMessageID,
-		LastUserNoticeFP:    userNoticeFP,
 		PlanPromptMessageID: planPromptMessageID,
 		LastPlanPromptFP:    planPromptFP,
 	})
@@ -468,13 +397,10 @@ func (s *Service) maybeSendUserRequestNotice(ctx context.Context, sender Sender,
 	if !shouldSendUserRequestNotice(renderSourceMode, snapshot) || s.isDirectInputOriginTurn(ctx, thread.ID, snapshot.LatestTurnID) {
 		return nil
 	}
-	if panel.SourceMode == model.PanelSourceChatInput && renderSourceMode == model.PanelSourceChatInput {
+	if panel.SourceMode == model.PanelSourceFeishuInput && renderSourceMode == model.PanelSourceFeishuInput {
 		return nil
 	}
 	noticeSourceMode := s.userRequestNoticeSourceMode(ctx, thread.ID, snapshot.LatestTurnID, renderSourceMode)
-	if panel.SourceMode == model.PanelSourceGlobalObserver && panel.UserMessageID == 0 {
-		return nil
-	}
 	if panel.UserMessageID != 0 {
 		message := firstRenderedMessage(s.renderUserRequestNoticeCard(ctx, thread, snapshot, noticeSourceMode))
 		s.logChatRenderedMessagesContainsNil(thread.ID, snapshot.LatestTurnID, "user", panel.UserMessageID, []model.RenderedMessage{message})
@@ -511,58 +437,6 @@ func (s *Service) maybeSendUserRequestNotice(ctx context.Context, sender Sender,
 	panel.UserMessageID = messageID
 	panel.LastUserNoticeFP = noticeFP
 	return s.store.UpdateThreadPanelUserNotice(ctx, panel.ID, panel.UserMessageID, panel.LastUserNoticeFP)
-}
-
-func (s *Service) sendInitialUserRequestNotice(ctx context.Context, sender Sender, target model.ObserverTarget, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) (int64, string, error) {
-	if isDirectInputSourceMode(sourceMode) {
-		return 0, "", nil
-	}
-	if shouldSendUserRequestNotice(sourceMode, snapshot) && !s.isDirectInputOriginTurn(ctx, thread.ID, snapshot.LatestTurnID) {
-		return s.sendUserRequestNotice(ctx, sender, target, thread, snapshot, sourceMode)
-	}
-	if shouldSendUserPlaceholder(sourceMode, snapshot) && !s.isDirectInputOriginTurn(ctx, thread.ID, snapshot.LatestTurnID) {
-		return s.sendUserPlaceholderNotice(ctx, sender, target, thread, snapshot)
-	}
-	return 0, "", nil
-}
-
-func (s *Service) sendRunNotice(ctx context.Context, sender Sender, target model.ObserverTarget, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) (int64, string, error) {
-	if !shouldSendRunNotice(sourceMode, snapshot) {
-		return 0, "", nil
-	}
-	text, fp := s.renderRunNotice(ctx, thread, snapshot, sourceMode)
-	s.logChatRenderContainsNil(thread.ID, snapshot.LatestTurnID, "new_run", 0, text)
-	messageID, err := sender.SendMessage(ctx, target.ChatID, target.TopicID, text, nil, s.runNoticeSendOptions())
-	if err != nil {
-		return 0, "", err
-	}
-	_ = s.store.PutMessageRoute(ctx, model.MessageRoute{
-		ChatID:    target.ChatID,
-		TopicID:   target.TopicID,
-		MessageID: messageID,
-		ThreadID:  thread.ID,
-		TurnID:    snapshot.LatestTurnID,
-		EventID:   runNoticeEventID(target, thread.ID, snapshot.LatestTurnID),
-		CreatedAt: model.NowString(),
-	})
-	return messageID, fp, nil
-}
-
-func (s *Service) renderRunNotice(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) (string, string) {
-	source := "Explicit"
-	switch strings.TrimSpace(sourceMode) {
-	case model.PanelSourceGlobalObserver:
-		source = "GUI/CLI observer"
-	case model.PanelSourceChatInput:
-		source = "Chat"
-	case model.PanelSourceFeishuInput:
-		source = "Feishu"
-	}
-	text := strings.Join([]string{
-		s.visualDividerText(ctx, thread, snapshot.LatestTurnID),
-		fmt.Sprintf("Source: %s", source),
-	}, "\n")
-	return text, hashStrings(text)
 }
 
 func (s *Service) maybeSendPlanPromptNotice(ctx context.Context, sender Sender, panel *model.ThreadPanel, thread model.Thread, prompt *model.PlanPrompt) error {
@@ -611,31 +485,6 @@ func (s *Service) sendPlanPromptNotice(ctx context.Context, sender Sender, targe
 	return messageID, prompt.Fingerprint, nil
 }
 
-func shouldSendRunNotice(sourceMode string, snapshot *appserver.ThreadReadSnapshot) bool {
-	if snapshot == nil || strings.TrimSpace(snapshot.LatestTurnID) == "" {
-		return false
-	}
-	switch strings.TrimSpace(sourceMode) {
-	case model.PanelSourceChatInput:
-		return true
-	}
-	return false
-}
-
-func shouldSendUserPlaceholder(sourceMode string, snapshot *appserver.ThreadReadSnapshot) bool {
-	if strings.TrimSpace(sourceMode) != model.PanelSourceGlobalObserver || snapshot == nil || strings.TrimSpace(snapshot.LatestTurnID) == "" {
-		return false
-	}
-	if strings.TrimSpace(snapshot.LatestUserMessageText) != "" {
-		return false
-	}
-	return strings.TrimSpace(snapshot.LatestToolLabel) != "" ||
-		strings.TrimSpace(snapshot.LatestToolOutput) != "" ||
-		!isTerminalStatus(snapshot.LatestTurnStatus) ||
-		snapshot.WaitingOnApproval ||
-		snapshot.WaitingOnReply
-}
-
 func planPromptRouteEventID(prompt *model.PlanPrompt) string {
 	if prompt != nil && strings.TrimSpace(prompt.RequestID) != "" {
 		return "plan_request:" + strings.TrimSpace(prompt.RequestID)
@@ -672,48 +521,16 @@ func (s *Service) sendUserRequestNotice(ctx context.Context, sender Sender, targ
 	return canonicalMessageID, snapshot.LatestUserMessageFP, nil
 }
 
-func (s *Service) sendUserPlaceholderNotice(ctx context.Context, sender Sender, target model.ObserverTarget, thread model.Thread, snapshot *appserver.ThreadReadSnapshot) (int64, string, error) {
-	message := s.renderUserPlaceholderCard(ctx, thread, snapshot)
-	s.logChatRenderedMessagesContainsNil(thread.ID, snapshot.LatestTurnID, "user", 0, []model.RenderedMessage{message})
-	messageIDs, err := sender.SendRenderedMessages(ctx, target.ChatID, target.TopicID, []model.RenderedMessage{message}, nil, silentSendOptions())
-	if err != nil {
-		return 0, "", err
-	}
-	messageID := firstMessageID(messageIDs)
-	_ = s.store.PutMessageRoute(ctx, model.MessageRoute{
-		ChatID:    target.ChatID,
-		TopicID:   target.TopicID,
-		MessageID: messageID,
-		ThreadID:  thread.ID,
-		TurnID:    snapshot.LatestTurnID,
-		EventID:   userPlaceholderEventID(target, thread.ID, snapshot.LatestTurnID),
-		CreatedAt: model.NowString(),
-	})
-	return messageID, "", nil
-}
-
 func (s *Service) renderUserRequestNoticeCard(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, renderSourceMode string) []model.RenderedMessage {
 	messages := tgformat.RenderMarkdownWithHeader(s.visualHeader(ctx, s.t(ctx, "用户", "User"), thread, snapshot.LatestTurnID), snapshot.LatestUserMessageText)
-	if renderSourceMode == model.PanelSourceGlobalObserver {
-		for index := range messages {
-			messages[index].Style = model.MessageStyleDesktopUser
-		}
-	}
 	if len(messages) > 0 && strings.TrimSpace(snapshot.LatestUserMessageImagePath) != "" {
 		messages[0].ImagePath = strings.TrimSpace(snapshot.LatestUserMessageImagePath)
 	}
 	return messages
 }
 
-func (s *Service) renderUserPlaceholderCard(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot) model.RenderedMessage {
-	return renderSingleMarkdownCard(s.visualHeader(ctx, s.t(ctx, "用户", "User"), thread, snapshot.LatestTurnID), s.t(ctx, "app-server 快照中没有用户提示词。", "User prompt was not available from app-server snapshot."))
-}
-
 func (s *Service) userRequestNoticeSourceMode(ctx context.Context, threadID, turnID, fallback string) string {
-	if s.isDirectInputOriginTurn(ctx, threadID, turnID) {
-		return fallback
-	}
-	return model.PanelSourceGlobalObserver
+	return fallback
 }
 
 func shouldSendUserRequestNotice(sourceMode string, snapshot *appserver.ThreadReadSnapshot) bool {
@@ -723,34 +540,16 @@ func shouldSendUserRequestNotice(sourceMode string, snapshot *appserver.ThreadRe
 	return true
 }
 
-func runNoticeEventID(target model.ObserverTarget, threadID, turnID string) string {
-	return strings.Join([]string{
-		"ui.run_notice",
-		model.ChatKey(target.ChatID, target.TopicID),
-		strings.TrimSpace(threadID),
-		strings.TrimSpace(turnID),
-	}, ".")
-}
-
-func userPlaceholderEventID(target model.ObserverTarget, threadID, turnID string) string {
-	return strings.Join([]string{
-		"ui.user_placeholder",
-		model.ChatKey(target.ChatID, target.TopicID),
-		strings.TrimSpace(threadID),
-		strings.TrimSpace(turnID),
-	}, ".")
-}
-
 func (s *Service) markChatOriginTurn(ctx context.Context, threadID, turnID string) error {
-	return s.markInputOriginTurn(ctx, threadID, turnID, model.PanelSourceChatInput, 0, 0)
+	return s.markInputOriginTurn(ctx, threadID, turnID, model.PanelSourceFeishuInput, 0, 0)
 }
 
 func (s *Service) markChatOriginTurnFromChat(ctx context.Context, threadID, turnID string, chatID, topicID int64) error {
-	return s.markInputOriginTurn(ctx, threadID, turnID, model.PanelSourceChatInput, chatID, topicID)
+	return s.markInputOriginTurn(ctx, threadID, turnID, model.PanelSourceFeishuInput, chatID, topicID)
 }
 
 func (s *Service) isChatOriginTurn(ctx context.Context, threadID, turnID string) bool {
-	return s.inputOriginTurnSource(ctx, threadID, turnID) == model.PanelSourceChatInput
+	return s.inputOriginTurnSource(ctx, threadID, turnID) == model.PanelSourceFeishuInput
 }
 
 func (s *Service) markInputOriginTurn(ctx context.Context, threadID, turnID, sourceMode string, chatID, topicID int64) error {
@@ -800,13 +599,13 @@ func normalizeInputSourceMode(sourceMode string) string {
 	case model.PanelSourceFeishuInput:
 		return model.PanelSourceFeishuInput
 	default:
-		return model.PanelSourceChatInput
+		return model.PanelSourceFeishuInput
 	}
 }
 
 func isDirectInputSourceMode(sourceMode string) bool {
 	switch strings.TrimSpace(sourceMode) {
-	case model.PanelSourceChatInput, model.PanelSourceFeishuInput:
+	case model.PanelSourceFeishuInput:
 		return true
 	default:
 		return false
@@ -814,9 +613,6 @@ func isDirectInputSourceMode(sourceMode string) bool {
 }
 
 func (s *Service) updateCurrentPanel(ctx context.Context, sender Sender, panel *model.ThreadPanel, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, pending *model.PendingApproval, renderSourceMode string) error {
-	if err := s.maybeUpdateRunNotice(ctx, sender, panel, thread, snapshot, renderSourceMode); err != nil {
-		return err
-	}
 	if err := s.maybeSendUserRequestNotice(ctx, sender, panel, thread, snapshot, renderSourceMode); err != nil {
 		return err
 	}
@@ -897,26 +693,6 @@ func (s *Service) updateCurrentPanel(ctx context.Context, sender Sender, panel *
 	panel.CurrentTurnID = snapshot.LatestTurnID
 	panel.Status = snapshot.LatestTurnStatus
 	return s.store.UpdateThreadPanelState(ctx, panel.ID, panel.CurrentTurnID, panel.Status, panel.LastSummaryHash, panel.LastToolHash, panel.LastOutputHash, panel.LastFinalNoticeFP)
-}
-
-func (s *Service) maybeUpdateRunNotice(ctx context.Context, sender Sender, panel *model.ThreadPanel, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, renderSourceMode string) error {
-	if panel == nil || panel.RunNoticeMessageID == 0 || !shouldSendRunNotice(renderSourceMode, snapshot) {
-		return nil
-	}
-	if isTerminalStatus(snapshot.LatestTurnStatus) {
-		return nil
-	}
-	text, fp := s.renderRunNotice(ctx, thread, snapshot, renderSourceMode)
-	if fp == panel.LastRunNoticeFP {
-		return nil
-	}
-	s.logChatRenderContainsNil(thread.ID, snapshot.LatestTurnID, "new_run", panel.RunNoticeMessageID, text)
-	if err := sender.EditMessage(ctx, panel.ChatID, panel.TopicID, panel.RunNoticeMessageID, text, nil); err != nil {
-		s.setError(ctx, fmt.Errorf("edit run notice: %w", err))
-		return nil
-	}
-	panel.LastRunNoticeFP = fp
-	return s.store.UpdateThreadPanelRunNotice(ctx, panel.ID, panel.RunNoticeMessageID, panel.LastRunNoticeFP)
 }
 
 func (s *Service) renderSummaryPanel(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, pending *model.PendingApproval) (model.RenderedMessage, [][]model.ButtonSpec, string) {

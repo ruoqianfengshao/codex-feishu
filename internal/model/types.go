@@ -9,10 +9,8 @@ import (
 )
 
 const (
-	PanelSourceExplicit       = "explicit"
-	PanelSourceGlobalObserver = "global_observer"
-	PanelSourceChatInput      = "chat_input"
-	PanelSourceFeishuInput    = "feishu_input"
+	PanelSourceExplicit    = "explicit"
+	PanelSourceFeishuInput = "feishu_input"
 
 	PromptSourceServerRequest = "server_request"
 	PromptSourceSyntheticPoll = "synthetic_poll"

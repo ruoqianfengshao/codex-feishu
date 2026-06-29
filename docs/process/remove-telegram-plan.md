@@ -39,17 +39,18 @@ Verification:
 
 ## Phase 3: Runtime Behavior
 
-- [ ] Remove Telegram default `HandleMessage` / `HandleCallback` entry points.
-- [ ] Keep only Feishu source entry points.
-- [ ] Remove Telegram run notice behavior.
-- [ ] Remove Telegram duplicate-user-message guards.
-- [ ] Remove global observer behavior that only existed for Telegram.
-- [ ] Remove Telegram-specific lifecycle repair/status wording.
+- [x] Remove Telegram default `HandleMessage` / `HandleCallback` entry points.
+- [x] Keep only Feishu source entry points.
+- [x] Remove Telegram run notice behavior.
+- [x] Remove Telegram duplicate-user-message guards.
+- [x] Remove global observer behavior that only existed for Telegram.
+- [x] Remove Telegram-specific lifecycle repair/status wording.
 
 Verification:
 
-- [ ] `rg -n "Telegram|telegram|PanelSourceGlobalObserver|GlobalObserver" internal/daemon internal/model`
-- [ ] `go test ./internal/daemon ./internal/control ./internal/appserver`
+- [x] `rg -n "Telegram|telegram|PanelSourceGlobalObserver|GlobalObserver" internal/daemon internal/model`
+  - Remaining `telegram` hits in daemon/model are module path or repo-name strings only.
+- [x] `go test ./internal/daemon ./internal/model ./internal/storage ./internal/feishu`
 
 ## Phase 4: Rendering
 

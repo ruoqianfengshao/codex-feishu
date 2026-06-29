@@ -1021,10 +1021,6 @@ func renderThreadTopicRootText(thread model.Thread, snapshot *appserver.ThreadRe
 	switch strings.TrimSpace(sourceMode) {
 	case model.PanelSourceFeishuInput:
 		source = "Feishu"
-	case model.PanelSourceChatInput:
-		source = "chat"
-	case model.PanelSourceGlobalObserver:
-		source = "Codex Desktop"
 	}
 	lines := []string{
 		title,

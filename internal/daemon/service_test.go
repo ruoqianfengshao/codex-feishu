@@ -89,14 +89,6 @@ func TestResolveRouteFromFeishuPlainTextUsesLatestCurrentPanelOnly(t *testing.T)
 	if feishu.ThreadID != "panel-thread" || feishu.Source != model.RouteSourcePanel || feishu.TurnID != "" {
 		t.Fatalf("feishu route = %#v, want panel-thread / panel without turn route", feishu)
 	}
-
-	chatRoute, err := service.resolveRouteFromSource(ctx, 123456789, 0, "", 0, model.PanelSourceChatInput)
-	if err != nil {
-		t.Fatalf("resolveRouteFromSource(chat) failed: %v", err)
-	}
-	if chatRoute.ThreadID != "" || chatRoute.Source != model.RouteSourceNone {
-		t.Fatalf("chat route = %#v, want no route", chatRoute)
-	}
 }
 
 func TestResolveRouteFromFeishuPlainTextKeepsExplicitReplyAndSteerPrecedence(t *testing.T) {
@@ -197,43 +189,6 @@ func TestResolveRouteExtractsPlanRequestIDOnlyFromPlanRequestEvent(t *testing.T)
 	}
 	if synthetic.ThreadID != "synthetic-thread" || synthetic.TurnID != "synthetic-turn" || synthetic.RequestID != "" {
 		t.Fatalf("synthetic plan route = %#v, want thread/turn without request", synthetic)
-	}
-}
-
-func TestCurrentBackgroundTargetDefaultsMovesAndDisables(t *testing.T) {
-	t.Parallel()
-
-	service := newTestService(t)
-	ctx := context.Background()
-
-	target, err := service.currentBackgroundTarget(ctx)
-	if err != nil {
-		t.Fatalf("currentBackgroundTarget(default) failed: %v", err)
-	}
-	if target != nil {
-		t.Fatalf("default background target = %#v, want nil", target)
-	}
-
-	if err := service.store.SetGlobalObserverTarget(ctx, -1001234567890, 7, true); err != nil {
-		t.Fatalf("SetGlobalObserverTarget(enable moved target) failed: %v", err)
-	}
-	target, err = service.currentBackgroundTarget(ctx)
-	if err != nil {
-		t.Fatalf("currentBackgroundTarget(moved) failed: %v", err)
-	}
-	if target == nil || target.ChatID != -1001234567890 || target.TopicID != 7 || !target.Enabled {
-		t.Fatalf("moved global target = %#v, want -1001234567890:7 enabled", target)
-	}
-
-	if err := service.store.SetGlobalObserverTarget(ctx, -1001234567890, 7, false); err != nil {
-		t.Fatalf("SetGlobalObserverTarget(disable) failed: %v", err)
-	}
-	target, err = service.currentBackgroundTarget(ctx)
-	if err != nil {
-		t.Fatalf("currentBackgroundTarget(disabled) failed: %v", err)
-	}
-	if target != nil {
-		t.Fatalf("disabled global target = %#v, want nil", target)
 	}
 }
 
@@ -746,7 +701,7 @@ func TestFeishuShowThreadCallbackReturnsVisibleOpenResponse(t *testing.T) {
 	}
 	token := service.callbackButton(ctx, "Open 1", "show_thread", thread.ID, "", "", nil).CallbackData
 
-	chatResponse, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, token, model.PanelSourceChatInput)
+	chatResponse, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, token, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallbackFromSource(chat) failed: %v", err)
 	}
@@ -1608,7 +1563,7 @@ func TestCurrentPanelThreadIDsSkipTerminalGlobalObserverPanels(t *testing.T) {
 		TopicID:          0,
 		ProjectName:      "Codex",
 		ThreadID:         threadA.ID,
-		SourceMode:       "global_observer",
+		SourceMode:       model.PanelSourceFeishuInput,
 		SummaryMessageID: 1,
 		ToolMessageID:    2,
 		OutputMessageID:  3,
@@ -1794,7 +1749,7 @@ func TestThreadNeedsLiveSyncSkipsTerminalGlobalObserverPanels(t *testing.T) {
 		TopicID:          0,
 		ProjectName:      "Codex",
 		ThreadID:         thread.ID,
-		SourceMode:       "global_observer",
+		SourceMode:       model.PanelSourceFeishuInput,
 		SummaryMessageID: 1,
 		ToolMessageID:    2,
 		OutputMessageID:  3,
@@ -1882,7 +1837,7 @@ func TestLiveToolNotificationStoresRunningCommandWithoutRenderingItAsCurrent(t *
 		TopicID:          0,
 		ProjectName:      thread.ProjectName,
 		ThreadID:         thread.ID,
-		SourceMode:       model.PanelSourceChatInput,
+		SourceMode:       model.PanelSourceFeishuInput,
 		SummaryMessageID: 201,
 		ToolMessageID:    202,
 		OutputMessageID:  203,
@@ -5488,7 +5443,7 @@ func TestAnswerChoiceMissingTextDoesNotSendNil(t *testing.T) {
 		ThreadID:    "thread-missing-text",
 		TurnID:      "turn-missing-text",
 		PayloadJSON: `{}`,
-	}, model.PanelSourceChatInput)
+	}, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("answerChoice(missing text) failed: %v", err)
 	}

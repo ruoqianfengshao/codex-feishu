@@ -167,7 +167,7 @@ func (s *Service) logThreadReadSkipped(threadID, reason string) {
 }
 
 func (s *Service) logChatInbound(kind string, chatID, topicID int64, replyToMessageID int64, decision model.RouteDecision, text, collaborationMode string) {
-	s.logInputInbound(model.PanelSourceChatInput, kind, chatID, topicID, replyToMessageID, decision, text, collaborationMode)
+	s.logInputInbound(model.PanelSourceFeishuInput, kind, chatID, topicID, replyToMessageID, decision, text, collaborationMode)
 }
 
 func (s *Service) logInputInbound(sourceMode, kind string, chatID, topicID int64, replyToMessageID int64, decision model.RouteDecision, text, collaborationMode string) {
@@ -295,7 +295,7 @@ func (s *Service) maybeLogChatOriginTerminal(ctx context.Context, snapshot appse
 	if threadID == "" || turnID == "" || !isTerminalTurnStatus(status) || !isDirectInputSourceMode(sourceMode) {
 		return
 	}
-	if sourceMode != model.PanelSourceChatInput {
+	if sourceMode != model.PanelSourceFeishuInput {
 		return
 	}
 	if decision, err := s.decideChatOriginEmptyInterruptedTerminal(ctx, &snapshot, time.Now().UTC()); err == nil {

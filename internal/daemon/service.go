@@ -1157,10 +1157,6 @@ func (s *Service) pollLoop(ctx context.Context) {
 }
 
 func (s *Service) refreshObserverIndex(ctx context.Context) {
-	if !s.hasBackgroundTargets(ctx) {
-		return
-	}
-	s.syncThreads(ctx, observerRecentThreadLimit)
 }
 
 func (s *Service) deliveryLoop(ctx context.Context) {
@@ -3164,63 +3160,11 @@ func requestIDFromRouteEvent(eventID string) string {
 }
 
 func (s *Service) enqueueObserverEvent(ctx context.Context, event model.ObserverEvent) {
-	response := s.renderObserverEvent(ctx, event)
-	s.enqueueRenderedToBackgroundTargets(ctx, response, event.ThreadID, event.TurnID, event.ItemID, event.EventID)
-}
-
-func (s *Service) enqueueRenderedToBackgroundTargets(ctx context.Context, response *DirectResponse, threadID, turnID, itemID, eventID string) {
-	if response == nil {
-		return
-	}
-	targets, err := s.backgroundTargets(ctx)
-	if err != nil {
-		s.setError(ctx, err)
-		return
-	}
-	for _, target := range targets {
-		payload := model.DeliveryPayload{
-			Text:     response.Text,
-			Sections: response.Sections,
-			ThreadID: threadID,
-			TurnID:   turnID,
-			ItemID:   itemID,
-			EventID:  eventID,
-			Buttons:  response.Buttons,
-		}
-		item := model.DeliveryQueueItem{
-			EventID:     eventID,
-			ChatKey:     model.ChatKey(target.ChatID, target.TopicID),
-			ChatID:      target.ChatID,
-			TopicID:     target.TopicID,
-			ThreadID:    threadID,
-			Kind:        "observer",
-			Status:      model.DeliveryStatusPending,
-			AvailableAt: model.NowString(),
-			PayloadJSON: storage.MustJSON(payload),
-			CreatedAt:   model.NowString(),
-			UpdatedAt:   model.NowString(),
-		}
-		_ = s.store.EnqueueDelivery(ctx, item)
-	}
-}
-
-func (s *Service) backgroundTargets(ctx context.Context) ([]model.ObserverTarget, error) {
-	return nil, nil
-}
-
-func (s *Service) defaultBackgroundTargets() []model.ObserverTarget {
-	return nil
-}
-
-func (s *Service) hasBackgroundTargets(ctx context.Context) bool {
-	targets, err := s.backgroundTargets(ctx)
-	return err == nil && len(targets) > 0
 }
 
 func (s *Service) trackedThreads(ctx context.Context, limit int) []model.Thread {
 	seen := map[string]struct{}{}
 	out := []model.Thread{}
-	backgroundEnabled := s.hasBackgroundTargets(ctx)
 	for _, threadID := range s.currentPanelThreadIDs(ctx) {
 		thread, err := s.store.GetThread(ctx, threadID)
 		if err != nil || thread == nil {
@@ -3249,10 +3193,7 @@ func (s *Service) trackedThreads(ctx context.Context, limit int) []model.Thread 
 			continue
 		}
 		if !threadLooksActiveForPolling(thread) {
-			snapshot, _ := s.store.GetSnapshot(ctx, thread.ID)
-			if !backgroundEnabled || !s.threadNeedsCatchupPolling(ctx, thread, snapshot) {
-				continue
-			}
+			continue
 		}
 		seen[thread.ID] = struct{}{}
 		out = append(out, thread)
@@ -3420,9 +3361,6 @@ func (s *Service) threadNeedsCatchupPolling(ctx context.Context, thread model.Th
 	if thread.UpdatedAt <= 0 || updatedAt.IsZero() {
 		return false
 	}
-	if sinceUnix := s.globalObserverSinceUnix(ctx); sinceUnix > 0 && thread.UpdatedAt < sinceUnix {
-		return false
-	}
 	if time.Since(updatedAt) > s.catchupWindow() {
 		return false
 	}
@@ -3504,26 +3442,6 @@ func mergeThreadMetadata(current, fallback model.Thread) model.Thread {
 		current.Archived = fallback.Archived
 	}
 	return current
-}
-
-func (s *Service) globalObserverSinceUnix(ctx context.Context) int64 {
-	if sinceUnix, ok, err := s.store.GetGlobalObserverSinceUnix(ctx); err == nil && ok && sinceUnix > 0 {
-		return sinceUnix
-	}
-	s.mu.RLock()
-	startedAt := s.startedAt
-	s.mu.RUnlock()
-	if !startedAt.IsZero() {
-		return startedAt.UTC().Unix()
-	}
-	raw, err := s.store.GetState(ctx, "daemon.started_at")
-	if err != nil {
-		return 0
-	}
-	if startedAt := parseTime(model.TimeString(raw)); !startedAt.IsZero() {
-		return startedAt.UTC().Unix()
-	}
-	return 0
 }
 
 func (s *Service) refreshThread(ctx context.Context, client Session, threadID string) (*model.Thread, error) {

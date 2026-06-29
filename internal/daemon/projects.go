@@ -618,7 +618,7 @@ func (s *Service) createProjectThread(ctx context.Context, chatID, topicID int64
 }
 
 func (s *Service) newChatCommand(ctx context.Context, chatID, topicID int64, rest string) (*DirectResponse, error) {
-	return s.newChatCommandFromSource(ctx, chatID, topicID, rest, model.PanelSourceChatInput)
+	return s.newChatCommandFromSource(ctx, chatID, topicID, rest, model.PanelSourceFeishuInput)
 }
 
 func (s *Service) newChatCommandFromSource(ctx context.Context, chatID, topicID int64, rest, sourceMode string) (*DirectResponse, error) {
@@ -700,7 +700,7 @@ func codexChatSlugFromPrompt(prompt string, now time.Time) string {
 }
 
 func (s *Service) maybeConsumeNewThreadPrompt(ctx context.Context, chatID, topicID int64, text string) (*DirectResponse, bool, error) {
-	return s.maybeConsumeNewThreadPromptFromSource(ctx, chatID, topicID, text, model.PanelSourceChatInput)
+	return s.maybeConsumeNewThreadPromptFromSource(ctx, chatID, topicID, text, model.PanelSourceFeishuInput)
 }
 
 func (s *Service) maybeConsumeNewThreadPromptFromSource(ctx context.Context, chatID, topicID int64, text, sourceMode string) (*DirectResponse, bool, error) {

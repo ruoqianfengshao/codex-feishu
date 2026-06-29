@@ -998,7 +998,7 @@ func TestRenderThreadTopicRootTextFallsBackToCWDBasenameForProject(t *testing.T)
 		Title:  "Use cwd project",
 		CWD:    "/Users/example/workspace/codex-tg-controller",
 		Status: "idle",
-	}, nil, model.PanelSourceGlobalObserver)
+	}, nil, model.PanelSourceFeishuInput)
 
 	if !strings.Contains(got, "Project: codex-tg-controller") {
 		t.Fatalf("root text = %q, want CWD basename project", got)
