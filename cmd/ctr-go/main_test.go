@@ -62,13 +62,6 @@ func TestSelectedAdapterPrefersExplicitValueThenAutoCredentials(t *testing.T) {
 			want: "feishu",
 		},
 		{
-			name: "telegram no longer supported",
-			cfg: config.Config{
-				Adapter: "telegram",
-			},
-			want: "",
-		},
-		{
 			name: "auto is feishu",
 			cfg:  config.Config{Adapter: "auto"},
 			want: "feishu",
@@ -182,9 +175,6 @@ func TestRunInitWritesFeishuConfigWithoutLeakingSecret(t *testing.T) {
 			t.Fatalf("config file missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "CTR_GO_TELEGRAM_BOT_TOKEN") {
-		t.Fatalf("Feishu config included Telegram token key:\n%s", text)
-	}
 }
 
 func TestRunInitForceOverwritesConfig(t *testing.T) {
@@ -290,17 +280,12 @@ func TestRunFeishuSetupWritesConfigFromScanRegistration(t *testing.T) {
 			t.Fatalf("config missing %q:\n%s", want, text)
 		}
 	}
-	for _, bad := range []string{"CTR_GO_TELEGRAM_BOT_TOKEN", "CTR_GO_ALLOWED_USER_IDS"} {
-		if strings.Contains(text, bad) {
-			t.Fatalf("config contains Telegram-only key %q:\n%s", bad, text)
-		}
-	}
 }
 
 func TestRunFeishuSetupRefusesOverwrite(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.env")
-	if err := os.WriteFile(configPath, []byte("CTR_GO_ADAPTER=telegram\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("CTR_GO_ADAPTER=feishu\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 	err := runFeishuSetupWithOptions(feishuSetupOptions{

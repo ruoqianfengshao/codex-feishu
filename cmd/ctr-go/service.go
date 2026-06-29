@@ -232,9 +232,6 @@ func serviceConfigValues(values map[string]string) map[string]string {
 		if strings.TrimSpace(value) == "" && optionalServiceConfigKey(key) {
 			continue
 		}
-		if key == "CTR_GO_TELEGRAM_BOT_TOKEN" || key == "CTR_GO_ALLOWED_USER_IDS" || key == "CTR_GO_ALLOWED_CHAT_IDS" {
-			continue
-		}
 		out[key] = value
 	}
 	return out

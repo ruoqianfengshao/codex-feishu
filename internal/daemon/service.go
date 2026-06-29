@@ -574,12 +574,6 @@ func (s *Service) RequestRepair(ctx context.Context, reason string) error {
 }
 
 func (s *Service) IsAllowed(userID, chatID int64) bool {
-	if len(s.cfg.AllowedUserIDs) > 0 && !containsInt64(s.cfg.AllowedUserIDs, userID) {
-		return false
-	}
-	if len(s.cfg.AllowedChatIDs) > 0 && !containsInt64(s.cfg.AllowedChatIDs, chatID) {
-		return false
-	}
 	return true
 }
 
@@ -3239,12 +3233,6 @@ func (s *Service) backgroundTargets(ctx context.Context) ([]model.ObserverTarget
 }
 
 func (s *Service) defaultBackgroundTargets() []model.ObserverTarget {
-	if len(s.cfg.AllowedUserIDs) == 1 {
-		return []model.ObserverTarget{{ChatKey: model.ChatKey(s.cfg.AllowedUserIDs[0], 0), ChatID: s.cfg.AllowedUserIDs[0], TopicID: 0, Enabled: true}}
-	}
-	if len(s.cfg.AllowedUserIDs) == 0 && len(s.cfg.AllowedChatIDs) == 1 {
-		return []model.ObserverTarget{{ChatKey: model.ChatKey(s.cfg.AllowedChatIDs[0], 0), ChatID: s.cfg.AllowedChatIDs[0], TopicID: 0, Enabled: true}}
-	}
 	return nil
 }
 
@@ -3751,15 +3739,6 @@ func parseTime(value model.TimeString) time.Time {
 		return time.Time{}
 	}
 	return parsed
-}
-
-func containsInt64(haystack []int64, needle int64) bool {
-	for _, value := range haystack {
-		if value == needle {
-			return true
-		}
-	}
-	return false
 }
 
 func maxDuration(left, right time.Duration) time.Duration {

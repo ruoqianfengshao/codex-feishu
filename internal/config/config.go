@@ -49,8 +49,6 @@ type Config struct {
 	Adapter                     string
 	CodexBin                    string
 	AppServerListen             string
-	AllowedUserIDs              []int64
-	AllowedChatIDs              []int64
 	FeishuAppID                 string
 	FeishuAppSecret             string
 	FeishuAllowedOpenIDs        []string
@@ -138,8 +136,6 @@ func fromSource(source envSource) Config {
 		Adapter:                     normalizeAdapter(source.string("CTR_GO_ADAPTER", "feishu")),
 		CodexBin:                    codexBin,
 		AppServerListen:             listen,
-		AllowedUserIDs:              parseInt64List(source.get("CTR_GO_NUMERIC_ALLOWED_USER_IDS")),
-		AllowedChatIDs:              parseInt64List(source.get("CTR_GO_NUMERIC_ALLOWED_CHAT_IDS")),
 		FeishuAppID:                 source.get("CTR_GO_FEISHU_APP_ID"),
 		FeishuAppSecret:             source.get("CTR_GO_FEISHU_APP_SECRET"),
 		FeishuAllowedOpenIDs:        parseStringList(source.get("CTR_GO_FEISHU_ALLOWED_OPEN_IDS")),
@@ -171,8 +167,6 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		AppServerListen             string   `json:"app_server_listen"`
 		Adapter                     string   `json:"adapter"`
 		HasFeishuCredentials        bool     `json:"feishu_configured"`
-		AllowedUserIDs              []int64  `json:"allowed_user_ids"`
-		AllowedChatIDs              []int64  `json:"allowed_chat_ids"`
 		FeishuAllowedOpenIDs        []string `json:"feishu_allowed_open_ids"`
 		FeishuAllowedChatIDs        []string `json:"feishu_allowed_chat_ids"`
 		DefaultCWD                  string   `json:"default_cwd"`
@@ -196,8 +190,6 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		AppServerListen:             c.AppServerListen,
 		Adapter:                     normalizeAdapter(c.Adapter),
 		HasFeishuCredentials:        c.FeishuAppID != "" && c.FeishuAppSecret != "",
-		AllowedUserIDs:              c.AllowedUserIDs,
-		AllowedChatIDs:              c.AllowedChatIDs,
 		FeishuAllowedOpenIDs:        c.FeishuAllowedOpenIDs,
 		FeishuAllowedChatIDs:        c.FeishuAllowedChatIDs,
 		DefaultCWD:                  c.DefaultCWD,
@@ -388,28 +380,6 @@ func (s envSource) durationSeconds(key string, fallback time.Duration) time.Dura
 		return fallback
 	}
 	return time.Duration(parsed * float64(time.Second))
-}
-
-func parseInt64List(raw string) []int64 {
-	if strings.TrimSpace(raw) == "" {
-		return nil
-	}
-	parts := strings.FieldsFunc(raw, func(r rune) bool {
-		return r == ',' || r == ';' || r == ' ' || r == '\n' || r == '\t'
-	})
-	out := make([]int64, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		value, err := strconv.ParseInt(part, 10, 64)
-		if err != nil {
-			continue
-		}
-		out = append(out, value)
-	}
-	return out
 }
 
 func parseStringList(raw string) []string {

@@ -12,16 +12,17 @@ Objective: make this project Feishu-only. Do not preserve Telegram runtime, data
 
 ## Phase 1: Entry Points And Config
 
-- [ ] Remove `telegram` / `tg` adapter selection from CLI.
-- [ ] Remove Telegram bot token configuration.
-- [ ] Remove Telegram allowed user/chat configuration.
-- [ ] Update init/status/doctor/service output to Feishu-only.
-- [ ] Delete or rewrite CLI tests that assert Telegram behavior.
+- [x] Remove `telegram` / `tg` adapter selection from CLI.
+- [x] Remove Telegram bot token configuration.
+- [x] Remove Telegram allowed user/chat configuration.
+- [x] Update init/status/doctor/service output to Feishu-only.
+- [x] Delete or rewrite CLI tests that assert Telegram behavior.
 
 Verification:
 
-- [ ] `rg -n "telegram|Telegram|tg" cmd internal/config`
-- [ ] `go test ./cmd/ctr-go ./internal/config`
+- [x] `rg -n "telegram|Telegram|tg" cmd internal/config`
+  - Remaining hits are project/package name strings such as `codex-tg`, not Telegram adapter/config references.
+- [x] `go test ./cmd/ctr-go ./internal/config`
 
 ## Phase 2: Source Modes And Runtime Naming
 

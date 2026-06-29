@@ -1255,12 +1255,6 @@ func (b *Bot) isAllowedDirect(openUserID, openChatID string, userID, chatID int6
 	if len(b.cfg.FeishuAllowedChatIDs) > 0 && !containsString(b.cfg.FeishuAllowedChatIDs, openChatID) {
 		return false
 	}
-	if len(b.cfg.AllowedUserIDs) > 0 && !containsInt64(b.cfg.AllowedUserIDs, userID) {
-		return false
-	}
-	if len(b.cfg.AllowedChatIDs) > 0 && !containsInt64(b.cfg.AllowedChatIDs, chatID) {
-		return false
-	}
 	return true
 }
 
@@ -1284,10 +1278,7 @@ func (b *Bot) isBotMenuAllowed(openUserID string, userID int64) bool {
 	if len(b.cfg.FeishuAllowedOpenIDs) > 0 {
 		return containsString(b.cfg.FeishuAllowedOpenIDs, openUserID)
 	}
-	if len(b.cfg.AllowedUserIDs) > 0 {
-		return containsInt64(b.cfg.AllowedUserIDs, userID)
-	}
-	return len(b.cfg.FeishuAllowedChatIDs) == 0 && len(b.cfg.AllowedChatIDs) == 0
+	return len(b.cfg.FeishuAllowedChatIDs) == 0
 }
 
 func botMenuCommand(eventKey string) (string, bool) {
@@ -1362,15 +1353,6 @@ func containsString(values []string, needle string) bool {
 	needle = strings.TrimSpace(needle)
 	for _, value := range values {
 		if strings.TrimSpace(value) == needle {
-			return true
-		}
-	}
-	return false
-}
-
-func containsInt64(values []int64, needle int64) bool {
-	for _, value := range values {
-		if value == needle {
 			return true
 		}
 	}

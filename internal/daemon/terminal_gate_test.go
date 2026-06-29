@@ -367,8 +367,7 @@ func newTerminalGateTestService(t *testing.T) *Service {
 			LogDir:  filepath.Join(root, "logs"),
 			DBPath:  filepath.Join(root, "data", "state.db"),
 		},
-		AllowedUserIDs: []int64{123456789},
-		DefaultCWD:     `C:\Users\you\Projects\Codex`,
+		DefaultCWD: `C:\Users\you\Projects\Codex`,
 	})
 	if err != nil {
 		t.Fatalf("daemon.New failed: %v", err)

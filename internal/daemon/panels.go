@@ -29,22 +29,6 @@ func (s *Service) currentBackgroundTarget(ctx context.Context) (*model.ObserverT
 	if configured {
 		return target, nil
 	}
-	if len(s.cfg.AllowedUserIDs) == 1 {
-		return &model.ObserverTarget{
-			ChatKey: model.ChatKey(s.cfg.AllowedUserIDs[0], 0),
-			ChatID:  s.cfg.AllowedUserIDs[0],
-			TopicID: 0,
-			Enabled: true,
-		}, nil
-	}
-	if len(s.cfg.AllowedUserIDs) == 0 && len(s.cfg.AllowedChatIDs) == 1 {
-		return &model.ObserverTarget{
-			ChatKey: model.ChatKey(s.cfg.AllowedChatIDs[0], 0),
-			ChatID:  s.cfg.AllowedChatIDs[0],
-			TopicID: 0,
-			Enabled: true,
-		}, nil
-	}
 	return nil, nil
 }
 

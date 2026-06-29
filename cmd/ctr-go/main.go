@@ -280,13 +280,6 @@ func feishuSetupConfigValues(opts feishuSetupOptions, existing map[string]string
 			values[key] = value
 		}
 	}
-	for _, key := range []string{
-		"CTR_GO_TELEGRAM_BOT_TOKEN",
-		"CTR_GO_ALLOWED_USER_IDS",
-		"CTR_GO_ALLOWED_CHAT_IDS",
-	} {
-		delete(values, key)
-	}
 	if strings.TrimSpace(values["CTR_GO_FEISHU_ALLOWED_OPEN_IDS"]) == "" {
 		delete(values, "CTR_GO_FEISHU_ALLOWED_OPEN_IDS")
 	}
@@ -382,8 +375,6 @@ func selectedAdapter(cfg config.Config) string {
 	switch strings.TrimSpace(strings.ToLower(cfg.Adapter)) {
 	case "", "auto", "feishu", "lark":
 		return "feishu"
-	case "telegram", "tg":
-		return ""
 	}
 	if strings.TrimSpace(cfg.FeishuAppID) != "" && strings.TrimSpace(cfg.FeishuAppSecret) != "" {
 		return "feishu"

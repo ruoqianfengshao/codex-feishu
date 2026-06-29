@@ -143,9 +143,6 @@ func TestServiceInstallNonInteractiveWritesFeishuConfig(t *testing.T) {
 			t.Fatalf("config missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "CTR_GO_TELEGRAM_BOT_TOKEN") || strings.Contains(text, "CTR_GO_ALLOWED_USER_IDS") {
-		t.Fatalf("Feishu config included Telegram-only keys:\n%s", text)
-	}
 	plist, err := os.ReadFile(filepath.Join(home, "service", serviceLabel+".plist"))
 	if err != nil {
 		t.Fatalf("ReadFile plist failed: %v", err)
@@ -325,11 +322,6 @@ func TestRenderLaunchAgentPlistContainsOnlyConfigEnvironment(t *testing.T) {
 	for _, want := range []string{"CTR_GO_CONFIG", "daemon", "run", "KeepAlive", "RunAtLoad"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("plist missing %q:\n%s", want, text)
-		}
-	}
-	for _, bad := range []string{"TELEGRAM_BOT_TOKEN", "CTR_GO_TELEGRAM_BOT_TOKEN", "CTR_GO_ALLOWED_USER_IDS"} {
-		if strings.Contains(text, bad) {
-			t.Fatalf("plist contains forbidden env %q:\n%s", bad, text)
 		}
 	}
 }

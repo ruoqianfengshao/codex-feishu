@@ -210,8 +210,8 @@ func TestCurrentBackgroundTargetDefaultsMovesAndDisables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("currentBackgroundTarget(default) failed: %v", err)
 	}
-	if target == nil || target.ChatID != 123456789 || target.TopicID != 0 || !target.Enabled {
-		t.Fatalf("default background target = %#v, want enabled DM target for allowed user", target)
+	if target != nil {
+		t.Fatalf("default background target = %#v, want nil", target)
 	}
 
 	if err := service.store.SetGlobalObserverTarget(ctx, -1001234567890, 7, true); err != nil {
@@ -5577,8 +5577,7 @@ func newTestService(t *testing.T) *Service {
 			LogDir:  filepath.Join(root, "logs"),
 			DBPath:  filepath.Join(root, "data", "state.sqlite"),
 		},
-		AllowedUserIDs: []int64{123456789},
-		DefaultCWD:     `C:\Users\you\Projects\Codex`,
+		DefaultCWD: `C:\Users\you\Projects\Codex`,
 	}
 	service, err := New(cfg)
 	if err != nil {

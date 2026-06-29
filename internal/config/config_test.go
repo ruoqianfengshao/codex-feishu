@@ -133,7 +133,6 @@ func TestLoadReadsConfigFileAndEnvOverridesIt(t *testing.T) {
 	home := filepath.Join(dir, "home")
 	if err := os.WriteFile(configPath, []byte(strings.Join([]string{
 		`CTR_GO_HOME="` + home + `"`,
-		`CTR_GO_NUMERIC_ALLOWED_USER_IDS="101 202"`,
 		`CTR_GO_DEFAULT_CWD="` + fileDefaultCWD + `"`,
 		`CTR_GO_NOTIFY_NEW_RUN="off"`,
 		`CTR_GO_NOTIFY_SYSTEM="off"`,
@@ -147,9 +146,6 @@ func TestLoadReadsConfigFileAndEnvOverridesIt(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
-	}
-	if !reflect.DeepEqual(cfg.AllowedUserIDs, []int64{101, 202}) {
-		t.Fatalf("AllowedUserIDs = %#v, want 101,202", cfg.AllowedUserIDs)
 	}
 	if cfg.DefaultCWD != envDefaultCWD {
 		t.Fatalf("DefaultCWD = %q, want env override %q", cfg.DefaultCWD, envDefaultCWD)
