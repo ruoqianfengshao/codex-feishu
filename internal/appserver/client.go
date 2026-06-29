@@ -403,7 +403,7 @@ func (c *Client) Start(ctx context.Context) error {
 		"capabilities": map[string]any{"experimentalApi": true},
 		"clientInfo": map[string]any{
 			"name":    "codex-tg",
-			"title":   "codex-tg Telegram bridge",
+			"title":   "codex-tg Feishu bridge",
 			"version": version.Version,
 		},
 	}); err != nil {

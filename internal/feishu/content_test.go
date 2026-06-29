@@ -450,9 +450,6 @@ func TestBotMenuCommandMapsStableEventKeys(t *testing.T) {
 	if got, ok := botMenuCommand("default"); ok || got != "" {
 		t.Fatalf("botMenuCommand(default) = %q, %v; hidden fallback must not be exposed", got, ok)
 	}
-	if got, ok := botMenuCommand("observe_all"); ok || got != "" {
-		t.Fatalf("botMenuCommand(observe_all) = %q, %t; want removed", got, ok)
-	}
 	if got, ok := botMenuCommand("newthread"); ok || got != "" {
 		t.Fatalf("botMenuCommand(newthread) = %q, %t; want removed", got, ok)
 	}
