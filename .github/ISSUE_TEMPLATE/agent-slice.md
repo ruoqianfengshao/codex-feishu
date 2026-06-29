@@ -30,7 +30,7 @@ What must not change in this task?
 - [ ] Implement the smallest change.
 - [ ] Run targeted checks.
 - [ ] Run broader checks required by `AGENTS.md`.
-- [ ] Capture live Telegram E2E evidence when UI/routing/observer/lifecycle/Plan Mode/callback behavior changes.
+- [ ] Capture live Feishu E2E evidence when UI/routing/topic/lifecycle/Plan Mode/callback behavior changes.
 
 ## Acceptance criteria
 

@@ -9,7 +9,6 @@ labels: enhancement
 
 ## Proposed behavior
 
-## Telegram UX impact
+## Feishu UX impact
 
 ## Alternatives considered
-

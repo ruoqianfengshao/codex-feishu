@@ -1,52 +1,11 @@
 # Security
 
-`codex-tg` is local-first.
+`codex-tg` is local-first:
 
-## Defaults
+- Codex App Server should stay local/private.
+- Feishu app id and secret are stored in the private local config.
+- SQLite state, logs, config files, and screenshots may contain private data.
+- Optional Feishu allowlists should be used for production testing.
 
-- Codex App Server runs locally over stdio.
-- Telegram access is restricted by allowed user/chat ids.
-- Feishu/Lark access can be restricted by open_id/chat_id allowlists and by the
-  same stable numeric allowlists used by the control core.
-- SQLite state stays on the operator machine.
-- `ctr-go init` stores local configuration in `~/.codex-tg/config.env` by default.
-- `ctr-go service install` creates a user LaunchAgent whose environment contains
-  only `CTR_GO_CONFIG`.
-- If proxy variables are needed for network access, they are stored in the
-  private `config.env` and applied by the process after startup; proxy URLs may
-  contain credentials, so treat the config file as secret material.
-- The macOS tray app controls service lifecycle and opens local files, but it
-  does not read or display Telegram tokens or Feishu app secrets.
-
-## Never Commit
-
-- `.env`
-- Bot tokens
-- Feishu app secrets
-- `config.env`
-- Telegram user sessions
-- Chat ids from private deployments
-- SQLite databases
-- Logs
-- Private screenshots
-
-## Network Boundary
-
-Do not expose Codex App Server on a public interface. App Server stays local or
-private to the operator machine.
-
-Future control-plane APIs must default to loopback-only or unix-socket-only
-access. Public network listeners, cloud brokers, and unauthenticated local
-control surfaces require a separate ADR.
-
-Telegram, Feishu/Lark, tray, voice, and future HTTP/mobile surfaces are
-adapters. They must not bypass Codex approvals, sandboxing, allowlists, or App
-Server lifecycle guards.
-
-Voice wake-word adapters must treat transcription as untrusted input. A spoken
-request can route to Codex, but it must not auto-approve sensitive file,
-command, permission, or MCP requests.
-
-Secrets stay in the local config file today. A future Keychain migration is
-allowed, but runtime docs and logs must continue to avoid printing secrets in
-full.
+Do not commit app secrets, local config, SQLite databases, logs, private
+screenshots, or user-specific paths.

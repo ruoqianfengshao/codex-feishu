@@ -14,7 +14,7 @@ labels: bug
 - OS:
 - Go version:
 - Codex CLI version:
-- Telegram mode: DM / group / topic
+- Feishu surface: bot DM / topic
 
 ## Reproduction
 
@@ -25,4 +25,3 @@ Commands or steps here
 ## Logs
 
 Paste only sanitized logs. Remove tokens, chat ids, local user names, private paths, and session ids.
-

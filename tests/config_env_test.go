@@ -18,8 +18,8 @@ func TestFromEnvPrefersGoScopedEnvVars(t *testing.T) {
 	t.Setenv("CTR_GO_HOME", `C:\tmp\ctr-go`)
 	t.Setenv("CTR_GO_CODEX_BIN", `C:\tools\codex.exe`)
 	t.Setenv("CTR_GO_APP_SERVER_LISTEN", "stdio://")
-	t.Setenv("CTR_GO_NUMERIC_ALLOWED_USER_IDS", "1,2")
-	t.Setenv("CTR_GO_NUMERIC_ALLOWED_CHAT_IDS", "10 20")
+	t.Setenv("CTR_GO_FEISHU_ALLOWED_OPEN_IDS", "ou_1,ou_2")
+	t.Setenv("CTR_GO_FEISHU_ALLOWED_CHAT_IDS", "oc_10 oc_20")
 	t.Setenv("CTR_GO_DEFAULT_CWD", `C:\workspace`)
 	t.Setenv("CTR_GO_LOG_ENABLED", "off")
 	t.Setenv("CTR_GO_DIAGNOSTIC_LOGS", "no")
@@ -42,11 +42,11 @@ func TestFromEnvPrefersGoScopedEnvVars(t *testing.T) {
 	if got, want := cfg.CodexBin, `C:\tools\codex.exe`; got != want {
 		t.Fatalf("CodexBin = %q, want %q", got, want)
 	}
-	if got := cfg.AllowedUserIDs; len(got) != 2 || got[0] != 1 || got[1] != 2 {
-		t.Fatalf("AllowedUserIDs = %#v, want [1 2]", got)
+	if got := cfg.FeishuAllowedOpenIDs; len(got) != 2 || got[0] != "ou_1" || got[1] != "ou_2" {
+		t.Fatalf("FeishuAllowedOpenIDs = %#v, want [ou_1 ou_2]", got)
 	}
-	if got := cfg.AllowedChatIDs; len(got) != 2 || got[0] != 10 || got[1] != 20 {
-		t.Fatalf("AllowedChatIDs = %#v, want [10 20]", got)
+	if got := cfg.FeishuAllowedChatIDs; len(got) != 2 || got[0] != "oc_10" || got[1] != "oc_20" {
+		t.Fatalf("FeishuAllowedChatIDs = %#v, want [oc_10 oc_20]", got)
 	}
 	if got, want := cfg.DefaultCWD, `C:\workspace`; got != want {
 		t.Fatalf("DefaultCWD = %q, want %q", got, want)
@@ -146,17 +146,17 @@ func TestFromEnvInvalidLoggingFlagsFallBackToEnabled(t *testing.T) {
 	}
 }
 
-func TestFromEnvReadsNumericAllowlistVariables(t *testing.T) {
+func TestFromEnvReadsFeishuAllowlistVariables(t *testing.T) {
 	isolateLocalConfig(t)
-	t.Setenv("CTR_GO_NUMERIC_ALLOWED_USER_IDS", "123456789")
-	t.Setenv("CTR_GO_NUMERIC_ALLOWED_CHAT_IDS", "123456789")
+	t.Setenv("CTR_GO_FEISHU_ALLOWED_OPEN_IDS", "ou_user")
+	t.Setenv("CTR_GO_FEISHU_ALLOWED_CHAT_IDS", "oc_chat")
 
 	cfg := config.FromEnv()
 
-	if got := cfg.AllowedUserIDs; len(got) != 1 || got[0] != 123456789 {
-		t.Fatalf("AllowedUserIDs = %#v, want [123456789]", got)
+	if got := cfg.FeishuAllowedOpenIDs; len(got) != 1 || got[0] != "ou_user" {
+		t.Fatalf("FeishuAllowedOpenIDs = %#v, want [ou_user]", got)
 	}
-	if got := cfg.AllowedChatIDs; len(got) != 1 || got[0] != 123456789 {
-		t.Fatalf("AllowedChatIDs = %#v, want [123456789]", got)
+	if got := cfg.FeishuAllowedChatIDs; len(got) != 1 || got[0] != "oc_chat" {
+		t.Fatalf("FeishuAllowedChatIDs = %#v, want [oc_chat]", got)
 	}
 }

@@ -23,7 +23,7 @@ jobs:
             exit 1
           fi
 
-          real_secret_patterns='(BOT_TOKEN|TELEGRAM_BOT_TOKEN)[[:space:]]*=[[:space:]]*[0-9]+:[A-Za-z0-9_-]{20,}|api_hash[[:space:]]*=[[:space:]]*[0-9a-f]{32}|api_id[[:space:]]*=[[:space:]]*[0-9]{6,}|phone[[:space:]]*=[[:space:]]*\+[0-9]{8,}'
+          real_secret_patterns='(APP_SECRET|FEISHU_APP_SECRET)[[:space:]]*=[[:space:]]*[A-Za-z0-9_-]{16,}|phone[[:space:]]*=[[:space:]]*\+[0-9]{8,}'
           if git grep -nE "$real_secret_patterns" -- ':!go.sum' ':!docs/assets/*.png'; then
             echo "Potential secret found."
             exit 1

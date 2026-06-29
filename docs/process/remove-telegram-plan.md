@@ -68,9 +68,9 @@ Verification:
 ## Phase 5: Tests
 
 - [x] Delete Telegram-only storage/global observer test cases.
-- [ ] Rewrite useful lifecycle coverage as Feishu topic tests.
+- [x] Rewrite useful lifecycle coverage as Feishu topic tests.
 - [x] Remove Telegram/global observer wording from runtime test names, fixtures, and assertions touched so far.
-- [ ] Remove Telegram demo/e2e test assumptions.
+- [x] Remove Telegram demo/e2e test assumptions.
 - [x] Remove legacy Telegram route table and message-id column names from active storage schema.
 - [x] Remove global observer and run notice storage state.
 
@@ -79,28 +79,29 @@ Verification:
 - [x] `rg -n "Telegram|telegram|PanelSourceTelegram|telegram_origin|GlobalObserver|global_observer|RunNotice|run_notice|observer_targets|telegram_message" internal/storage internal/model internal/daemon cmd internal/feishu`
   - Remaining `telegram_message_*` hits are one-time deletion checks for old database artifacts.
 - [x] `go test ./internal/storage ./internal/model ./internal/daemon ./internal/feishu`
-- [ ] `rg -n "Telegram|telegram|PanelSourceTelegram|telegram_origin" internal tests cmd`
-- [ ] `go test ./...`
+- [x] `rg -n "Telegram|telegram|PanelSourceTelegram|telegram_origin" internal tests cmd`
+- [x] `go test ./...`
 
 ## Phase 6: Documentation And Assets
 
-- [ ] Rewrite README as Feishu-only.
-- [ ] Rewrite Quickstart as Feishu-only.
-- [ ] Remove Telegram wiki pages.
-- [ ] Remove Telegram demo docs.
-- [ ] Remove Telegram screenshots/assets.
-- [ ] Update ADR/research/testing docs or delete stale Telegram-only docs.
-- [ ] Update `AGENTS.md` Telegram rules to Feishu-only rules.
+- [x] Rewrite README as Feishu-only.
+- [x] Rewrite Quickstart as Feishu-only.
+- [x] Remove Telegram wiki pages.
+- [x] Remove Telegram demo docs.
+- [x] Remove Telegram screenshots/assets.
+- [x] Update ADR/research/testing docs or delete stale Telegram-only docs.
+- [x] Update `AGENTS.md` Telegram rules to Feishu-only rules.
 
 Verification:
 
-- [ ] `rg -n "Telegram|telegram|tg" README.md AGENTS.md docs`
+- [x] `rg -n "Telegram|telegram|tg" README.md AGENTS.md docs`
+  - Remaining hits are in this removal checklist itself.
 
 ## Final Acceptance
 
-- [ ] `rg -n "Telegram|telegram|tgformat|PanelSourceTelegram|telegram_origin|Bot API"` returns no runtime/product references.
-- [ ] `go test ./...` passes.
-- [ ] `go build -buildvcs=false -o /Users/vico/.local/bin/ctr-go ./cmd/ctr-go` passes.
+- [x] `rg -n "Telegram|telegram|tgformat|PanelSourceTelegram|telegram_origin|Bot API"` returns no runtime/product references outside this removal checklist and old database drop identifiers.
+- [x] `go test ./...` passes.
+- [x] `go build -buildvcs=false -o /Users/vico/.local/bin/ctr-go ./cmd/ctr-go` passes.
 - [ ] Restart local service.
 - [ ] Feishu live check: `/chats`.
 - [ ] Feishu live check: open an existing chat topic.
