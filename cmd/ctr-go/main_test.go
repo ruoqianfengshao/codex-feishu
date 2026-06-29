@@ -266,6 +266,11 @@ func TestRunFeishuSetupWritesConfigFromScanRegistration(t *testing.T) {
 	if !strings.Contains(output, "Setup link:") || strings.Contains(output, "█") {
 		t.Fatalf("setup output did not honor no-qr:\n%s", output)
 	}
+	for _, want := range []string{"/start", "bot DM", "topic reply"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("setup output missing %q:\n%s", want, output)
+		}
+	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("ReadFile config failed: %v", err)

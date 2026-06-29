@@ -306,6 +306,50 @@ func TestBuildThreadLogArchiveDeduplicatesAdjacentMirrorMessageEntries(t *testin
 	}
 }
 
+func TestFeishuFullLogCallbackRepliesInThread(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+	threadID := "019db243-0fc6-7fe3-a0ca-7a54a2ca9c41"
+	sessionPath := filepath.Join(t.TempDir(), "session-"+threadID+".jsonl")
+	writeTranscriptFixture(t, sessionPath, threadID, fixtureTranscriptOptions{
+		CWD:          "/Users/example/project",
+		SessionStart: time.Date(2026, 4, 21, 22, 57, 12, 0, time.UTC),
+		LastTime:     time.Date(2026, 4, 21, 23, 4, 30, 0, time.UTC),
+		TurnID:       "turn-full-log",
+		UserText:     "Need logs",
+		FinalText:    "Done.",
+	})
+	thread := model.Thread{
+		ID:          threadID,
+		Title:       "Need logs",
+		CWD:         "/Users/example/project",
+		ProjectName: "Codex",
+		Raw:         json.RawMessage(model.MustJSON(map[string]any{"thread": map[string]any{"path": sessionPath}})),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+
+	response, err := service.sendFullLogArchive(ctx, 123456789, 0, 901, threadID, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("sendFullLogArchive failed: %v", err)
+	}
+	if response == nil || strings.TrimSpace(response.CallbackText) == "" {
+		t.Fatalf("response = %#v, want callback text", response)
+	}
+	if len(sender.documents) != 1 {
+		t.Fatalf("documents = %#v, want one full log document", sender.documents)
+	}
+	options := sender.documents[0].options
+	if options.FeishuReplyToMessageID != 901 || !options.FeishuReplyInThread || options.FeishuCodexThreadID != threadID {
+		t.Fatalf("document options = %#v, want Feishu thread reply to callback message", options)
+	}
+}
+
 type fixtureTranscriptOptions struct {
 	CWD                 string
 	SessionStart        time.Time

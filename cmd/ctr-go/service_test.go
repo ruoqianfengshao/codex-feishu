@@ -40,6 +40,11 @@ func TestServiceInstallNonInteractiveWritesConfigAndLaunchAgent(t *testing.T) {
 	if strings.Contains(out.String(), secret) {
 		t.Fatalf("service install leaked secret:\n%s", out.String())
 	}
+	for _, want := range []string{"/start", "bot DM", "topic reply"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("service install output missing %q:\n%s", want, out.String())
+		}
+	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("ReadFile config failed: %v", err)
@@ -277,6 +282,8 @@ func TestServiceInstallInteractiveWizardRetriesInvalidValues(t *testing.T) {
 		"[2/10] Feishu app secret",
 		"value must be true or false",
 		"Next steps",
+		"/start",
+		"bot DM",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("wizard output missing %q:\n%s", want, got)

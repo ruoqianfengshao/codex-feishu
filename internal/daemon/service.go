@@ -112,6 +112,9 @@ const (
 	collaborationModePlan     = "plan"
 	codexModelStateKey        = "codex.model"
 	codexReasoningStateKey    = "codex.reasoning_effort"
+	botLanguageStateKey       = "bot.language"
+	botLanguageEnglish        = "en"
+	botLanguageChinese        = "zh"
 	telegramOriginHotPollMax  = 75 * time.Second
 	telegramOriginHotPollTick = 3 * time.Second
 	appServerStdioListen      = "stdio://"
@@ -251,70 +254,89 @@ func (s *Service) Doctor(ctx context.Context) (map[string]any, error) {
 	}, nil
 }
 
-func (s *Service) StatusSnapshot(ctx context.Context, chatID, topicID int64) (string, error) {
-	contextState, err := s.store.GetChatContext(ctx, chatID, topicID)
-	if err != nil {
-		return "", err
-	}
+func (s *Service) StatusSnapshot(ctx context.Context) (*DirectResponse, error) {
+	lang := s.botLanguage(ctx)
 	threadCount, _ := s.store.CountThreads(ctx)
+	catalog, _ := s.projectCatalog(ctx)
 	backlog, _ := s.store.DeliveryQueueBacklog(ctx)
-	boundIDs, _ := s.store.ListBoundThreadIDs(ctx)
-	globalObserver, configured, _ := s.store.GetGlobalObserverTarget(ctx)
-	panelMode := s.panelMode(ctx)
 	s.mu.RLock()
 	ready := s.ready
-	phase := s.phase
 	liveConnected := s.liveConnected
 	pollConnected := s.pollConnected
 	startedAt := s.startedAt
 	lastError := s.lastError
 	s.mu.RUnlock()
-	lines := []string{
-		"Go core status",
-		fmt.Sprintf("Ready: %t", ready),
-		fmt.Sprintf("Phase: %s", phase),
-		fmt.Sprintf("Live app-server: %t", liveConnected),
-		fmt.Sprintf("Poll app-server: %t", pollConnected),
-		fmt.Sprintf("Panel mode: %s", panelMode),
-		fmt.Sprintf("Tracked threads: %d", len(boundIDs)+threadCount),
-		fmt.Sprintf("Cached threads: %d", threadCount),
-		fmt.Sprintf("Delivery backlog: %d", backlog),
+	systemRows := []model.MessageSectionRow{
+		{Title: localized(lang, "核心", "Core"), Trailing: readyLabelLang(lang, ready)},
+		{Title: localized(lang, "运行时长", "Uptime"), Trailing: uptimeLabel(startedAt, s.now())},
 	}
-	switch {
-	case configured && globalObserver != nil && globalObserver.Enabled:
-		lines = append(lines, fmt.Sprintf("Global observer: on -> %s", model.ChatKey(globalObserver.ChatID, globalObserver.TopicID)))
-	case configured:
-		lines = append(lines, "Global observer: off")
-	default:
-		lines = append(lines, "Global observer: default-on fallback")
-	}
-	if !startedAt.IsZero() {
-		lines = append(lines, fmt.Sprintf("Started: %s", startedAt.Format(time.RFC3339)))
+	startedRows := []model.MessageSectionRow{
+		{Title: localized(lang, "启动时间", "Started"), Trailing: startedAtLabel(startedAt)},
 	}
 	if strings.TrimSpace(lastError) != "" {
-		lines = append(lines, fmt.Sprintf("Last error: %s", lastError))
+		systemRows = append(systemRows, model.MessageSectionRow{Title: localized(lang, "最近错误", "Last error"), Trailing: trimPreview(lastError)})
 	}
-	lines = append(lines, "")
-	switch {
-	case contextState.Binding != nil && contextState.Thread != nil && contextState.ObserverEnabled:
-		lines = append(lines, "Mode: Bound thread + global observer sink", fmt.Sprintf("Thread: %s", contextState.Thread.Label()))
-	case contextState.ObserverEnabled:
-		lines = append(lines, "Mode: Global observer sink")
-	case contextState.Binding != nil && contextState.Thread != nil:
-		lines = append(lines, "Mode: Bound thread", fmt.Sprintf("Thread: %s", contextState.Thread.Label()))
-	case contextState.Binding != nil:
-		lines = append(lines, "Mode: Bound thread", fmt.Sprintf("Thread ID: %s", contextState.Binding.ThreadID))
-	default:
-		lines = append(lines, "Mode: Unbound", "Use /threads, /projects, or /bind <thread>.")
+	sections := []model.MessageSection{
+		{Text: localized(lang, "系统", "System"), Heading: true, Rows: systemRows},
+		{Text: localized(lang, "启动", "Startup"), Heading: true, Divider: true, Rows: startedRows},
+		{Text: "Codex", Heading: true, Divider: true, Rows: []model.MessageSectionRow{
+			{Title: localized(lang, "实时会话", "Live session"), Trailing: onlineLabelLang(lang, liveConnected)},
+			{Title: localized(lang, "轮询会话", "Poll session"), Trailing: onlineLabelLang(lang, pollConnected)},
+			{Title: localized(lang, "桌面输入", "Desktop input"), Trailing: onOffLabelLang(lang, s.cfg.OpenCodexDesktopOnFeishu)},
+		}},
+		{Text: localized(lang, "会话", "Threads"), Heading: true, Divider: true, Rows: []model.MessageSectionRow{
+			{Title: localized(lang, "缓存会话", "Cached threads"), Trailing: fmt.Sprintf("%d", threadCount)},
+			{Title: localized(lang, "项目数量", "Projects"), Trailing: fmt.Sprintf("%d", len(catalog.Workspaces))},
+			{Title: localized(lang, "临时会话", "Chats"), Trailing: fmt.Sprintf("%d", len(catalog.Chats))},
+			{Title: localized(lang, "跟踪会话", "Tracked threads"), Trailing: fmt.Sprintf("%d", threadCount)},
+			{Title: localized(lang, "发送队列", "Delivery backlog"), Trailing: fmt.Sprintf("%d", backlog)},
+		}},
+		{Text: "飞书", Heading: true, Divider: true, Rows: []model.MessageSectionRow{
+			{Title: localized(lang, "语言", "Language"), Trailing: languageLabel(lang)},
+			{Title: localized(lang, "话题模式", "Topic mode"), Trailing: localized(lang, "单聊话题", "P2P topic")},
+		}, Buttons: [][]model.ButtonSpec{
+			{
+				s.callbackButton(ctx, selectedButtonLabel("中文", lang == botLanguageChinese), "settings_language_set", "status", "", "", map[string]any{"value": botLanguageChinese, "return": "status"}),
+				s.callbackButton(ctx, selectedButtonLabel("English", lang == botLanguageEnglish), "settings_language_set", "status", "", "", map[string]any{"value": botLanguageEnglish, "return": "status"}),
+			},
+		}},
 	}
-	if contextState.Thread != nil {
-		if _, snapshot, err := s.loadThreadPanelSnapshot(ctx, contextState.Thread.ID); err == nil && snapshot != nil {
-			if prompt := effectivePlanPrompt(nil, snapshot); prompt != nil {
-				lines = append(lines, fmt.Sprintf("Active Plan prompt: %s", trimPreview(prompt.Question)))
-			}
-		}
+	return &DirectResponse{Text: localized(lang, "Codex 状态总览", "Codex Remote Status"), Sections: sections}, nil
+}
+
+func readyLabel(ready bool) string {
+	if ready {
+		return "Ready"
 	}
-	return strings.Join(lines, "\n"), nil
+	return "Not ready"
+}
+
+func onlineLabel(connected bool) string {
+	if connected {
+		return "Online"
+	}
+	return "Offline"
+}
+
+func onOffLabel(enabled bool) string {
+	if enabled {
+		return "On"
+	}
+	return "Off"
+}
+
+func uptimeLabel(startedAt, now time.Time) string {
+	if startedAt.IsZero() {
+		return "Unknown"
+	}
+	return formatToolDuration(now.Sub(startedAt))
+}
+
+func startedAtLabel(startedAt time.Time) string {
+	if startedAt.IsZero() {
+		return "Unknown"
+	}
+	return startedAt.Format("2006-01-02 15:04:05")
 }
 
 func (s *Service) HandleMessage(ctx context.Context, chatID, topicID, userID int64, text string, replyToMessageID int64) (*DirectResponse, error) {
@@ -327,7 +349,7 @@ func (s *Service) HandleMessageFromSource(ctx context.Context, chatID, topicID, 
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return &DirectResponse{Text: "Plain text messages only right now. Send text, or use /context for routing help."}, nil
+		return &DirectResponse{Text: s.t(ctx, "目前只支持纯文本消息。请发送文本，或使用 /context 查看路由。", "Plain text messages only right now. Send text, or use /context for routing help.")}, nil
 	}
 	if strings.HasPrefix(text, "/") {
 		return s.handleCommandFromSource(ctx, chatID, topicID, text, replyToMessageID, sourceMode)
@@ -348,7 +370,7 @@ func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID,
 		return nil, err
 	}
 	if route == nil || route.Status != model.CallbackStatusActive {
-		return &DirectResponse{Text: "This button is stale. Use /show <thread> or /repair."}, nil
+		return &DirectResponse{Text: s.t(ctx, "这个按钮已过期。请使用 /show <thread> 或 /repair。", "This button is stale. Use /show <thread> or /repair.")}, nil
 	}
 	var payload map[string]any
 	if route.PayloadJSON != "" {
@@ -361,16 +383,33 @@ func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID,
 		return s.sendDetailsToolsFile(ctx, chatID, topicID, messageID, route, payload)
 	case "turn_off_plan":
 		return s.handleTurnOffPlanCallback(ctx, chatID, topicID, messageID, route, payload)
+	case "workspace_overview":
+		return s.workspaceOverview(ctx)
+	case "workspace_threads":
+		return s.threadsOverview(ctx, "")
+	case "workspace_projects":
+		return s.projectsOverview(ctx)
+	case "workspace_status":
+		response, err := s.StatusSnapshot(ctx)
+		if err != nil {
+			return nil, err
+		}
+		response.CallbackText = s.t(ctx, "状态", "Status")
+		return response, nil
 	case "settings_overview":
 		return s.editOrSendSettingsResponse(ctx, chatID, topicID, messageID, "Settings", s.codexSettingsOverview)
 	case "settings_model_menu":
 		return s.editOrSendSettingsResponse(ctx, chatID, topicID, messageID, "Model", s.codexModelMenu)
 	case "settings_reasoning_menu":
 		return s.editOrSendSettingsResponse(ctx, chatID, topicID, messageID, "Reasoning", s.codexReasoningMenu)
+	case "settings_language_menu":
+		return s.editOrSendSettingsResponse(ctx, chatID, topicID, messageID, "Language", s.botLanguageMenu)
 	case "settings_model_set":
 		return s.setCodexModel(ctx, chatID, topicID, messageID, payload)
 	case "settings_reasoning_set":
 		return s.setCodexReasoningEffort(ctx, chatID, topicID, messageID, payload)
+	case "settings_language_set":
+		return s.setBotLanguage(ctx, chatID, topicID, messageID, payload)
 	case "projects_page":
 		return s.projectsPage(ctx, chatID, topicID, messageID, payload)
 	case "projects_close":
@@ -378,29 +417,33 @@ func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID,
 	case "chats_open", "chats_page":
 		return s.chatsPage(ctx, chatID, topicID, messageID, payload)
 	case "chat_open":
+		if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
+			s.openFeishuThreadAsync(ctx, chatID, topicID, route.ThreadID, func(openCtx context.Context) (*DirectResponse, error) {
+				return s.openChatThread(openCtx, chatID, topicID, route.ThreadID, sourceMode)
+			})
+			return &DirectResponse{CallbackText: s.t(ctx, "正在打开话题…", "Opening topic..."), ThreadID: route.ThreadID}, nil
+		}
 		response, err := s.openChatThread(ctx, chatID, topicID, route.ThreadID, sourceMode)
 		if err != nil {
 			return nil, err
 		}
-		if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
-			return s.feishuVisibleOpenResponse(ctx, response, route.ThreadID), nil
-		}
 		return response, nil
 	case "project_open":
-		return s.projectMenu(ctx, payload)
+		return s.projectThreads(ctx, payload)
 	case "project_new_thread":
 		return s.armProjectNewThread(ctx, chatID, topicID, payload)
 	case "project_threads":
 		return s.projectThreads(ctx, payload)
-	case "project_bind_latest":
-		return s.bindLatestProjectThread(ctx, chatID, topicID, payload)
 	case "show_thread":
+		if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
+			s.openFeishuThreadAsync(ctx, chatID, topicID, route.ThreadID, func(openCtx context.Context) (*DirectResponse, error) {
+				return s.showThread(openCtx, chatID, topicID, route.ThreadID, true, sourceMode)
+			})
+			return &DirectResponse{CallbackText: s.t(ctx, "正在打开话题…", "Opening topic..."), ThreadID: route.ThreadID}, nil
+		}
 		response, err := s.showThread(ctx, chatID, topicID, route.ThreadID, true, sourceMode)
 		if err != nil {
 			return nil, err
-		}
-		if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
-			return s.feishuVisibleOpenResponse(ctx, response, route.ThreadID), nil
 		}
 		return response, nil
 	case "show_context":
@@ -410,21 +453,11 @@ func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID,
 		}
 		return &DirectResponse{Text: text}, nil
 	case "get_thread_id":
-		return threadIDResponse(route.ThreadID, route.TurnID), nil
-	case "bind_here":
-		if err := s.store.SetBinding(ctx, chatID, topicID, route.ThreadID, model.BindingModeBound); err != nil {
-			return nil, err
-		}
-		s.kickBootstrap()
-		return &DirectResponse{CallbackText: fmt.Sprintf("Bound this chat to %s.", route.ThreadID)}, nil
+		return s.threadIDResponse(ctx, route.ThreadID, route.TurnID), nil
 	case "observe_all":
-		if err := s.store.SetGlobalObserverTarget(ctx, chatID, topicID, true); err != nil {
-			return nil, err
-		}
-		s.kickBootstrap()
-		return &DirectResponse{CallbackText: "Global observer moved here."}, nil
+		return &DirectResponse{CallbackText: s.t(ctx, "观察器已移除", "Observer removed."), Text: s.t(ctx, "全局观察器已移除。请使用 /chats 或 /projects 打开 Codex 话题，然后在话题中回复。", "Global observer has been removed. Use /chats or /projects to open a Codex topic, then reply in that topic.")}, nil
 	case "reply_hint":
-		return &DirectResponse{Text: fmt.Sprintf("Reply to this thread with:\n/reply %s <text>", route.ThreadID)}, nil
+		return &DirectResponse{Text: fmt.Sprintf(s.t(ctx, "使用下面命令回复这个会话：\n/reply %s <text>", "Reply to this thread with:\n/reply %s <text>"), route.ThreadID)}, nil
 	case "stop_turn":
 		return s.interruptTurn(ctx, chatID, topicID, route.ThreadID, route.TurnID)
 	case "arm_steer":
@@ -436,7 +469,7 @@ func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID,
 		if err := s.armSteer(ctx, chatID, topicID, route.ThreadID, route.TurnID, panelID); err != nil {
 			return nil, err
 		}
-		return &DirectResponse{CallbackText: "Следующее сообщение пойдёт в этот thread."}, nil
+		return &DirectResponse{CallbackText: s.t(ctx, "下一条消息会发送到这个 thread。", "The next message will go to this thread.")}, nil
 	case "approve", "approve_session":
 		decision := "accept"
 		if route.Action == "approve_session" {
@@ -452,9 +485,9 @@ func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID,
 	case "answer_choice":
 		return s.answerChoice(ctx, chatID, topicID, route, sourceMode)
 	case "get_full_log":
-		return s.sendFullLogArchive(ctx, chatID, topicID, route.ThreadID)
+		return s.sendFullLogArchive(ctx, chatID, topicID, messageID, route.ThreadID, sourceMode)
 	default:
-		return &DirectResponse{Text: "This button is not implemented in the Go core yet."}, nil
+		return &DirectResponse{Text: s.t(ctx, "这个按钮暂未在 Go core 中实现。", "This button is not implemented in the Go core yet.")}, nil
 	}
 }
 
@@ -474,15 +507,43 @@ func (s *Service) feishuVisibleOpenResponse(ctx context.Context, response *Direc
 		label = firstNonEmpty(strings.TrimSpace(thread.Title), thread.ShortID())
 	}
 	response.Text = strings.Join([]string{
-		"已打开会话",
-		fmt.Sprintf("Thread: %s", label),
+		s.t(ctx, "已打开 Codex 会话话题", "Codex thread topic opened"),
+		fmt.Sprintf("%s: %s", s.t(ctx, "会话", "Thread"), label),
 		fmt.Sprintf("Thread ID: %s", response.ThreadID),
-		"后续消息会在对应飞书话题中更新。",
+		s.t(ctx, "后续消息会在对应话题中更新；在话题里直接回复即可继续该 Codex 会话。", "Future updates will appear in the linked topic; reply in that topic to continue this Codex thread."),
 	}, "\n")
 	if strings.TrimSpace(response.CallbackText) == "" {
-		response.CallbackText = "已打开"
+		response.CallbackText = s.t(ctx, "已打开话题", "Topic opened")
 	}
 	return response
+}
+
+func (s *Service) openFeishuThreadAsync(ctx context.Context, chatID, topicID int64, threadID string, open func(context.Context) (*DirectResponse, error)) {
+	if open == nil {
+		return
+	}
+	timeout := s.cfg.RequestTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	s.spawn(context.Background(), func(context.Context) {
+		openCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		response, err := open(openCtx)
+		if err != nil {
+			s.setError(ctx, err)
+			return
+		}
+		s.mu.RLock()
+		sender := s.sender
+		s.mu.RUnlock()
+		visible := s.feishuVisibleOpenResponse(openCtx, response, threadID)
+		if sender != nil && visible != nil && strings.TrimSpace(visible.Text) != "" {
+			if _, err := sender.SendMessage(openCtx, chatID, topicID, visible.Text, visible.Buttons, model.SendOptions{Silent: true}); err != nil {
+				s.setError(ctx, err)
+			}
+		}
+	})
 }
 
 func (s *Service) RegisterDirectDelivery(ctx context.Context, chatID, topicID, messageID int64, response *DirectResponse) error {
@@ -1261,7 +1322,7 @@ func (s *Service) attachTracked(ctx context.Context) {
 		return
 	}
 	seen := map[string]struct{}{}
-	for _, threadID := range append(s.boundThreadIDs(ctx), s.currentPanelThreadIDs(ctx)...) {
+	for _, threadID := range s.currentPanelThreadIDs(ctx) {
 		if _, ok := seen[threadID]; ok {
 			continue
 		}
@@ -1274,7 +1335,33 @@ func (s *Service) attachTracked(ctx context.Context) {
 		_, err = live.ThreadResume(requestCtx, thread.ID, thread.CWD)
 		cancel()
 		if err != nil {
+			if isThreadArchivedError(err) {
+				thread.Archived = true
+				_ = s.store.UpsertThread(ctx, *thread)
+				continue
+			}
 			s.setError(ctx, fmt.Errorf("thread_resume(bound): %w", err))
+		}
+	}
+	for _, threadID := range s.feishuTopicThreadIDs(ctx, observerRecentThreadLimit) {
+		if _, ok := seen[threadID]; ok {
+			continue
+		}
+		seen[threadID] = struct{}{}
+		thread, err := s.store.GetThread(ctx, threadID)
+		if err != nil || thread == nil || thread.Archived {
+			continue
+		}
+		requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		_, err = live.ThreadResume(requestCtx, thread.ID, thread.CWD)
+		cancel()
+		if err != nil {
+			if isThreadArchivedError(err) {
+				thread.Archived = true
+				_ = s.store.UpsertThread(ctx, *thread)
+				continue
+			}
+			s.setError(ctx, fmt.Errorf("thread_resume(feishu_topic): %w", err))
 		}
 	}
 }
@@ -1341,7 +1428,18 @@ func (s *Service) pollTracked(ctx context.Context) {
 		if stored, err := s.store.GetSnapshot(ctx, thread.ID); err == nil && stored != nil {
 			latestSnapshot = stored
 		}
-		if s.applyTelegramOriginTerminalGate(ctx, "poll_tracked", &current, latestSnapshot) {
+		gateHandled, gateDecision := s.applyTelegramOriginTerminalGate(ctx, "poll_tracked", &current, latestSnapshot)
+		if gateHandled {
+			if gateDecision.DeferredDisplayableProgress() {
+				s.preserveTelegramOriginLiveCurrentTool(ctx, &current, latestSnapshot)
+				_ = s.store.UpsertThread(ctx, current.Thread)
+				nextSnapshot := s.compactDeferredProgressSnapshot(latestSnapshot, current, time.Now().UTC(), gateDecision)
+				_ = s.store.UpsertSnapshot(ctx, current.Thread.ID, nextSnapshot)
+				s.logObserverSyncResult("poll_tracked", current)
+				if catchup || s.threadNeedsLiveSync(ctx, current.Thread.ID) || snapshotHasPassiveChange(latestSnapshot, &current) {
+					s.syncThreadPanel(ctx, current.Thread.ID)
+				}
+			}
 			continue
 		}
 		s.preserveTelegramOriginLiveCurrentTool(ctx, &current, latestSnapshot)
@@ -1352,6 +1450,7 @@ func (s *Service) pollTracked(ctx context.Context) {
 		} else {
 			nextSnapshot.NextPollAfter = model.TimeString(time.Now().UTC().Add(30 * time.Second).Format(time.RFC3339Nano))
 		}
+		applyTerminalGateHotPolling(&nextSnapshot, gateDecision)
 		_ = s.store.UpsertSnapshot(ctx, current.Thread.ID, nextSnapshot)
 		s.logObserverSyncResult("poll_tracked", current)
 		s.maybeLogTelegramOriginTerminal(ctx, current)
@@ -1359,6 +1458,20 @@ func (s *Service) pollTracked(ctx context.Context) {
 			s.syncThreadPanel(ctx, current.Thread.ID)
 		}
 	}
+}
+
+func (s *Service) compactDeferredProgressSnapshot(previous *model.ThreadSnapshotState, current appserver.ThreadReadSnapshot, polledAt time.Time, decision terminalGateDecision) model.ThreadSnapshotState {
+	next := appserver.CompactSnapshot(previous, current, polledAt)
+	if previous != nil {
+		next.LastCompletionFP = previous.LastCompletionFP
+	} else {
+		next.LastCompletionFP = ""
+	}
+	if decision.DeferredDisplayableProgress() && strings.EqualFold(strings.TrimSpace(next.LastSeenTurnStatus), "interrupted") {
+		next.LastSeenTurnStatus = "inProgress"
+	}
+	applyTerminalGateHotPolling(&next, decision)
+	return next
 }
 
 func (s *Service) processDeliveryBatch(ctx context.Context) {
@@ -1420,15 +1533,15 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 	}
 	switch command {
 	case "/start":
-		return &DirectResponse{Text: "ctr-go is online.\nUse /status, /threads, /projects, /context, or /observe all."}, nil
+		return s.workspaceOverview(ctx)
 	case "/help":
-		return &DirectResponse{Text: "Commands:\n/start\n/help\n/threads [limit|search]\n/projects\n/new <project> <prompt>\n/newchat <prompt>\n/newthread <prompt>\n/show <thread>\n/bind <thread>\n/reply [--plan] <thread> <text>\n/plan <text>\n/plan <thread_id> <text>\n/settings\n/model\n/effort\n/context\n/observe all|off\n/panelmode [per_run|stable]\n/status\n/repair\n/stop [thread]\n/approve <request_id>\n/deny <request_id>"}, nil
+		return &DirectResponse{Text: s.t(ctx, "命令：\n/start\n/help\n/chats [数量|搜索]\n/projects\n/new <提示词>\n/show <thread>\n/reply [--plan] <thread> <文本>\n/plan <文本>\n/plan <thread_id> <文本>\n/goal <目标>\n/goal clear\n/setting\n/status\n/repair\n/stop [thread]\n/approve <request_id>\n/deny <request_id>", "Commands:\n/start\n/help\n/chats [limit|search]\n/projects\n/new <prompt>\n/show <thread>\n/reply [--plan] <thread> <text>\n/plan <text>\n/plan <thread_id> <text>\n/goal <goal>\n/goal clear\n/setting\n/status\n/repair\n/stop [thread]\n/approve <request_id>\n/deny <request_id>")}, nil
 	case "/status":
-		text, err := s.StatusSnapshot(ctx, chatID, topicID)
+		response, err := s.StatusSnapshot(ctx)
 		if err != nil {
 			return nil, err
 		}
-		return &DirectResponse{Text: text}, nil
+		return response, nil
 	case "/context", "/whereami":
 		text, err := s.contextCard(ctx, chatID, topicID)
 		if err != nil {
@@ -1436,78 +1549,31 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 		}
 		return &DirectResponse{Text: text}, nil
 	case "/observe":
-		switch strings.ToLower(rest) {
-		case "all", "on":
-			if err := s.store.SetGlobalObserverTarget(ctx, chatID, topicID, true); err != nil {
-				return nil, err
-			}
-			s.kickBootstrap()
-			return &DirectResponse{Text: "Global observer enabled here."}, nil
-		case "off", "none":
-			if err := s.store.SetGlobalObserverTarget(ctx, chatID, topicID, false); err != nil {
-				return nil, err
-			}
-			return &DirectResponse{Text: "Global observer disabled."}, nil
-		default:
-			return &DirectResponse{Text: "Usage: /observe all|off"}, nil
-		}
-	case "/panelmode":
-		if strings.TrimSpace(rest) == "" {
-			return &DirectResponse{Text: fmt.Sprintf("Current panel mode: %s\nUse /panelmode per_run or /panelmode stable.", s.panelMode(ctx))}, nil
-		}
-		mode := normalizeRuntimePanelMode(rest)
-		if mode == "" {
-			return &DirectResponse{Text: "Usage: /panelmode per_run|stable"}, nil
-		}
-		if err := s.store.SetState(ctx, "ui.panel_mode", mode); err != nil {
-			return nil, err
-		}
-		return &DirectResponse{Text: fmt.Sprintf("Panel mode switched to %s.", mode)}, nil
-	case "/settings", "/codex_settings":
+		return &DirectResponse{Text: s.t(ctx, "全局观察器已移除。请使用 /chats 或 /projects 打开 Codex 话题，然后在话题中回复。", "Global observer has been removed. Use /chats or /projects to open a Codex topic, then reply in that topic.")}, nil
+	case "/setting", "/settings":
 		return s.codexSettingsOverview(ctx)
-	case "/model", "/models":
-		return s.codexModelMenu(ctx)
-	case "/effort", "/reasoning", "/reasoning_effort":
-		return s.codexReasoningMenu(ctx)
-	case "/threads":
+	case "/chats":
 		return s.threadsOverview(ctx, rest)
 	case "/projects":
 		return s.projectsOverview(ctx)
 	case "/new":
-		return s.newThreadCommandFromSource(ctx, chatID, topicID, rest, sourceMode)
-	case "/newchat":
 		return s.newChatCommandFromSource(ctx, chatID, topicID, rest, sourceMode)
-	case "/newthread":
-		return s.newThreadWithoutCWDCommandFromSource(ctx, chatID, topicID, rest, sourceMode)
 	case "/show":
 		decision, err := s.resolveRoute(ctx, chatID, topicID, rest, replyToMessageID)
 		if err != nil {
 			return nil, err
 		}
 		if decision.ThreadID == "" {
-			return &DirectResponse{Text: "Usage: /show <thread> or reply to a thread message."}, nil
+			return &DirectResponse{Text: s.t(ctx, "用法：/show <thread>，或回复一条会话消息。", "Usage: /show <thread> or reply to a thread message.")}, nil
 		}
 		return s.showThread(ctx, chatID, topicID, decision.ThreadID, true, sourceMode)
-	case "/bind":
-		decision, err := s.resolveRoute(ctx, chatID, topicID, rest, replyToMessageID)
-		if err != nil {
-			return nil, err
-		}
-		if decision.ThreadID == "" {
-			return &DirectResponse{Text: "Usage: /bind <thread> or reply to a thread message."}, nil
-		}
-		if err := s.store.SetBinding(ctx, chatID, topicID, decision.ThreadID, model.BindingModeBound); err != nil {
-			return nil, err
-		}
-		s.kickBootstrap()
-		return &DirectResponse{Text: fmt.Sprintf("Bound this chat to %s.", decision.ThreadID)}, nil
 	case "/reply":
 		decision, text, collaborationMode, ok, err := s.resolveInputCommand(ctx, chatID, topicID, rest, replyToMessageID, "", true, false)
 		if err != nil {
 			return nil, err
 		}
 		if !ok || decision.ThreadID == "" {
-			return &DirectResponse{Text: "Usage: /reply [--plan] <thread> <text>"}, nil
+			return &DirectResponse{Text: s.t(ctx, "用法：/reply [--plan] <thread> <文本>", "Usage: /reply [--plan] <thread> <text>")}, nil
 		}
 		s.logInputInbound(sourceMode, "command_reply", chatID, topicID, replyToMessageID, decision, text, collaborationMode)
 		return s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, decision.ThreadID, decision.TurnID, text, collaborationMode, sourceMode)
@@ -1517,7 +1583,7 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 			return nil, err
 		}
 		if !ok || decision.ThreadID == "" {
-			return &DirectResponse{Text: "Usage: /default <text>, /default <thread_id> <text>, or reply with /default <text>."}, nil
+			return &DirectResponse{Text: s.t(ctx, "用法：/default <文本>、/default <thread_id> <文本>，或回复 /default <文本>。", "Usage: /default <text>, /default <thread_id> <text>, or reply with /default <text>.")}, nil
 		}
 		s.logInputInbound(sourceMode, "command_default", chatID, topicID, replyToMessageID, decision, text, collaborationModeDefault)
 		return s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, decision.ThreadID, decision.TurnID, text, collaborationModeDefault, sourceMode)
@@ -1527,29 +1593,31 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 			return nil, err
 		}
 		if !ok || decision.ThreadID == "" {
-			return &DirectResponse{Text: "Usage: /plan <text>, /plan <thread_id> <text>, or reply with /plan <text>."}, nil
+			return &DirectResponse{Text: s.t(ctx, "用法：/plan <文本>、/plan <thread_id> <文本>，或回复 /plan <文本>。", "Usage: /plan <text>, /plan <thread_id> <text>, or reply with /plan <text>.")}, nil
 		}
 		s.logInputInbound(sourceMode, "command_plan", chatID, topicID, replyToMessageID, decision, text, collaborationModePlan)
 		return s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, decision.ThreadID, decision.TurnID, text, collaborationModePlan, sourceMode)
+	case "/goal":
+		return s.goalCommand(ctx, chatID, topicID, rest, replyToMessageID, sourceMode)
 	case "/repair":
 		if err := s.RequestRepair(ctx, "telegram"); err != nil {
 			return nil, err
 		}
-		return &DirectResponse{Text: "Repair requested. App-server sessions will be recreated in the background."}, nil
+		return &DirectResponse{Text: s.t(ctx, "已请求修复。App-server 会话会在后台重建。", "Repair requested. App-server sessions will be recreated in the background.")}, nil
 	case "/stop":
 		return s.stopThread(ctx, chatID, topicID, rest, replyToMessageID)
 	case "/approve":
 		if strings.TrimSpace(rest) == "" {
-			return &DirectResponse{Text: "Use approval buttons or /approve <request_id>."}, nil
+			return &DirectResponse{Text: s.t(ctx, "请使用批准按钮，或输入 /approve <request_id>。", "Use approval buttons or /approve <request_id>.")}, nil
 		}
 		return s.approve(ctx, rest, "accept")
 	case "/deny":
 		if strings.TrimSpace(rest) == "" {
-			return &DirectResponse{Text: "Use deny button or /deny <request_id>."}, nil
+			return &DirectResponse{Text: s.t(ctx, "请使用拒绝按钮，或输入 /deny <request_id>。", "Use deny button or /deny <request_id>.")}, nil
 		}
 		return s.approve(ctx, rest, "decline")
 	default:
-		return &DirectResponse{Text: "Unknown command. Use /help."}, nil
+		return &DirectResponse{Text: s.t(ctx, "未知命令。请使用 /help。", "Unknown command. Use /help.")}, nil
 	}
 }
 
@@ -1566,7 +1634,7 @@ func (s *Service) handlePlainTextFromSource(ctx context.Context, chatID, topicID
 		return nil, err
 	}
 	if decision.ThreadID == "" {
-		return &DirectResponse{Text: "No bound thread. Use /threads, /projects, /bind <thread>, or reply to a thread card."}, nil
+		return s.workspaceRoutingHint(ctx), nil
 	}
 	s.logInputInbound(sourceMode, "plain_text", chatID, topicID, replyToMessageID, decision, text, "")
 	if strings.TrimSpace(decision.RequestID) != "" {
@@ -1575,20 +1643,99 @@ func (s *Service) handlePlainTextFromSource(ctx context.Context, chatID, topicID
 	return s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, decision.ThreadID, decision.TurnID, text, "", sourceMode)
 }
 
-func (s *Service) codexSettingsOverview(ctx context.Context) (*DirectResponse, error) {
-	modelValue, _ := s.store.GetState(ctx, codexModelStateKey)
-	reasoningValue, _ := s.store.GetState(ctx, codexReasoningStateKey)
-	lines := []string{
-		"Codex settings",
-		fmt.Sprintf("Model: %s", settingValueLabel(modelValue, "Auto")),
-		fmt.Sprintf("Reasoning effort: %s", settingValueLabel(reasoningValue, "Auto")),
-		"",
-		"Used for Telegram-started Plan Mode turns.",
+func (s *Service) workspaceRoutingHint(ctx context.Context) *DirectResponse {
+	lang := s.botLanguage(ctx)
+	lines := []string{}
+	workspaceLabel := "Workspace"
+	recentLabel := "Recent chats"
+	projectsLabel := "Projects"
+	if lang == botLanguageEnglish {
+		lines = []string{
+			"No Codex thread is selected yet.",
+			"Open the bot workspace, choose a recent chat or project, then reply in the topic to continue remote control.",
+		}
+	} else {
+		lines = []string{
+			"还没有选中 Codex 会话。",
+			"先从机器人工作台选择最近会话或项目；进入会话话题后，直接回复即可继续远程控制。",
+		}
+		workspaceLabel = "显示工作台"
+		recentLabel = "最近会话"
+		projectsLabel = "项目"
 	}
 	buttons := [][]model.ButtonSpec{
 		{
-			s.callbackButton(ctx, "Model", "settings_model_menu", "settings", "", "", nil),
-			s.callbackButton(ctx, "Reasoning", "settings_reasoning_menu", "settings", "", "", nil),
+			s.callbackButton(ctx, workspaceLabel, "workspace_overview", "workspace", "", "", nil),
+			s.callbackButton(ctx, recentLabel, "workspace_threads", "workspace", "", "", nil),
+			s.callbackButton(ctx, projectsLabel, "workspace_projects", "workspace", "", "", nil),
+		},
+	}
+	return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons}
+}
+
+func (s *Service) workspaceOverview(ctx context.Context) (*DirectResponse, error) {
+	threadCount, _ := s.store.CountThreads(ctx)
+	backlog, _ := s.store.DeliveryQueueBacklog(ctx)
+	modelValue, _ := s.store.GetState(ctx, codexModelStateKey)
+	reasoningValue, _ := s.store.GetState(ctx, codexReasoningStateKey)
+	lang := s.botLanguage(ctx)
+	lines := s.workspaceLines(lang, threadCount, backlog, modelValue, reasoningValue)
+	buttons := [][]model.ButtonSpec{
+		{
+			s.callbackButton(ctx, localized(lang, "最近会话", "Recent chats"), "workspace_threads", "workspace", "", "", nil),
+			s.callbackButton(ctx, localized(lang, "项目", "Projects"), "workspace_projects", "workspace", "", "", nil),
+		},
+		{
+			s.callbackButton(ctx, localized(lang, "状态", "Status"), "workspace_status", "workspace", "", "", nil),
+			s.callbackButton(ctx, localized(lang, "设置", "Settings"), "settings_overview", "settings", "", "", nil),
+		},
+	}
+	return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons}, nil
+}
+
+func (s *Service) workspaceLines(lang string, threadCount, backlog int, modelValue, reasoningValue string) []string {
+	if lang == botLanguageEnglish {
+		return []string{
+			"Codex Workspace",
+			fmt.Sprintf("Cached threads: %d", threadCount),
+			fmt.Sprintf("Delivery backlog: %d", backlog),
+			fmt.Sprintf("Model: %s", settingValueLabel(modelValue, "Auto")),
+			fmt.Sprintf("Reasoning effort: %s", settingValueLabel(reasoningValue, "Auto")),
+			"",
+			"Each Codex thread gets a topic reply in this bot chat. Open a topic and reply there to continue remote control.",
+		}
+	}
+	return []string{
+		"Codex 机器人工作台",
+		fmt.Sprintf("缓存会话：%d", threadCount),
+		fmt.Sprintf("待发送队列：%d", backlog),
+		fmt.Sprintf("模型：%s", settingValueLabel(modelValue, "自动")),
+		fmt.Sprintf("推理强度：%s", settingValueLabel(reasoningValue, "自动")),
+		"",
+		"每个 Codex thread 会在机器人单聊里对应一个会话话题；进入话题后直接回复即可继续远程控制。",
+	}
+}
+
+func (s *Service) codexSettingsOverview(ctx context.Context) (*DirectResponse, error) {
+	modelValue, _ := s.store.GetState(ctx, codexModelStateKey)
+	reasoningValue, _ := s.store.GetState(ctx, codexReasoningStateKey)
+	languageValue := s.botLanguage(ctx)
+	lang := s.botLanguage(ctx)
+	lines := []string{
+		localized(lang, "Codex 设置", "Codex settings"),
+		fmt.Sprintf("%s: %s", localized(lang, "模型", "Model"), settingValueLabel(modelValue, localized(lang, "自动", "Auto"))),
+		fmt.Sprintf("%s: %s", localized(lang, "推理强度", "Reasoning effort"), settingValueLabel(reasoningValue, localized(lang, "自动", "Auto"))),
+		fmt.Sprintf("%s: %s", localized(lang, "语言", "Language"), languageLabel(languageValue)),
+		"",
+		localized(lang, "用于从聊天适配器启动的 Codex 回合。", "Used for Codex turns started from chat adapters."),
+	}
+	buttons := [][]model.ButtonSpec{
+		{
+			s.callbackButton(ctx, localized(lang, "模型", "Model"), "settings_model_menu", "settings", "", "", nil),
+			s.callbackButton(ctx, localized(lang, "推理", "Reasoning"), "settings_reasoning_menu", "settings", "", "", nil),
+		},
+		{
+			s.callbackButton(ctx, localized(lang, "语言", "Language"), "settings_language_menu", "settings", "", "", nil),
 		},
 	}
 	return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons}, nil
@@ -1596,16 +1743,17 @@ func (s *Service) codexSettingsOverview(ctx context.Context) (*DirectResponse, e
 
 func (s *Service) codexModelMenu(ctx context.Context) (*DirectResponse, error) {
 	current, _ := s.store.GetState(ctx, codexModelStateKey)
+	lang := s.botLanguage(ctx)
 	models, err := s.codexModels(ctx)
 	if err != nil {
-		return &DirectResponse{Text: fmt.Sprintf("Could not load Codex models: %v", err)}, nil
+		return &DirectResponse{Text: fmt.Sprintf(localized(lang, "无法加载 Codex 模型：%v", "Could not load Codex models: %v"), err)}, nil
 	}
 	lines := []string{
-		"Codex model",
-		fmt.Sprintf("Current: %s", settingValueLabel(current, "Auto")),
+		localized(lang, "Codex 模型", "Codex model"),
+		fmt.Sprintf("%s: %s", localized(lang, "当前", "Current"), settingValueLabel(current, localized(lang, "自动", "Auto"))),
 	}
 	buttons := [][]model.ButtonSpec{
-		{s.callbackButton(ctx, selectedButtonLabel("Auto", current == ""), "settings_model_set", "settings", "", "", map[string]any{"value": ""})},
+		{s.callbackButton(ctx, selectedButtonLabel(localized(lang, "自动", "Auto"), current == ""), "settings_model_set", "settings", "", "", map[string]any{"value": ""})},
 	}
 	for _, option := range models {
 		label := option.ID
@@ -1617,15 +1765,35 @@ func (s *Service) codexModelMenu(ctx context.Context) (*DirectResponse, error) {
 		})
 	}
 	buttons = append(buttons, []model.ButtonSpec{
-		s.callbackButton(ctx, "Reasoning", "settings_reasoning_menu", "settings", "", "", nil),
-		s.callbackButton(ctx, "Settings", "settings_overview", "settings", "", "", nil),
+		s.callbackButton(ctx, localized(lang, "推理", "Reasoning"), "settings_reasoning_menu", "settings", "", "", nil),
+		s.callbackButton(ctx, localized(lang, "设置", "Settings"), "settings_overview", "settings", "", "", nil),
 	})
+	return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons}, nil
+}
+
+func (s *Service) botLanguageMenu(ctx context.Context) (*DirectResponse, error) {
+	current := s.botLanguage(ctx)
+	lang := current
+	lines := []string{
+		localized(lang, "机器人语言", "Bot language"),
+		fmt.Sprintf("%s: %s", localized(lang, "当前", "Current"), languageLabel(current)),
+	}
+	buttons := [][]model.ButtonSpec{
+		{
+			s.callbackButton(ctx, selectedButtonLabel("中文", current == botLanguageChinese), "settings_language_set", "settings", "", "", map[string]any{"value": botLanguageChinese}),
+			s.callbackButton(ctx, selectedButtonLabel("English", current == botLanguageEnglish), "settings_language_set", "settings", "", "", map[string]any{"value": botLanguageEnglish}),
+		},
+		{
+			s.callbackButton(ctx, localized(lang, "设置", "Settings"), "settings_overview", "settings", "", "", nil),
+		},
+	}
 	return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons}, nil
 }
 
 func (s *Service) codexReasoningMenu(ctx context.Context) (*DirectResponse, error) {
 	current, _ := s.store.GetState(ctx, codexReasoningStateKey)
 	modelValue, _ := s.store.GetState(ctx, codexModelStateKey)
+	lang := s.botLanguage(ctx)
 	efforts := allReasoningEfforts()
 	if models, err := s.codexModels(ctx); err == nil {
 		if selected, ok := selectedModelOption(models, modelValue); ok && len(selected.SupportedReasoningEffort) > 0 {
@@ -1633,12 +1801,12 @@ func (s *Service) codexReasoningMenu(ctx context.Context) (*DirectResponse, erro
 		}
 	}
 	lines := []string{
-		"Codex reasoning effort",
-		fmt.Sprintf("Current: %s", settingValueLabel(current, "Auto")),
-		fmt.Sprintf("Model: %s", settingValueLabel(modelValue, "Auto")),
+		localized(lang, "Codex 推理强度", "Codex reasoning effort"),
+		fmt.Sprintf("%s: %s", localized(lang, "当前", "Current"), settingValueLabel(current, localized(lang, "自动", "Auto"))),
+		fmt.Sprintf("%s: %s", localized(lang, "模型", "Model"), settingValueLabel(modelValue, localized(lang, "自动", "Auto"))),
 	}
 	buttons := [][]model.ButtonSpec{
-		{s.callbackButton(ctx, selectedButtonLabel("Auto", current == ""), "settings_reasoning_set", "settings", "", "", map[string]any{"value": ""})},
+		{s.callbackButton(ctx, selectedButtonLabel(localized(lang, "自动", "Auto"), current == ""), "settings_reasoning_set", "settings", "", "", map[string]any{"value": ""})},
 	}
 	for index := 0; index < len(efforts); index += 2 {
 		row := []model.ButtonSpec{}
@@ -1648,56 +1816,83 @@ func (s *Service) codexReasoningMenu(ctx context.Context) (*DirectResponse, erro
 		buttons = append(buttons, row)
 	}
 	buttons = append(buttons, []model.ButtonSpec{
-		s.callbackButton(ctx, "Model", "settings_model_menu", "settings", "", "", nil),
-		s.callbackButton(ctx, "Settings", "settings_overview", "settings", "", "", nil),
+		s.callbackButton(ctx, localized(lang, "模型", "Model"), "settings_model_menu", "settings", "", "", nil),
+		s.callbackButton(ctx, localized(lang, "设置", "Settings"), "settings_overview", "settings", "", "", nil),
 	})
 	return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons}, nil
 }
 
 func (s *Service) setCodexModel(ctx context.Context, chatID, topicID, messageID int64, payload map[string]any) (*DirectResponse, error) {
+	lang := s.botLanguage(ctx)
 	value := payloadMapString(payload, "value")
 	if value != "" {
 		models, err := s.codexModels(ctx)
 		if err != nil {
-			return &DirectResponse{Text: fmt.Sprintf("Could not validate Codex model: %v", err)}, nil
+			return &DirectResponse{Text: fmt.Sprintf(localized(lang, "无法校验 Codex 模型：%v", "Could not validate Codex model: %v"), err)}, nil
 		}
 		if _, ok := selectedModelOption(models, value); !ok {
-			return &DirectResponse{CallbackText: "Model option is stale.", Text: "This model is not available anymore. Use /model to refresh."}, nil
+			return &DirectResponse{CallbackText: localized(lang, "模型选项已过期。", "Model option is stale."), Text: localized(lang, "这个模型已不可用。请使用 /setting 刷新。", "This model is not available anymore. Use /setting to refresh.")}, nil
 		}
 	}
 	if err := s.store.SetState(ctx, codexModelStateKey, value); err != nil {
 		return nil, err
 	}
-	return s.editOrSendSettingsResponse(ctx, chatID, topicID, messageID, "Model saved.", func(ctx context.Context) (*DirectResponse, error) {
-		return s.codexSettingsSaved(ctx, "Model saved.")
+	return s.editOrSendSettingsResponse(ctx, chatID, topicID, messageID, localized(lang, "模型已保存。", "Model saved."), func(ctx context.Context) (*DirectResponse, error) {
+		return s.codexSettingsSaved(ctx, localized(lang, "模型已保存。", "Model saved."))
 	})
 }
 
 func (s *Service) setCodexReasoningEffort(ctx context.Context, chatID, topicID, messageID int64, payload map[string]any) (*DirectResponse, error) {
+	lang := s.botLanguage(ctx)
 	value := normalizeReasoningEffort(payloadMapString(payload, "value"))
 	if value != "" && !containsString(allReasoningEfforts(), value) {
-		return &DirectResponse{CallbackText: "Reasoning option is stale.", Text: "This reasoning effort is not supported. Use /effort to refresh."}, nil
+		return &DirectResponse{CallbackText: localized(lang, "推理选项已过期。", "Reasoning option is stale."), Text: localized(lang, "不支持这个推理强度。请使用 /setting 刷新。", "This reasoning effort is not supported. Use /setting to refresh.")}, nil
 	}
 	if err := s.store.SetState(ctx, codexReasoningStateKey, value); err != nil {
 		return nil, err
 	}
-	return s.editOrSendSettingsResponse(ctx, chatID, topicID, messageID, "Reasoning saved.", func(ctx context.Context) (*DirectResponse, error) {
-		return s.codexSettingsSaved(ctx, "Reasoning effort saved.")
+	return s.editOrSendSettingsResponse(ctx, chatID, topicID, messageID, localized(lang, "推理强度已保存。", "Reasoning saved."), func(ctx context.Context) (*DirectResponse, error) {
+		return s.codexSettingsSaved(ctx, localized(lang, "推理强度已保存。", "Reasoning effort saved."))
+	})
+}
+
+func (s *Service) setBotLanguage(ctx context.Context, chatID, topicID, messageID int64, payload map[string]any) (*DirectResponse, error) {
+	currentLang := s.botLanguage(ctx)
+	value := normalizeBotLanguage(payloadMapString(payload, "value"))
+	if value == "" {
+		return &DirectResponse{CallbackText: localized(currentLang, "语言选项已过期。", "Language option is stale."), Text: localized(currentLang, "不支持这个语言。请使用 /setting 刷新。", "This language is not supported. Use /setting to refresh.")}, nil
+	}
+	if err := s.store.SetState(ctx, botLanguageStateKey, value); err != nil {
+		return nil, err
+	}
+	if payloadMapString(payload, "return") == "status" {
+		response, err := s.StatusSnapshot(ctx)
+		if err != nil {
+			return nil, err
+		}
+		response.CallbackText = localized(value, "语言已保存。", "Language saved.")
+		return response, nil
+	}
+	return s.editOrSendSettingsResponse(ctx, chatID, topicID, messageID, localized(value, "语言已保存。", "Language saved."), func(ctx context.Context) (*DirectResponse, error) {
+		return s.codexSettingsSaved(ctx, localized(value, "语言已保存。", "Language saved."))
 	})
 }
 
 func (s *Service) codexSettingsSaved(ctx context.Context, status string) (*DirectResponse, error) {
 	modelValue, _ := s.store.GetState(ctx, codexModelStateKey)
 	reasoningValue, _ := s.store.GetState(ctx, codexReasoningStateKey)
+	languageValue := s.botLanguage(ctx)
+	lang := languageValue
 	lines := []string{
-		"Codex settings",
-		fmt.Sprintf("Model: %s", settingValueLabel(modelValue, "Auto")),
-		fmt.Sprintf("Reasoning effort: %s", settingValueLabel(reasoningValue, "Auto")),
+		localized(lang, "Codex 设置", "Codex settings"),
+		fmt.Sprintf("%s: %s", localized(lang, "模型", "Model"), settingValueLabel(modelValue, localized(lang, "自动", "Auto"))),
+		fmt.Sprintf("%s: %s", localized(lang, "推理强度", "Reasoning effort"), settingValueLabel(reasoningValue, localized(lang, "自动", "Auto"))),
+		fmt.Sprintf("%s: %s", localized(lang, "语言", "Language"), languageLabel(languageValue)),
 	}
 	if strings.TrimSpace(status) != "" {
 		lines = append(lines, "", status)
 	}
-	lines = append(lines, "Use /settings to change this again.")
+	lines = append(lines, localized(lang, "使用 /setting 可以再次修改。", "Use /setting to change this again."))
 	return &DirectResponse{Text: strings.Join(lines, "\n")}, nil
 }
 
@@ -1776,6 +1971,111 @@ func normalizeReasoningEffort(value string) string {
 		return "xhigh"
 	default:
 		return normalized
+	}
+}
+
+func normalizeBotLanguage(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case botLanguageEnglish, "english", "en-us", "en_us":
+		return botLanguageEnglish
+	case "", botLanguageChinese, "chinese", "zh-cn", "zh_cn", "cn":
+		return botLanguageChinese
+	default:
+		return ""
+	}
+}
+
+func (s *Service) botLanguage(ctx context.Context) string {
+	value, _ := s.store.GetState(ctx, botLanguageStateKey)
+	normalized := normalizeBotLanguage(value)
+	if normalized == "" {
+		return botLanguageChinese
+	}
+	return normalized
+}
+
+func languageLabel(value string) string {
+	switch normalizeBotLanguage(value) {
+	case botLanguageEnglish:
+		return "English"
+	default:
+		return "中文"
+	}
+}
+
+func localized(lang, zh, en string) string {
+	if normalizeBotLanguage(lang) == botLanguageEnglish {
+		return en
+	}
+	return zh
+}
+
+func (s *Service) t(ctx context.Context, zh, en string) string {
+	return localized(s.botLanguage(ctx), zh, en)
+}
+
+func readyLabelLang(lang string, ready bool) string {
+	if ready {
+		return localized(lang, "就绪", "Ready")
+	}
+	return localized(lang, "未就绪", "Not ready")
+}
+
+func onlineLabelLang(lang string, connected bool) string {
+	if connected {
+		return localized(lang, "在线", "Online")
+	}
+	return localized(lang, "离线", "Offline")
+}
+
+func onOffLabelLang(lang string, enabled bool) string {
+	if enabled {
+		return localized(lang, "开启", "On")
+	}
+	return localized(lang, "关闭", "Off")
+}
+
+func readableStatusLang(lang, turnStatus, threadStatus string) string {
+	status := readableStatus(turnStatus, threadStatus)
+	if normalizeBotLanguage(lang) == botLanguageEnglish {
+		return status
+	}
+	switch strings.TrimSpace(strings.ToLower(status)) {
+	case "idle":
+		return "空闲"
+	case "inprogress", "active", "running":
+		return "运行中"
+	case "toolrunning":
+		return "工具调用中"
+	case "completed":
+		return "已完成"
+	case "failed":
+		return "失败"
+	case "interrupted":
+		return "已中断"
+	case "waiting for input", "active[waitingonuserinput]":
+		return "等待输入"
+	case "pending":
+		return "等待中"
+	default:
+		return status
+	}
+}
+
+func readableProgressStatusLang(lang, status string) string {
+	switch strings.TrimSpace(strings.ToLower(status)) {
+	case "inprogress":
+		return localized(lang, "运行中", "Processing")
+	case "toolrunning":
+		return localized(lang, "工具调用中", "Using tools")
+	case "completed":
+		return localized(lang, "已完成", "Completed")
+	case "failed":
+		return localized(lang, "失败", "Failed")
+	case "interrupted":
+		return localized(lang, "已中断", "Interrupted")
+	default:
+		return readableStatusLang(lang, status, "")
 	}
 }
 
@@ -1900,6 +2200,60 @@ func (s *Service) sendInputToThread(ctx context.Context, chatID, topicID int64, 
 	return s.sendInputToThreadTurn(ctx, chatID, topicID, threadID, "", text, "")
 }
 
+func (s *Service) goalCommand(ctx context.Context, chatID, topicID int64, rest string, replyToMessageID int64, sourceMode string) (*DirectResponse, error) {
+	decision, text, ok, err := s.resolveGoalCommand(ctx, chatID, topicID, rest, replyToMessageID, sourceMode)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || decision.ThreadID == "" {
+		return &DirectResponse{Text: s.t(ctx, "用法：/goal <目标>、/goal <thread_id> <目标>，或 /goal clear。", "Usage: /goal <goal>, /goal <thread_id> <goal>, or /goal clear.")}, nil
+	}
+	s.mu.RLock()
+	live := s.live
+	connected := s.liveConnected
+	s.mu.RUnlock()
+	if !connected || live == nil {
+		return &DirectResponse{Text: s.t(ctx, "Live app-server 会话尚未就绪。请试试 /status 或 /repair。", "Live app-server session is not ready yet. Try /status or /repair.")}, nil
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
+	defer cancel()
+	started := time.Now()
+	if strings.EqualFold(strings.TrimSpace(text), "clear") {
+		_, err = live.ThreadGoalClear(requestCtx, decision.ThreadID)
+		s.logAppServerCall("ThreadGoalClear", started, err, live, lifecycleFields{"thread_id": decision.ThreadID})
+		if err != nil {
+			return nil, err
+		}
+		return &DirectResponse{Text: s.t(ctx, "已清空目标。", "Goal cleared."), ThreadID: decision.ThreadID}, nil
+	}
+	_, err = live.ThreadGoalSet(requestCtx, decision.ThreadID, text)
+	s.logAppServerCall("ThreadGoalSet", started, err, live, lifecycleFields{"thread_id": decision.ThreadID})
+	if err != nil {
+		return nil, err
+	}
+	return &DirectResponse{Text: s.t(ctx, "已设置目标。", "Goal set."), ThreadID: decision.ThreadID}, nil
+}
+
+func (s *Service) resolveGoalCommand(ctx context.Context, chatID, topicID int64, rest string, replyToMessageID int64, sourceMode string) (model.RouteDecision, string, bool, error) {
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return model.RouteDecision{}, "", false, nil
+	}
+	first, remainder := splitCommandHead(rest)
+	if remainder != "" && s.shouldTreatInputHeadAsExplicitThread(ctx, first, replyToMessageID, true) {
+		decision, err := s.resolveRouteFromSource(ctx, chatID, topicID, first, replyToMessageID, sourceMode)
+		return decision, strings.TrimSpace(remainder), strings.TrimSpace(remainder) != "", err
+	}
+	decision, err := s.resolveRouteFromSource(ctx, chatID, topicID, "", replyToMessageID, sourceMode)
+	if err != nil {
+		return model.RouteDecision{}, "", false, err
+	}
+	if decision.ThreadID == "" {
+		return decision, "", false, nil
+	}
+	return decision, rest, true, nil
+}
+
 func (s *Service) sendInputToThreadTurn(ctx context.Context, chatID, topicID int64, threadID, routeTurnID, text, collaborationMode string) (*DirectResponse, error) {
 	return s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, threadID, routeTurnID, text, collaborationMode, model.PanelSourceTelegramInput)
 }
@@ -1969,7 +2323,7 @@ func (s *Service) sendInputToThreadTurnFromSource(ctx context.Context, chatID, t
 	})
 	thread, _ := s.store.GetThread(ctx, threadID)
 	if thread == nil {
-		return &DirectResponse{Text: fmt.Sprintf("Unknown thread: %s", threadID)}, nil
+		return &DirectResponse{Text: fmt.Sprintf(s.t(ctx, "未知线程：%s", "Unknown thread: %s"), threadID)}, nil
 	}
 	s.mu.RLock()
 	live := s.live
@@ -1996,7 +2350,7 @@ func (s *Service) sendInputToThreadTurnFromSource(ctx context.Context, chatID, t
 			"thread_id": threadID,
 			"reason":    "live_session_not_ready",
 		})
-		return &DirectResponse{Text: "Live app-server session is not ready yet. Try /status or /repair."}, nil
+		return &DirectResponse{Text: s.t(ctx, "实时 app-server 会话尚未就绪。请尝试 /status 或 /repair。", "Live app-server session is not ready yet. Try /status or /repair.")}, nil
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
 	defer cancel()
@@ -2295,9 +2649,25 @@ func (s *Service) telegramOriginHotPollOnce(ctx context.Context, threadID, turnI
 		return false
 	}
 	if isTerminalStatus(snapshot.LastSeenTurnStatus) {
+		if s.threadHasDeferredTerminal(ctx, threadID, turnID) {
+			return true
+		}
 		return false
 	}
 	return true
+}
+
+func (s *Service) threadHasDeferredTerminal(ctx context.Context, threadID, turnID string) bool {
+	threadID = strings.TrimSpace(threadID)
+	turnID = strings.TrimSpace(turnID)
+	if threadID == "" || turnID == "" {
+		return false
+	}
+	state, ok, err := s.loadTelegramOriginEmptyInterruptedDefer(ctx, threadID, turnID, time.Now().UTC())
+	if err != nil || !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(state.LastDecision), string(terminalGateDefer))
 }
 
 func threadLooksActiveForInput(thread *model.Thread) bool {
@@ -2375,7 +2745,7 @@ func (s *Service) stopThread(ctx context.Context, chatID, topicID int64, explici
 		return nil, err
 	}
 	if decision.ThreadID == "" {
-		return &DirectResponse{Text: "No thread target for /stop. Use /stop <thread> or reply to a thread message."}, nil
+		return &DirectResponse{Text: s.t(ctx, "没有可停止的线程目标。请使用 /stop <thread>，或回复某条线程消息。", "No thread target for /stop. Use /stop <thread> or reply to a thread message.")}, nil
 	}
 	response, err := s.interruptTurn(ctx, chatID, topicID, decision.ThreadID, "")
 	if response != nil && strings.TrimSpace(response.Text) == "" && strings.TrimSpace(response.CallbackText) != "" {
@@ -2386,7 +2756,7 @@ func (s *Service) stopThread(ctx context.Context, chatID, topicID int64, explici
 
 func (s *Service) interruptTurn(ctx context.Context, chatID, topicID int64, threadID, turnID string) (*DirectResponse, error) {
 	if strings.TrimSpace(threadID) == "" {
-		return &DirectResponse{CallbackText: "No thread target for stop."}, nil
+		return &DirectResponse{CallbackText: s.t(ctx, "没有可停止的线程目标。", "No thread target for stop.")}, nil
 	}
 	if err := s.setThreadCollaborationDefaultOverride(ctx, threadID); err != nil {
 		return nil, err
@@ -2397,7 +2767,7 @@ func (s *Service) interruptTurn(ctx context.Context, chatID, topicID int64, thre
 	connected := s.liveConnected
 	s.mu.RUnlock()
 	if !connected || live == nil {
-		return &DirectResponse{Text: "Live app-server session is not ready yet. Try /status or /repair."}, nil
+		return &DirectResponse{Text: s.t(ctx, "实时 app-server 会话尚未就绪。请尝试 /status 或 /repair。", "Live app-server session is not ready yet. Try /status or /repair.")}, nil
 	}
 	if thread != nil {
 		requestCtx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
@@ -2429,7 +2799,7 @@ func (s *Service) interruptTurn(ctx context.Context, chatID, topicID int64, thre
 	if strings.TrimSpace(turnID) == "" {
 		explicitTarget := model.ObserverTarget{ChatKey: model.ChatKey(chatID, topicID), ChatID: chatID, TopicID: topicID, Enabled: true}
 		s.syncThreadPanelToTarget(ctx, explicitTarget, threadID, false, model.PanelSourceExplicit)
-		return &DirectResponse{CallbackText: "Thread is already idle."}, nil
+		return &DirectResponse{CallbackText: s.t(ctx, "线程已经空闲。", "Thread is already idle.")}, nil
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
 	defer cancel()
@@ -2452,7 +2822,7 @@ func (s *Service) interruptTurn(ctx context.Context, chatID, topicID int64, thre
 	}
 	explicitTarget := model.ObserverTarget{ChatKey: model.ChatKey(chatID, topicID), ChatID: chatID, TopicID: topicID, Enabled: true}
 	s.syncThreadPanelToTarget(ctx, explicitTarget, threadID, false, model.PanelSourceExplicit)
-	return &DirectResponse{CallbackText: fmt.Sprintf("Interrupt requested for %s.", label), ThreadID: threadID, TurnID: turnID}, nil
+	return &DirectResponse{CallbackText: fmt.Sprintf(s.t(ctx, "已请求中断 %s。", "Interrupt requested for %s."), label), ThreadID: threadID, TurnID: turnID}, nil
 }
 
 func (s *Service) approve(ctx context.Context, requestID, decision string) (*DirectResponse, error) {
@@ -2461,14 +2831,14 @@ func (s *Service) approve(ctx context.Context, requestID, decision string) (*Dir
 		return nil, err
 	}
 	if approval == nil {
-		return &DirectResponse{Text: fmt.Sprintf("Unknown approval request: %s", requestID)}, nil
+		return &DirectResponse{Text: fmt.Sprintf(s.t(ctx, "未知审批请求：%s", "Unknown approval request: %s"), requestID)}, nil
 	}
 	s.mu.RLock()
 	live := s.live
 	connected := s.liveConnected
 	s.mu.RUnlock()
 	if !connected || live == nil {
-		return &DirectResponse{Text: "Live app-server session is not ready yet. Try /repair."}, nil
+		return &DirectResponse{Text: s.t(ctx, "实时 app-server 会话尚未就绪。请尝试 /repair。", "Live app-server session is not ready yet. Try /repair.")}, nil
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -2477,12 +2847,12 @@ func (s *Service) approve(ctx context.Context, requestID, decision string) (*Dir
 	}
 	_ = s.store.UpdatePendingApprovalStatus(ctx, requestID, "resolved:"+decision)
 	s.syncThreadPanel(ctx, approval.ThreadID)
-	return &DirectResponse{CallbackText: fmt.Sprintf("Approval %s resolved.", requestID), ThreadID: approval.ThreadID}, nil
+	return &DirectResponse{CallbackText: fmt.Sprintf(s.t(ctx, "审批 %s 已处理。", "Approval %s resolved."), requestID), ThreadID: approval.ThreadID}, nil
 }
 
 func (s *Service) answerChoice(ctx context.Context, chatID, topicID int64, route *model.CallbackRoute, sourceMode string) (*DirectResponse, error) {
 	if route == nil {
-		return &DirectResponse{CallbackText: "No pending question for this button."}, nil
+		return &DirectResponse{CallbackText: s.t(ctx, "这个按钮没有待处理问题。", "No pending question for this button.")}, nil
 	}
 	var payload map[string]any
 	if strings.TrimSpace(route.PayloadJSON) != "" {
@@ -2490,7 +2860,7 @@ func (s *Service) answerChoice(ctx context.Context, chatID, topicID int64, route
 	}
 	text := payloadMapString(payload, "text")
 	if text == "" {
-		return &DirectResponse{CallbackText: "Answer option is empty."}, nil
+		return &DirectResponse{CallbackText: s.t(ctx, "回答选项为空。", "Answer option is empty.")}, nil
 	}
 	if strings.TrimSpace(route.RequestID) == "" {
 		response, err := s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, route.ThreadID, route.TurnID, text, "", sourceMode)
@@ -2500,7 +2870,7 @@ func (s *Service) answerChoice(ctx context.Context, chatID, topicID int64, route
 		if response == nil {
 			response = &DirectResponse{}
 		}
-		response.CallbackText = "Ответ отправлен."
+		response.CallbackText = s.t(ctx, "回答已发送。", "Answer sent.")
 		return response, nil
 	}
 	response, err := s.respondUserInputRequest(ctx, route.RequestID, text)
@@ -2528,21 +2898,124 @@ func (s *Service) threadsOverview(ctx context.Context, rest string) (*DirectResp
 	if err != nil {
 		return nil, err
 	}
-	lines := []string{"All chats"}
+	threads = visibleThreadsForOverview(threads)
+	lines := []string{}
 	if len(threads) == 0 {
-		lines = append(lines, "No cached threads yet. Try /status or wait for sync.")
+		lines = append(lines, s.t(ctx, "还没有缓存会话。请试试 /status，或等待同步。", "No cached threads yet. Try /status or wait for sync."))
 		return &DirectResponse{Text: strings.Join(lines, "\n")}, nil
 	}
 	buttons := [][]model.ButtonSpec{}
-	sections := []model.MessageSection{{Text: "All chats"}}
-	for index, thread := range threads {
-		text := fmt.Sprintf("%d. %s\n   %s | %s | %s\n   %s", index+1, strings.TrimSpace(thread.Title), thread.ProjectName, thread.DirectoryName, thread.ShortID(), trimPreview(thread.LastPreview))
-		button := s.callbackButton(ctx, fmt.Sprintf("Open %d", index+1), "show_thread", thread.ID, "", "", nil)
-		lines = append(lines, text)
-		buttons = append(buttons, []model.ButtonSpec{button})
-		sections = append(sections, model.MessageSection{Text: text, Buttons: [][]model.ButtonSpec{{button}}})
+	sections := []model.MessageSection{}
+	groups := groupedThreadsForOverview(threads)
+	for groupIndex, group := range groups {
+		lines = append(lines, "", group.Project)
+		section := model.MessageSection{Text: group.Project, Heading: true, Divider: groupIndex > 0}
+		for _, thread := range group.Threads {
+			label := threadOverviewLabel(thread, s.botLanguage(ctx))
+			text := fmt.Sprintf("%s    %s", label, threadUpdatedAtLabel(thread.UpdatedAt, s.now))
+			button := s.callbackButton(ctx, s.t(ctx, "打开", "Open"), "show_thread", thread.ID, "", "", nil)
+			lines = append(lines, text)
+			buttons = append(buttons, []model.ButtonSpec{button})
+			section.Rows = append(section.Rows, model.MessageSectionRow{
+				Title:    label,
+				Trailing: threadUpdatedAtLabel(thread.UpdatedAt, s.now),
+				Button:   button,
+			})
+		}
+		sections = append(sections, section)
 	}
 	return &DirectResponse{Text: strings.Join(lines, "\n"), Sections: sections, Buttons: buttons}, nil
+}
+
+func visibleThreadsForOverview(threads []model.Thread) []model.Thread {
+	out := make([]model.Thread, 0, len(threads))
+	for _, thread := range threads {
+		if thread.Archived {
+			continue
+		}
+		if threadLooksUnavailableForOverview(thread) {
+			continue
+		}
+		out = append(out, thread)
+	}
+	return out
+}
+
+func threadLooksUnavailableForOverview(thread model.Thread) bool {
+	if !strings.EqualFold(strings.TrimSpace(thread.Status), "notLoaded") {
+		return false
+	}
+	title := strings.TrimSpace(thread.Title)
+	if title == "" || strings.EqualFold(title, strings.TrimSpace(thread.ID)) || codexThreadIDPattern.MatchString(title) {
+		return true
+	}
+	return false
+}
+
+func threadOverviewLabel(thread model.Thread, lang string) string {
+	title := strings.TrimSpace(thread.Title)
+	if title != "" && !strings.EqualFold(title, strings.TrimSpace(thread.ID)) && !codexThreadIDPattern.MatchString(title) {
+		return title
+	}
+	if preview := trimPreview(thread.LastPreview); strings.TrimSpace(preview) != "" {
+		return preview
+	}
+	return localized(lang, "未命名会话", "Untitled thread")
+}
+
+type threadOverviewGroup struct {
+	Project string
+	Threads []model.Thread
+}
+
+func groupedThreadsForOverview(threads []model.Thread) []threadOverviewGroup {
+	groups := []threadOverviewGroup{}
+	indexByProject := map[string]int{}
+	for _, thread := range threads {
+		project := strings.TrimSpace(thread.ProjectName)
+		if project == "" || isCodexChatsCWD(thread.CWD) {
+			project = "临时对话"
+		}
+		groupIndex, ok := indexByProject[project]
+		if !ok {
+			groupIndex = len(groups)
+			indexByProject[project] = groupIndex
+			groups = append(groups, threadOverviewGroup{Project: project})
+		}
+		groups[groupIndex].Threads = append(groups[groupIndex].Threads, thread)
+	}
+	return groups
+}
+
+func threadUpdatedAtLabel(updatedAt int64, now func() time.Time) string {
+	if updatedAt <= 0 {
+		return "unknown"
+	}
+	if now == nil {
+		now = time.Now
+	}
+	updated := time.Unix(updatedAt, 0)
+	if updated.IsZero() {
+		return "unknown"
+	}
+	delta := now().Sub(updated)
+	if delta < 0 {
+		delta = 0
+	}
+	switch {
+	case delta < time.Minute:
+		return "刚刚"
+	case delta < time.Hour:
+		return fmt.Sprintf("%d 分钟前", int(delta/time.Minute))
+	case delta < 24*time.Hour:
+		return fmt.Sprintf("%d 小时前", int(delta/time.Hour))
+	case delta < 48*time.Hour:
+		return "昨天"
+	case delta < 7*24*time.Hour:
+		return fmt.Sprintf("%d 天前", int(delta/(24*time.Hour)))
+	default:
+		return updated.Local().Format("2006-01-02")
+	}
 }
 
 func (s *Service) showThread(ctx context.Context, chatID, topicID int64, threadID string, forceNew bool, sourceMode string) (*DirectResponse, error) {
@@ -2551,7 +3024,7 @@ func (s *Service) showThread(ctx context.Context, chatID, topicID int64, threadI
 		return nil, err
 	}
 	if thread == nil {
-		return &DirectResponse{Text: fmt.Sprintf("Unknown thread: %s", threadID)}, nil
+		return &DirectResponse{Text: fmt.Sprintf(s.t(ctx, "未知线程：%s", "Unknown thread: %s"), threadID)}, nil
 	}
 	s.mu.RLock()
 	live := s.live
@@ -2575,6 +3048,9 @@ func (s *Service) showThread(ctx context.Context, chatID, topicID int64, threadI
 		TopicID: topicID,
 		Enabled: true,
 	}
+	if forceNew && normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
+		ctx = model.WithForcedThreadTopicActivation(ctx)
+	}
 	s.syncThreadPanelToTarget(ctx, target, thread.ID, forceNew, sourceMode)
 	return &DirectResponse{ThreadID: thread.ID}, nil
 }
@@ -2584,67 +3060,30 @@ func (s *Service) contextCard(ctx context.Context, chatID, topicID int64) (strin
 	if err != nil {
 		return "", err
 	}
-	lines := []string{"Current context"}
-	lines = append(lines, fmt.Sprintf("Panel mode: %s", s.panelMode(ctx)))
+	lines := []string{s.t(ctx, "当前上下文", "Current context")}
 	switch {
-	case contextState.Binding != nil && contextState.Thread != nil && contextState.ObserverEnabled:
-		lines = append(lines, "Mode: Bound thread + global observer sink", fmt.Sprintf("Thread: %s", contextState.Thread.Label()), fmt.Sprintf("Thread ID: %s", contextState.Binding.ThreadID), fmt.Sprintf("CWD: %s", contextState.Thread.CWD), "/observe off")
 	case contextState.ObserverEnabled:
-		lines = append(lines, "Mode: Global observer sink", "Passive monitoring is enabled here.", "/observe off")
-	case contextState.Binding != nil && contextState.Thread != nil:
-		lines = append(lines, "Mode: Bound thread", fmt.Sprintf("Thread: %s", contextState.Thread.Label()), fmt.Sprintf("Thread ID: %s", contextState.Binding.ThreadID), fmt.Sprintf("CWD: %s", contextState.Thread.CWD))
-	case contextState.Binding != nil:
-		lines = append(lines, "Mode: Bound thread", fmt.Sprintf("Thread ID: %s", contextState.Binding.ThreadID))
+		lines = append(lines, s.t(ctx, "模式：观察器", "Mode: Observer"))
 	default:
-		lines = append(lines, "Mode: Unbound", "Use /threads or /projects to choose a thread.", "/observe all")
-	}
-	if contextState.Thread != nil {
-		if _, snapshot, err := s.loadThreadPanelSnapshot(ctx, contextState.Thread.ID); err == nil && snapshot != nil {
-			if prompt := effectivePlanPrompt(nil, snapshot); prompt != nil {
-				lines = append(lines, "", "Active Plan prompt:", trimPreview(prompt.Question))
-			}
-		}
+		lines = append(lines, s.t(ctx, "模式：未绑定", "Mode: Unbound"), s.t(ctx, "使用 /chats 或 /projects 选择一个线程。", "Use /chats or /projects to choose a thread."))
 	}
 	return strings.Join(lines, "\n"), nil
 }
 
-func threadIDResponse(threadID, turnID string) *DirectResponse {
+func (s *Service) threadIDResponse(ctx context.Context, threadID, turnID string) *DirectResponse {
 	threadID = strings.TrimSpace(threadID)
 	turnID = strings.TrimSpace(turnID)
 	if threadID == "" {
-		return &DirectResponse{Text: "Thread ID is not available for this message."}
+		return &DirectResponse{Text: s.t(ctx, "这条消息没有可用的线程 ID。", "Thread ID is not available for this message.")}
 	}
 	responseTurnID := turnID
 	if turnID == "" {
 		turnID = "-"
 	}
 	return &DirectResponse{
-		Text:     fmt.Sprintf("Thread ID:\n%s\n\nTurn ID:\n%s", threadID, turnID),
+		Text:     fmt.Sprintf("%s:\n%s\n\n%s:\n%s", s.t(ctx, "线程 ID", "Thread ID"), threadID, s.t(ctx, "轮次 ID", "Turn ID"), turnID),
 		ThreadID: threadID,
 		TurnID:   responseTurnID,
-	}
-}
-
-func (s *Service) panelMode(ctx context.Context) string {
-	if mode, err := s.store.GetState(ctx, "ui.panel_mode"); err == nil {
-		if normalized := normalizeRuntimePanelMode(mode); normalized != "" {
-			return normalized
-		}
-	}
-	if normalized := normalizeRuntimePanelMode(s.cfg.PanelMode); normalized != "" {
-		return normalized
-	}
-	return model.PanelModePerRun
-}
-
-func normalizeRuntimePanelMode(value string) string {
-	switch strings.TrimSpace(strings.ToLower(value)) {
-	case model.PanelModePerRun:
-		return model.PanelModePerRun
-	case model.PanelModeStable:
-		return model.PanelModeStable
-	default:
-		return ""
 	}
 }
 
@@ -2681,13 +3120,6 @@ func (s *Service) resolveRouteFromSource(ctx context.Context, chatID, topicID in
 			return model.RouteDecision{ThreadID: panel.ThreadID, Source: model.RouteSourcePanel}, nil
 		}
 	}
-	binding, err := s.store.GetBinding(ctx, chatID, topicID)
-	if err != nil {
-		return model.RouteDecision{}, err
-	}
-	if binding != nil {
-		return model.RouteDecision{ThreadID: binding.ThreadID, Source: model.RouteSourceBinding}, nil
-	}
 	return model.RouteDecision{Source: model.RouteSourceNone}, nil
 }
 
@@ -2697,19 +3129,19 @@ func (s *Service) respondUserInputRequest(ctx context.Context, requestID, text s
 		return nil, err
 	}
 	if approval == nil {
-		return &DirectResponse{Text: fmt.Sprintf("Unknown input request: %s", requestID)}, nil
+		return &DirectResponse{Text: fmt.Sprintf(s.t(ctx, "未知输入请求：%s", "Unknown input request: %s"), requestID)}, nil
 	}
 	s.mu.RLock()
 	live := s.live
 	connected := s.liveConnected
 	s.mu.RUnlock()
 	if !connected || live == nil {
-		return &DirectResponse{Text: "Live app-server session is not ready yet. Try /repair."}, nil
+		return &DirectResponse{Text: s.t(ctx, "实时 app-server 会话尚未就绪。请尝试 /repair。", "Live app-server session is not ready yet. Try /repair.")}, nil
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := live.RespondServerRequest(requestCtx, requestID, userInputResponsePayload(approval.PayloadJSON, text)); err != nil {
-		return &DirectResponse{Text: fmt.Sprintf("Could not send answer: %v", err)}, nil
+		return &DirectResponse{Text: fmt.Sprintf(s.t(ctx, "无法发送回答：%v", "Could not send answer: %v"), err)}, nil
 	}
 	_ = s.store.UpdatePendingApprovalStatus(ctx, requestID, "resolved:reply")
 	s.syncThreadPanel(ctx, approval.ThreadID)
@@ -2803,14 +3235,7 @@ func (s *Service) enqueueRenderedToBackgroundTargets(ctx context.Context, respon
 }
 
 func (s *Service) backgroundTargets(ctx context.Context) ([]model.ObserverTarget, error) {
-	target, err := s.currentBackgroundTarget(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if target == nil || !target.Enabled {
-		return nil, nil
-	}
-	return []model.ObserverTarget{*target}, nil
+	return nil, nil
 }
 
 func (s *Service) defaultBackgroundTargets() []model.ObserverTarget {
@@ -2832,9 +3257,23 @@ func (s *Service) trackedThreads(ctx context.Context, limit int) []model.Thread 
 	seen := map[string]struct{}{}
 	out := []model.Thread{}
 	backgroundEnabled := s.hasBackgroundTargets(ctx)
-	for _, threadID := range append(s.boundThreadIDs(ctx), s.currentPanelThreadIDs(ctx)...) {
+	for _, threadID := range s.currentPanelThreadIDs(ctx) {
 		thread, err := s.store.GetThread(ctx, threadID)
 		if err != nil || thread == nil {
+			continue
+		}
+		if thread.Archived {
+			continue
+		}
+		seen[thread.ID] = struct{}{}
+		out = append(out, *thread)
+	}
+	for _, threadID := range s.feishuTopicThreadIDs(ctx, limit) {
+		if _, ok := seen[threadID]; ok {
+			continue
+		}
+		thread, err := s.store.GetThread(ctx, threadID)
+		if err != nil || thread == nil || thread.Archived {
 			continue
 		}
 		seen[thread.ID] = struct{}{}
@@ -2857,12 +3296,25 @@ func (s *Service) trackedThreads(ctx context.Context, limit int) []model.Thread 
 	return out
 }
 
-func (s *Service) boundThreadIDs(ctx context.Context) []string {
-	boundIDs, err := s.store.ListBoundThreadIDs(ctx)
+func (s *Service) feishuTopicThreadIDs(ctx context.Context, limit int) []string {
+	topics, err := s.store.ListFeishuThreadTopics(ctx, limit)
 	if err != nil {
 		return nil
 	}
-	return boundIDs
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(topics))
+	for _, topic := range topics {
+		threadID := strings.TrimSpace(topic.ThreadID)
+		if threadID == "" {
+			continue
+		}
+		if _, ok := seen[threadID]; ok {
+			continue
+		}
+		seen[threadID] = struct{}{}
+		out = append(out, threadID)
+	}
+	return out
 }
 
 func (s *Service) currentPanelThreadIDs(ctx context.Context) []string {
@@ -2905,10 +3357,8 @@ func shouldTrackCurrentPanel(panel model.ThreadPanel) bool {
 }
 
 func (s *Service) threadNeedsLiveSync(ctx context.Context, threadID string) bool {
-	for _, boundID := range s.boundThreadIDs(ctx) {
-		if boundID == threadID {
-			return true
-		}
+	if topic, err := s.store.GetAnyFeishuThreadTopicByCodexThread(ctx, threadID); err == nil && topic != nil {
+		return true
 	}
 	panels, err := s.store.ListCurrentPanelsForThread(ctx, threadID)
 	if err != nil {
@@ -2923,12 +3373,9 @@ func (s *Service) threadNeedsLiveSync(ctx context.Context, threadID string) bool
 }
 
 func threadLooksActiveForPolling(thread model.Thread) bool {
-	if strings.TrimSpace(thread.ActiveTurnID) != "" {
-		return true
-	}
 	status := strings.ToLower(strings.TrimSpace(thread.Status))
 	if status == "" {
-		return false
+		return strings.TrimSpace(thread.ActiveTurnID) != ""
 	}
 	if status == "active" ||
 		strings.HasPrefix(status, "active[") ||
@@ -2952,7 +3399,56 @@ func snapshotHasPassiveChange(previous *model.ThreadSnapshotState, current *apps
 	if previous == nil {
 		return threadLooksActiveForPolling(current.Thread) || current.WaitingOnApproval || current.WaitingOnReply
 	}
+	if interruptedVisibleStateChanged(previous, current) {
+		return true
+	}
 	return len(appserver.DiffSnapshot(previous, *current)) > 0
+}
+
+func interruptedVisibleStateChanged(previous *model.ThreadSnapshotState, current *appserver.ThreadReadSnapshot) bool {
+	if previous == nil || current == nil || len(previous.CompactJSON) == 0 {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(current.LatestTurnStatus), "interrupted") || snapshotHasFinalSignal(current) {
+		return false
+	}
+	var previousSnapshot appserver.ThreadReadSnapshot
+	if err := json.Unmarshal(previous.CompactJSON, &previousSnapshot); err != nil {
+		return false
+	}
+	return interruptedVisibleFingerprint(&previousSnapshot) != interruptedVisibleFingerprint(current)
+}
+
+func interruptedVisibleFingerprint(snapshot *appserver.ThreadReadSnapshot) string {
+	if snapshot == nil {
+		return ""
+	}
+	return hashStrings(
+		cardDisplayStatus(snapshot, snapshot.Thread),
+		snapshot.LatestProgressFP,
+		snapshot.LatestProgressText,
+		snapshot.LatestToolFP,
+		snapshot.LatestToolID,
+		snapshot.LatestToolStatus,
+		detailItemsVisibleFingerprint(snapshot.DetailItems),
+		agentEntriesVisibleFingerprint(snapshot.LatestAgentMessageEntries),
+	)
+}
+
+func detailItemsVisibleFingerprint(items []model.DetailItem) string {
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, strings.Join([]string{item.ID, item.Kind, item.Phase, item.Text, item.Label, item.Status, item.Output, item.FP}, "\x00"))
+	}
+	return strings.Join(parts, "\x01")
+}
+
+func agentEntriesVisibleFingerprint(entries []appserver.AgentMessageEntry) string {
+	parts := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		parts = append(parts, strings.Join([]string{entry.ID, entry.Phase, entry.Text, entry.FP}, "\x00"))
+	}
+	return strings.Join(parts, "\x01")
 }
 
 func (s *Service) threadNeedsCatchupPolling(ctx context.Context, thread model.Thread, snapshot *model.ThreadSnapshotState) bool {
@@ -2989,6 +3485,14 @@ func isThreadNotLoadedError(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "thread not loaded")
+}
+
+func isThreadArchivedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "is archived") || strings.Contains(text, "thread archived") || strings.Contains(text, "session archived")
 }
 
 func (s *Service) catchupWindow() time.Duration {
@@ -3101,7 +3605,20 @@ func (s *Service) refreshThreadForOperation(ctx context.Context, client Session,
 	if err != nil {
 		return nil, err
 	}
-	if s.applyTelegramOriginTerminalGate(ctx, operation, &current, previous) {
+	gateHandled, gateDecision := s.applyTelegramOriginTerminalGate(ctx, operation, &current, previous)
+	if gateHandled {
+		if gateDecision.DeferredDisplayableProgress() {
+			s.preserveTelegramOriginLiveCurrentTool(ctx, &current, previous)
+			if err := s.store.UpsertThread(ctx, thread); err != nil {
+				return nil, err
+			}
+			nextSnapshot := s.compactDeferredProgressSnapshot(previous, current, time.Now().UTC(), gateDecision)
+			if err := s.store.UpsertSnapshot(ctx, threadID, nextSnapshot); err != nil {
+				return nil, err
+			}
+			s.logObserverSyncResult(operation, current)
+			return &thread, nil
+		}
 		if existing, _ := s.store.GetThread(ctx, threadID); existing != nil {
 			return existing, nil
 		}
@@ -3115,6 +3632,7 @@ func (s *Service) refreshThreadForOperation(ctx context.Context, client Session,
 	if current.LatestTurnStatus == "inProgress" || current.WaitingOnApproval || current.WaitingOnReply {
 		nextSnapshot.NextPollAfter = model.TimeString(time.Now().UTC().Add(s.cfg.ObserverPollInterval).Format(time.RFC3339Nano))
 	}
+	applyTerminalGateHotPolling(&nextSnapshot, gateDecision)
 	if err := s.store.UpsertSnapshot(ctx, threadID, nextSnapshot); err != nil {
 		return nil, err
 	}
@@ -3176,7 +3694,7 @@ func (s *Service) setError(ctx context.Context, err error) {
 func (s *Service) renderObserverEvent(ctx context.Context, event model.ObserverEvent) *DirectResponse {
 	thread := model.Thread{ID: event.ThreadID, Title: event.ThreadTitle, ProjectName: event.ProjectName}
 	lines := []string{
-		s.visualHeader(ctx, "Event", thread, event.TurnID),
+		s.visualHeader(ctx, s.t(ctx, "事件", "Event"), thread, event.TurnID),
 		event.Text,
 		"",
 		fmt.Sprintf("/show %s", event.ThreadID),
@@ -3185,15 +3703,12 @@ func (s *Service) renderObserverEvent(ctx context.Context, event model.ObserverE
 	if event.NeedsApproval {
 		lines = append(lines, "/status")
 	}
-	buttons := [][]model.ButtonSpec{
-		{
-			s.callbackButton(ctx, "Show", "show_thread", event.ThreadID, event.TurnID, "", nil),
-			s.callbackButton(ctx, "Reply", "reply_hint", event.ThreadID, event.TurnID, "", nil),
-			s.callbackButton(ctx, "Observe here", "observe_all", event.ThreadID, event.TurnID, "", nil),
-		},
-	}
+	buttons := [][]model.ButtonSpec{{
+		s.callbackButton(ctx, s.t(ctx, "查看", "Show"), "show_thread", event.ThreadID, event.TurnID, "", nil),
+		s.callbackButton(ctx, s.t(ctx, "回复", "Reply"), "reply_hint", event.ThreadID, event.TurnID, "", nil),
+	}}
 	if event.TurnID != "" {
-		buttons = append(buttons, []model.ButtonSpec{s.callbackButton(ctx, "Stop", "stop_turn", event.ThreadID, event.TurnID, "", nil)})
+		buttons = append(buttons, []model.ButtonSpec{s.callbackButton(ctx, s.t(ctx, "停止", "Stop"), "stop_turn", event.ThreadID, event.TurnID, "", nil)})
 	}
 	return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons, ThreadID: event.ThreadID, TurnID: event.TurnID, ItemID: event.ItemID, EventID: event.EventID}
 }
@@ -3204,7 +3719,7 @@ func (s *Service) renderPendingApproval(ctx context.Context, approval model.Pend
 		thread = *loaded
 	}
 	lines := []string{
-		s.visualHeader(ctx, "Approval", thread, approval.TurnID),
+		s.visualHeader(ctx, s.t(ctx, "审批", "Approval"), thread, approval.TurnID),
 		strings.TrimSpace(approval.Question),
 		"",
 		fmt.Sprintf("/approve %s", approval.RequestID),
@@ -3213,12 +3728,12 @@ func (s *Service) renderPendingApproval(ctx context.Context, approval model.Pend
 	}
 	buttons := [][]model.ButtonSpec{
 		{
-			s.callbackButton(ctx, "Approve", "approve", approval.ThreadID, approval.TurnID, approval.RequestID, nil),
-			s.callbackButton(ctx, "Approve Session", "approve_session", approval.ThreadID, approval.TurnID, approval.RequestID, nil),
+			s.callbackButton(ctx, s.t(ctx, "批准", "Approve"), "approve", approval.ThreadID, approval.TurnID, approval.RequestID, nil),
+			s.callbackButton(ctx, s.t(ctx, "批准会话", "Approve Session"), "approve_session", approval.ThreadID, approval.TurnID, approval.RequestID, nil),
 		},
 		{
-			s.callbackButton(ctx, "Deny", "deny", approval.ThreadID, approval.TurnID, approval.RequestID, nil),
-			s.callbackButton(ctx, "Cancel", "cancel", approval.ThreadID, approval.TurnID, approval.RequestID, nil),
+			s.callbackButton(ctx, s.t(ctx, "拒绝", "Deny"), "deny", approval.ThreadID, approval.TurnID, approval.RequestID, nil),
+			s.callbackButton(ctx, s.t(ctx, "取消", "Cancel"), "cancel", approval.ThreadID, approval.TurnID, approval.RequestID, nil),
 		},
 	}
 	return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons, ThreadID: approval.ThreadID, TurnID: approval.TurnID, ItemID: approval.ItemID, EventID: approval.RequestID}

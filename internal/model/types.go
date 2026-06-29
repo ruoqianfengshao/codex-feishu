@@ -9,12 +9,6 @@ import (
 )
 
 const (
-	BindingModeBound    = "bound"
-	BindingModeObserver = "observer"
-
-	PanelModePerRun = "per_run"
-	PanelModeStable = "stable"
-
 	PanelSourceExplicit       = "explicit"
 	PanelSourceGlobalObserver = "global_observer"
 	PanelSourceTelegramInput  = "telegram_input"
@@ -175,16 +169,6 @@ type ThreadSnapshotState struct {
 	CompactJSON          json.RawMessage `json:"compact_json,omitempty"`
 }
 
-type ThreadBinding struct {
-	ChatKey   string
-	ChatID    int64
-	TopicID   int64
-	ThreadID  string
-	Mode      string
-	CreatedAt TimeString
-	UpdatedAt TimeString
-}
-
 type ObserverTarget struct {
 	ChatKey   string
 	ChatID    int64
@@ -321,8 +305,17 @@ type ButtonSpec struct {
 }
 
 type MessageSection struct {
-	Text    string         `json:"text,omitempty"`
-	Buttons [][]ButtonSpec `json:"buttons,omitempty"`
+	Text    string              `json:"text,omitempty"`
+	Heading bool                `json:"heading,omitempty"`
+	Divider bool                `json:"divider,omitempty"`
+	Rows    []MessageSectionRow `json:"rows,omitempty"`
+	Buttons [][]ButtonSpec      `json:"buttons,omitempty"`
+}
+
+type MessageSectionRow struct {
+	Title    string     `json:"title,omitempty"`
+	Trailing string     `json:"trailing,omitempty"`
+	Button   ButtonSpec `json:"button,omitempty"`
 }
 
 type MessageEntity struct {
@@ -334,9 +327,11 @@ type MessageEntity struct {
 }
 
 type RenderedMessage struct {
-	Text     string          `json:"text"`
-	Entities []MessageEntity `json:"entities,omitempty"`
-	Style    string          `json:"style,omitempty"`
+	Text      string          `json:"text"`
+	Entities  []MessageEntity `json:"entities,omitempty"`
+	Style     string          `json:"style,omitempty"`
+	ImagePath string          `json:"image_path,omitempty"`
+	ImageKey  string          `json:"image_key,omitempty"`
 }
 
 type DetailItem struct {
@@ -374,10 +369,8 @@ type ObserverEvent struct {
 
 type ChatContext struct {
 	Mode            string
-	Binding         *ThreadBinding
 	ObserverEnabled bool
 	ObserverTarget  *ObserverTarget
-	Thread          *Thread
 }
 
 type ThreadPanel struct {
@@ -429,7 +422,6 @@ const (
 	RouteSourceReply    RouteSource = "reply"
 	RouteSourceSteer    RouteSource = "steer"
 	RouteSourcePanel    RouteSource = "panel"
-	RouteSourceBinding  RouteSource = "binding"
 	RouteSourceNone     RouteSource = "none"
 )
 

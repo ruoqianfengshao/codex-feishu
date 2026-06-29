@@ -42,11 +42,7 @@ func (s *Service) visualHeader(ctx context.Context, kind string, thread model.Th
 	}
 	parts = append(parts,
 		fmt.Sprintf("[%s]", title),
-		fmt.Sprintf("[T:%s]", visualShortID(thread.ID)),
 	)
-	if shortTurnID := visualShortID(turnID); shortTurnID != "" {
-		parts = append(parts, fmt.Sprintf("[R:%s]", shortTurnID))
-	}
 	if kind = strings.TrimSpace(kind); kind != "" {
 		parts = append(parts, fmt.Sprintf("[%s]", kind))
 	}
@@ -65,11 +61,7 @@ func (s *Service) visualFileHeader(thread model.Thread, turnID, kind string) str
 	}
 	parts = append(parts,
 		fmt.Sprintf("[%s]", title),
-		fmt.Sprintf("[T:%s]", visualShortID(thread.ID)),
 	)
-	if shortTurnID := visualShortID(turnID); shortTurnID != "" {
-		parts = append(parts, fmt.Sprintf("[R:%s]", shortTurnID))
-	}
 	if kind = strings.TrimSpace(kind); kind != "" {
 		parts = append(parts, fmt.Sprintf("[%s]", kind))
 	}
@@ -89,11 +81,7 @@ func (s *Service) visualDividerText(ctx context.Context, thread model.Thread, tu
 	}
 	parts = append(parts,
 		fmt.Sprintf("[%s]", title),
-		fmt.Sprintf("[T:%s]", visualShortID(thread.ID)),
 	)
-	if shortTurnID := visualShortID(turnID); shortTurnID != "" {
-		parts = append(parts, fmt.Sprintf("[R:%s]", shortTurnID))
-	}
 	return strings.Join(parts, " ")
 }
 

@@ -57,7 +57,6 @@ type Config struct {
 	FeishuAllowedChatIDs        []string
 	DefaultCWD                  string
 	CodexChatsRoot              string
-	PanelMode                   string
 	LogEnabled                  bool
 	DiagnosticLogs              bool
 	NotifyNewRun                bool
@@ -147,7 +146,6 @@ func fromSource(source envSource) Config {
 		FeishuAllowedChatIDs:        parseStringList(source.get("CTR_GO_FEISHU_ALLOWED_CHAT_IDS")),
 		DefaultCWD:                  source.string("CTR_GO_DEFAULT_CWD", cwd),
 		CodexChatsRoot:              source.path("CTR_GO_CODEX_CHATS_ROOT", DefaultCodexChatsRoot()),
-		PanelMode:                   normalizePanelMode(source.string("CTR_GO_PANEL_MODE", "per_run")),
 		LogEnabled:                  source.bool("CTR_GO_LOG_ENABLED", true),
 		DiagnosticLogs:              source.bool("CTR_GO_DIAGNOSTIC_LOGS", true),
 		NotifyNewRun:                source.bool("CTR_GO_NOTIFY_NEW_RUN", true),
@@ -179,7 +177,6 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		FeishuAllowedChatIDs        []string `json:"feishu_allowed_chat_ids"`
 		DefaultCWD                  string   `json:"default_cwd"`
 		CodexChatsRoot              string   `json:"codex_chats_root"`
-		PanelMode                   string   `json:"panel_mode"`
 		LogEnabled                  bool     `json:"log_enabled"`
 		DiagnosticLogs              bool     `json:"diagnostic_logs"`
 		NotifyNewRun                bool     `json:"notify_new_run"`
@@ -205,7 +202,6 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		FeishuAllowedChatIDs:        c.FeishuAllowedChatIDs,
 		DefaultCWD:                  c.DefaultCWD,
 		CodexChatsRoot:              c.CodexChatsRoot,
-		PanelMode:                   normalizePanelMode(c.PanelMode),
 		LogEnabled:                  c.LogEnabled,
 		DiagnosticLogs:              c.DiagnosticLogs,
 		NotifyNewRun:                c.NotifyNewRun,
@@ -434,15 +430,6 @@ func parseStringList(raw string) []string {
 		out = append(out, part)
 	}
 	return out
-}
-
-func normalizePanelMode(value string) string {
-	switch strings.TrimSpace(strings.ToLower(value)) {
-	case "stable":
-		return "stable"
-	default:
-		return "per_run"
-	}
 }
 
 func normalizeAdapter(value string) string {

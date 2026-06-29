@@ -43,6 +43,10 @@ type terminalGateDecision struct {
 	ExplicitKey           string
 }
 
+func (d terminalGateDecision) DeferredDisplayableProgress() bool {
+	return d.Action == terminalGateDefer && d.Reason == "partial_interrupted"
+}
+
 type terminalGateState struct {
 	ThreadID                  string           `json:"thread_id,omitempty"`
 	TurnID                    string           `json:"turn_id,omitempty"`
@@ -244,8 +248,15 @@ func (s *Service) decideTelegramOriginEmptyInterruptedTerminal(ctx context.Conte
 		return decision, nil
 	}
 
-	if !s.isTelegramOriginTurn(ctx, threadID, turnID) {
-		decision.Reason = "not_telegram_origin"
+	if !s.isDirectInputOriginTurn(ctx, threadID, turnID) {
+		decision.Reason = "not_direct_input_origin"
+		return decision, nil
+	}
+
+	if snapshotHasFinalSignal(snapshot) {
+		_ = s.clearTelegramOriginEmptyInterruptedDefer(ctx, threadID, turnID)
+		decision.Action = terminalGateAccept
+		decision.Reason = "final_interrupted"
 		return decision, nil
 	}
 
@@ -311,7 +322,7 @@ func applyTerminalGateHotPolling(snapshot *model.ThreadSnapshotState, decision t
 	snapshot.NextPollAfter = decision.NextPollAfter
 }
 
-func (s *Service) applyTelegramOriginTerminalGate(ctx context.Context, operation string, current *appserver.ThreadReadSnapshot, previous *model.ThreadSnapshotState) bool {
+func (s *Service) applyTelegramOriginTerminalGate(ctx context.Context, operation string, current *appserver.ThreadReadSnapshot, previous *model.ThreadSnapshotState) (bool, terminalGateDecision) {
 	decision, err := s.decideTelegramOriginEmptyInterruptedTerminal(ctx, current, time.Now().UTC())
 	if err != nil {
 		s.logLifecycle("telegram_origin_terminal_gate_error", lifecycleFields{
@@ -320,7 +331,7 @@ func (s *Service) applyTelegramOriginTerminalGate(ctx context.Context, operation
 			"turn_id":   decision.TurnID,
 			"error":     err,
 		})
-		return false
+		return false, decision
 	}
 	switch decision.Action {
 	case terminalGateDefer:
@@ -339,7 +350,7 @@ func (s *Service) applyTelegramOriginTerminalGate(ctx context.Context, operation
 		fields["defer_until"] = decision.ExpiresAt
 		fields["next_poll_after"] = decision.NextPollAfter
 		s.logLifecycle("telegram_origin_terminal_deferred", fields)
-		return true
+		return true, decision
 	case terminalGateRecover:
 		fields := snapshotDiagnosticFields(*current)
 		fields["operation"] = operation
@@ -356,7 +367,7 @@ func (s *Service) applyTelegramOriginTerminalGate(ctx context.Context, operation
 			s.logLifecycle("telegram_origin_terminal_defer_expired", fields)
 		}
 	}
-	return false
+	return false, decision
 }
 
 func (s *Service) threadHasDeferredEmptyInterrupted(ctx context.Context, thread model.Thread, snapshot *model.ThreadSnapshotState) bool {

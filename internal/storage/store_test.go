@@ -104,7 +104,7 @@ func TestGlobalObserverTargetPersistsAndObserveOffDisablesMonitoring(t *testing.
 	}
 }
 
-func TestBindingAndGlobalObserverCanCoexist(t *testing.T) {
+func TestGlobalObserverTargetRoundTrips(t *testing.T) {
 	t.Parallel()
 
 	store := openTestStore(t)
@@ -112,17 +112,6 @@ func TestBindingAndGlobalObserverCanCoexist(t *testing.T) {
 
 	if err := store.SetGlobalObserverTarget(ctx, 123456789, 0, true); err != nil {
 		t.Fatalf("SetGlobalObserverTarget failed: %v", err)
-	}
-	if err := store.SetBinding(ctx, 123456789, 0, "thread-1", model.BindingModeBound); err != nil {
-		t.Fatalf("SetBinding failed: %v", err)
-	}
-
-	binding, err := store.GetBinding(ctx, 123456789, 0)
-	if err != nil {
-		t.Fatalf("GetBinding failed: %v", err)
-	}
-	if binding == nil || binding.ThreadID != "thread-1" {
-		t.Fatalf("binding = %#v, want thread-1", binding)
 	}
 
 	target, configured, err := store.GetGlobalObserverTarget(ctx)
@@ -255,6 +244,16 @@ func TestListThreadsFiltersInternalAppServerThreads(t *testing.T) {
 			UpdatedAt:     20,
 			Raw:           json.RawMessage(`{"id":"sub-agent-thread","source":{"subAgent":"memory_consolidation"}}`),
 		},
+		{
+			ID:            "archived-thread",
+			Title:         "Archived work",
+			ProjectName:   "archived-project",
+			DirectoryName: "archived-project",
+			UpdatedAt:     40,
+			LastPreview:   "archived user request",
+			Archived:      true,
+			Raw:           json.RawMessage(`{"id":"archived-thread","preview":"archived user request"}`),
+		},
 	}
 	for _, thread := range threads {
 		if err := store.UpsertThread(ctx, thread); err != nil {
@@ -278,12 +277,31 @@ func TestListThreadsFiltersInternalAppServerThreads(t *testing.T) {
 		t.Fatalf("searched internal threads = %#v, want none", searched)
 	}
 
+	searchedArchived, err := store.ListThreads(ctx, 10, "archived")
+	if err != nil {
+		t.Fatalf("ListThreads(search archived) failed: %v", err)
+	}
+	if len(searchedArchived) != 0 {
+		t.Fatalf("searched archived threads = %#v, want none", searchedArchived)
+	}
+
 	grouped, err := store.ListProjectGroups(ctx)
 	if err != nil {
 		t.Fatalf("ListProjectGroups failed: %v", err)
 	}
 	if _, ok := grouped["memories"]; ok {
 		t.Fatalf("project groups include internal memories project: %#v", grouped)
+	}
+	if _, ok := grouped["archived-project"]; ok {
+		t.Fatalf("project groups include archived project: %#v", grouped)
+	}
+
+	count, err := store.CountThreads(ctx)
+	if err != nil {
+		t.Fatalf("CountThreads failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("CountThreads = %d, want only visible-thread", count)
 	}
 }
 
@@ -529,18 +547,18 @@ func TestGetLatestCurrentPanelForChat(t *testing.T) {
 	}
 }
 
-func TestThreadPanelSourceModePersistsStableAndPerRunValues(t *testing.T) {
+func TestThreadPanelSourceModePersistsAndReplacesCurrentPanel(t *testing.T) {
 	t.Parallel()
 
 	store := openTestStore(t)
 	ctx := context.Background()
 
-	stable, err := store.CreateThreadPanel(ctx, model.ThreadPanel{
+	explicit, err := store.CreateThreadPanel(ctx, model.ThreadPanel{
 		ChatID:           123456789,
 		TopicID:          0,
 		ProjectName:      "Codex",
 		ThreadID:         "thread-1",
-		SourceMode:       "stable",
+		SourceMode:       model.PanelSourceExplicit,
 		SummaryMessageID: 301,
 		ToolMessageID:    302,
 		OutputMessageID:  303,
@@ -549,18 +567,18 @@ func TestThreadPanelSourceModePersistsStableAndPerRunValues(t *testing.T) {
 		ArchiveEnabled:   true,
 	})
 	if err != nil {
-		t.Fatalf("CreateThreadPanel(stable) failed: %v", err)
+		t.Fatalf("CreateThreadPanel(explicit) failed: %v", err)
 	}
-	if stable.SourceMode != "stable" {
-		t.Fatalf("stable panel SourceMode = %q, want stable", stable.SourceMode)
+	if explicit.SourceMode != model.PanelSourceExplicit {
+		t.Fatalf("explicit panel SourceMode = %q, want explicit", explicit.SourceMode)
 	}
 
-	perRun, err := store.CreateThreadPanel(ctx, model.ThreadPanel{
+	feishuInput, err := store.CreateThreadPanel(ctx, model.ThreadPanel{
 		ChatID:           123456789,
 		TopicID:          0,
 		ProjectName:      "Codex",
 		ThreadID:         "thread-1",
-		SourceMode:       "per_run",
+		SourceMode:       model.PanelSourceFeishuInput,
 		SummaryMessageID: 401,
 		ToolMessageID:    402,
 		OutputMessageID:  403,
@@ -569,10 +587,10 @@ func TestThreadPanelSourceModePersistsStableAndPerRunValues(t *testing.T) {
 		ArchiveEnabled:   true,
 	})
 	if err != nil {
-		t.Fatalf("CreateThreadPanel(per_run) failed: %v", err)
+		t.Fatalf("CreateThreadPanel(feishu_input) failed: %v", err)
 	}
-	if perRun.SourceMode != "per_run" {
-		t.Fatalf("per_run panel SourceMode = %q, want per_run", perRun.SourceMode)
+	if feishuInput.SourceMode != model.PanelSourceFeishuInput {
+		t.Fatalf("feishu_input panel SourceMode = %q, want feishu_input", feishuInput.SourceMode)
 	}
 
 	current, err := store.GetCurrentThreadPanel(ctx, 123456789, 0, "thread-1")
@@ -582,22 +600,22 @@ func TestThreadPanelSourceModePersistsStableAndPerRunValues(t *testing.T) {
 	if current == nil {
 		t.Fatal("GetCurrentThreadPanel returned nil")
 	}
-	if current.ID != perRun.ID {
-		t.Fatalf("current panel ID = %d, want %d", current.ID, perRun.ID)
+	if current.ID != feishuInput.ID {
+		t.Fatalf("current panel ID = %d, want %d", current.ID, feishuInput.ID)
 	}
-	if current.SourceMode != "per_run" {
-		t.Fatalf("current panel SourceMode = %q, want per_run", current.SourceMode)
+	if current.SourceMode != model.PanelSourceFeishuInput {
+		t.Fatalf("current panel SourceMode = %q, want feishu_input", current.SourceMode)
 	}
 
-	stableLoaded, err := store.GetThreadPanelByID(ctx, stable.ID)
+	explicitLoaded, err := store.GetThreadPanelByID(ctx, explicit.ID)
 	if err != nil {
-		t.Fatalf("GetThreadPanelByID(stable) failed: %v", err)
+		t.Fatalf("GetThreadPanelByID(explicit) failed: %v", err)
 	}
-	if stableLoaded == nil {
-		t.Fatal("GetThreadPanelByID(stable) returned nil")
+	if explicitLoaded == nil {
+		t.Fatal("GetThreadPanelByID(explicit) returned nil")
 	}
-	if stableLoaded.SourceMode != "stable" {
-		t.Fatalf("stable panel reloaded SourceMode = %q, want stable", stableLoaded.SourceMode)
+	if explicitLoaded.SourceMode != model.PanelSourceExplicit {
+		t.Fatalf("explicit panel reloaded SourceMode = %q, want explicit", explicitLoaded.SourceMode)
 	}
 }
 

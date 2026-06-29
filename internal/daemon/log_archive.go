@@ -51,29 +51,35 @@ type BuildLogArchiveDataResult struct {
 	SourceJSONLPath string
 }
 
-func (s *Service) sendFullLogArchive(ctx context.Context, chatID, topicID int64, threadID string) (*DirectResponse, error) {
+func (s *Service) sendFullLogArchive(ctx context.Context, chatID, topicID, messageID int64, threadID, sourceMode string) (*DirectResponse, error) {
 	s.mu.RLock()
 	sender := s.sender
 	s.mu.RUnlock()
 	if sender == nil {
-		return &DirectResponse{Text: "Telegram sender is not ready yet."}, nil
+		return &DirectResponse{Text: s.t(ctx, "消息发送器尚未就绪。", "Telegram sender is not ready yet.")}, nil
 	}
 	thread, err := s.store.GetThread(ctx, threadID)
 	if err != nil {
 		return nil, err
 	}
 	if thread == nil {
-		return &DirectResponse{Text: fmt.Sprintf("Unknown thread: %s", threadID)}, nil
+		return &DirectResponse{Text: fmt.Sprintf(s.t(ctx, "未知线程：%s", "Unknown thread: %s"), threadID)}, nil
 	}
 	archive, err := BuildThreadLogArchiveData(ctx, *thread, LogArchiveHint{})
 	if err != nil {
-		return &DirectResponse{Text: fmt.Sprintf("Could not build full log: %v", err)}, nil
+		return &DirectResponse{Text: fmt.Sprintf(s.t(ctx, "无法生成完整日志：%v", "Could not build full log: %v"), err)}, nil
 	}
-	caption := s.visualHeader(ctx, "Full log", *thread, "")
-	if _, err := sender.SendDocumentData(ctx, chatID, topicID, archive.FileName, archive.Data, caption, silentSendOptions()); err != nil {
-		return &DirectResponse{Text: fmt.Sprintf("Could not send full log: %v", err)}, nil
+	caption := s.visualHeader(ctx, s.t(ctx, "完整日志", "Full log"), *thread, "")
+	options := silentSendOptions()
+	if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput && messageID != 0 {
+		options.FeishuReplyToMessageID = messageID
+		options.FeishuReplyInThread = true
+		options.FeishuCodexThreadID = threadID
 	}
-	return &DirectResponse{CallbackText: "Полный лог отправлен."}, nil
+	if _, err := sender.SendDocumentData(ctx, chatID, topicID, archive.FileName, archive.Data, caption, options); err != nil {
+		return &DirectResponse{Text: fmt.Sprintf(s.t(ctx, "无法发送完整日志：%v", "Could not send full log: %v"), err)}, nil
+	}
+	return &DirectResponse{CallbackText: s.t(ctx, "完整日志已发送。", "Full log sent.")}, nil
 }
 
 func BuildThreadLogArchiveData(ctx context.Context, thread model.Thread, hint LogArchiveHint) (*BuildLogArchiveDataResult, error) {

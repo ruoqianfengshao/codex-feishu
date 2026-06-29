@@ -56,7 +56,7 @@ and event contracts.
 ## Features
 
 - Thread-first routing over local Codex App Server.
-- Global observer for foreign GUI/CLI runs, with polling fallback through `thread/read`.
+- Workspace-driven remote control through explicit thread topics.
 - Feishu-origin live current tool rendering from App Server `item/*` events, while foreign GUI/CLI panels stay completed-tool only.
 - Stable visual identity per thread: emoji marker plus project/thread/run chips.
 - Explicit `New run -> [User] -> [commentary] -> [Tool] -> [Output] -> [Final]` chronology with status on the live commentary/final card.
@@ -155,15 +155,14 @@ action callbacks enabled. The app needs message send/read and file upload
 permissions appropriate for the target chats. `ctr-go feishu setup` creates the
 app through the official registration flow; existing apps may still need these
 capabilities checked in the developer console.
-To show shortcuts above the Feishu input box, enable the bot custom menu in the
-Feishu developer console and publish a new app version. Feishu exposes that menu
-only in one-on-one bot chats. The smoothest setup is menu items with the "send
-text message" action, using values like `/help`, `/threads`, `/projects`,
-`/settings`, `/status`, and `/repair`. If you choose the "push event" action
-instead, subscribe to `application.bot.menu_v6` and use event keys such as
-`help`, `threads`, `projects`, `settings`, `status`, `observe_all`,
-`observe_off`, or `repair`; event-based responses are sent back to the
-operator's bot DM because Feishu menu events do not include a chat id.
+The daily Feishu surface is the Codex bot DM. Send `/workspace` to the bot to
+show the workspace card with recent chats, projects, status, and settings. Each
+Codex thread is represented as a Feishu topic reply under a bot DM root message,
+so normal remote control can stay in the bot chat.
+`ctr-go feishu setup` presets the created app name to `Codex`. To add input-box
+shortcuts, configure the bot custom menu in the Feishu/Lark developer console
+and publish a new app version. Use "send text message" menu items for
+`/workspace`, `/threads`, `/projects`, `/newchat`, `/settings`, and `/repair`.
 
 On macOS, set `CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU=true` when you want Feishu
 replies to appear in the current Codex Desktop window. The daemon first sends
@@ -172,16 +171,17 @@ thread, then falls back to the normal App Server path if Desktop is closed, the
 thread is not owned by a visible Desktop window, or local IPC is unavailable.
 This does not require official Codex Remote Connections authentication.
 
-In the selected adapter chat:
+In Feishu/Lark, send this to the Codex bot:
 
 ```text
-/start
-/observe all
-/threads
-/context
+/workspace
 ```
 
-Start or continue a Codex thread from Codex GUI/CLI. `codex-tg` should create a `New run` card, a `[User]` card, live progress cards, and then send a final answer card with Details while cleaning up transient live cards.
+Choose a recent chat or project from the bot workspace card, then continue in
+the topic reply for that Codex thread. Start or continue a Codex thread from
+Codex GUI/CLI and `codex-tg` should create a `New run` card, a `[User]` card,
+live progress cards, and then send a final answer card with Details while
+cleaning up transient live cards.
 
 Set `CTR_GO_NOTIFY_NEW_RUN=off` to keep `New run` visible but silent. Set `CTR_GO_NOTIFY_SYSTEM=off` to disable macOS system notifications for completion, failure, and approval prompts.
 
@@ -213,11 +213,10 @@ go run ./cmd/ctr-go daemon run
 
 Feishu commands:
 
-- `/start`, `/help`
-- `/threads`, `/projects`, `/new`, `/newchat`, `/newthread`, `/show`, `/bind`, `/reply`, `/plan`
-- `/settings`, `/model`, `/effort`
+- `/start`, `/workspace`, `/home`, `/help`
+- `/threads`, `/projects`, `/new`, `/newchat`, `/show`, `/bind`, `/reply`, `/plan`
+- `/settings`, `/language`, `/model`, `/effort`
 - `/context`, `/whereami`
-- `/observe all`, `/observe off`
 - `/status`, `/repair`, `/stop`, `/approve`, `/deny`
 
 `/projects` opens cached project/workspace navigation sorted by the latest
@@ -226,9 +225,7 @@ thread activity. Codex UI Chats from `Documents/Codex` are grouped under
 the full paginated Chat list, and choosing a Chat opens and binds its thread.
 Use `New thread` in a normal project menu to create a new thread in that
 project cwd. Use `/newchat <prompt>` to create a Codex UI Chat under
-`Documents/Codex/<date>/<prompt-slug>`. Use `/newthread <prompt>` when you need
-a thread without choosing a project or creating a Chat folder; App Server may
-still attach the daemon default cwd.
+`Documents/Codex/<date>/<prompt-slug>`.
 
 ## Configuration
 

@@ -19,9 +19,6 @@ func TestPollTrackedIgnoresStaleSessionTailTool(t *testing.T) {
 	sender := &recordingSender{}
 	service.SetSender(sender)
 	ctx := context.Background()
-	if err := service.store.SetGlobalObserverTarget(ctx, 123456789, 0, true); err != nil {
-		t.Fatalf("SetGlobalObserverTarget failed: %v", err)
-	}
 	sessionPath := writeSessionTailFixture(t, []string{
 		`{"timestamp":"2026-04-28T08:47:00Z","type":"turn_context","payload":{"turn_id":"turn-stale"}}`,
 		`{"timestamp":"2026-04-28T08:47:10Z","type":"response_item","payload":{"type":"function_call","call_id":"call_sleep","name":"shell_command","arguments":"{\"command\":\"Start-Sleep -Seconds 1800\",\"timeout_ms\":1860000}"}}`,
@@ -38,6 +35,17 @@ func TestPollTrackedIgnoresStaleSessionTailTool(t *testing.T) {
 	}
 	if err := service.store.UpsertThread(ctx, thread); err != nil {
 		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:         123456789,
+		TopicID:        0,
+		ThreadID:       thread.ID,
+		ProjectName:    thread.ProjectName,
+		Status:         "running",
+		SourceMode:     model.PanelSourceExplicit,
+		ArchiveEnabled: true,
+	}); err != nil {
+		t.Fatalf("CreateThreadPanel failed: %v", err)
 	}
 	service.poll = &stubSession{
 		threadReads: map[string]map[string]any{

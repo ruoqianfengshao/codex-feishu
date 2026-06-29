@@ -114,6 +114,13 @@ func (s *Service) maybeSendFeishuInputViaDesktop(ctx context.Context, chatID, to
 	options := s.turnStartOptions(ctx, effectiveCollaborationMode, thread)
 	params, err := appserver.TurnStartParams(thread.ID, text, thread.CWD, options)
 	if err != nil {
+		if desktopInputShouldFallback(err) {
+			s.logLifecycle("codex_desktop_input_start_params_fallback", lifecycleFields{
+				"thread_id": thread.ID,
+				"error":     sanitizeDiagnosticString(err.Error()),
+			})
+			return nil, false, false, "", nil
+		}
 		return nil, true, false, "", err
 	}
 	result, err = dispatcher.StartTurn(requestCtx, thread.ID, params)
@@ -248,6 +255,7 @@ func desktopInputShouldFallback(err error) bool {
 		strings.Contains(strings.ToLower(err.Error()), "webview-disposed") ||
 		strings.Contains(strings.ToLower(err.Error()), "provider-disposed") ||
 		strings.Contains(strings.ToLower(err.Error()), "connection refused") ||
+		strings.Contains(strings.ToLower(err.Error()), "codex model is required for collaboration mode") ||
 		strings.Contains(strings.ToLower(err.Error()), "i/o timeout") ||
 		strings.Contains(strings.ToLower(err.Error()), "no such file") ||
 		strings.Contains(strings.ToLower(err.Error()), "socket path is unavailable")

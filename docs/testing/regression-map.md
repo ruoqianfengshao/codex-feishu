@@ -139,10 +139,8 @@ Primary tests:
 - `internal/daemon/service_test.go::TestProjectNewThreadTurnStartFailureSavesThread`
 - `internal/daemon/service_test.go::TestNewChatCommandCreatesCodexUIChatCWDAndBinds`
 - `internal/daemon/service_test.go::TestNewChatCWDUsesFallbackSlugAndCollisionSuffix`
-- `internal/daemon/service_test.go::TestNewThreadCommandCreatesThreadWithoutCWDAndBinds`
 - `internal/daemon/service_test.go::TestNewChatCommandRejectsMissingThreadID`
 - `internal/daemon/service_test.go::TestNewChatCommandTurnStartFailureSavesAndBindsThread`
-- `internal/daemon/service_test.go::TestNewThreadCommandTurnStartFailureSavesAndBindsThread`
 - `internal/config/config_test.go::TestFromEnvReadsCodexChatsRoot`
 - `internal/telegram/bot_test.go::TestDefaultCommandsExposeNewChatMenuCommand`
 - `internal/daemon/service_test.go::TestSummaryPanelDoesNotShowStalePendingUserInputButtons`
@@ -153,7 +151,6 @@ Live E2E:
 - Open `/projects`, choose a project, press `New thread`, send a prompt, and verify a new thread/run reaches `[Final]`.
 - Open `/projects`, verify normal projects are sorted by recent activity, `Documents/Codex` threads are shown only as latest Chat previews, then open full `Chats` pagination and select a Chat.
 - Run `/newchat <prompt>`, verify the new thread reaches `[Final]`, the generated cwd exists under the configured Chats root, `/projects -> Open Chats` shows it, and a plain follow-up routes to the newly bound Chat thread.
-- Run `/newthread <prompt>`, verify the new thread reaches `[Final]` without creating a Chat cwd under the configured Chats root.
 - Send a plain reply after creation and verify it routes to the newly bound thread.
 - Run a Plan Mode prompt with structured choices and verify choice buttons appear only on the current `[Plan]` card.
 
@@ -164,7 +161,6 @@ Contract notes:
 - Main `/projects` uses project pagination with configurable preview limits and keeps latest Chat previews newest-first. Full Chat pagination lives behind `Open Chats`.
 - Project buttons use `N. Project name`; Chat buttons use `Chat N. Thread name`. The menu must not render internal `key:` rows and must show each project row's `last thread:`.
 - `/newchat <prompt>` creates a dated Chat cwd from a prompt slug and passes that cwd to App Server `thread/start`.
-- `/newthread <prompt>` creates a new App Server thread without a Telegram-selected cwd parameter. It must not create a Chat folder; App Server may still attach the daemon default cwd.
 - Telegram must not accept arbitrary local filesystem paths for thread creation.
 - The first prompt is required; create-only threads are out of scope for this slice.
 

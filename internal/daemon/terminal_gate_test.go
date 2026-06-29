@@ -65,6 +65,26 @@ func TestTelegramEmptyInterruptedGateDefersAndKeepsHotPollingMetadata(t *testing
 	}
 }
 
+func TestTelegramEmptyInterruptedGateDefersFeishuInputOrigin(t *testing.T) {
+	t.Parallel()
+
+	service := newTerminalGateTestService(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	if err := service.markInputOriginTurn(ctx, "thread-feishu-defer", "turn-feishu-defer", model.PanelSourceFeishuInput, 123456789, 0); err != nil {
+		t.Fatalf("markInputOriginTurn failed: %v", err)
+	}
+	snapshot := terminalGateTestSnapshot("thread-feishu-defer", "turn-feishu-defer", "interrupted")
+
+	decision, err := service.decideTelegramOriginEmptyInterruptedTerminal(ctx, &snapshot, now)
+	if err != nil {
+		t.Fatalf("decideTelegramOriginEmptyInterruptedTerminal failed: %v", err)
+	}
+	if decision.Action != terminalGateDefer || decision.Reason != "empty_interrupted" {
+		t.Fatalf("decision = %#v, want defer empty interrupted for Feishu input origin", decision)
+	}
+}
+
 func TestTelegramEmptyInterruptedGateRecoversAndClearsDefer(t *testing.T) {
 	t.Parallel()
 
@@ -175,7 +195,7 @@ func TestTelegramEmptyInterruptedGateKeepsExplicitInterruptAfterTerminalLog(t *t
 	}
 }
 
-func TestTelegramFinalInterruptedGateDefersUntilRecovered(t *testing.T) {
+func TestTelegramFinalInterruptedGateAcceptsWithoutHotPolling(t *testing.T) {
 	t.Parallel()
 
 	service := newTerminalGateTestService(t)
@@ -193,41 +213,25 @@ func TestTelegramFinalInterruptedGateDefersUntilRecovered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decideTelegramOriginEmptyInterruptedTerminal failed: %v", err)
 	}
-	if decision.Action != terminalGateDefer {
-		t.Fatalf("Action = %q, want %q", decision.Action, terminalGateDefer)
+	if decision.Action != terminalGateAccept {
+		t.Fatalf("Action = %q, want %q", decision.Action, terminalGateAccept)
 	}
 	if decision.EmptyInterrupted {
 		t.Fatal("EmptyInterrupted = true, want false for final interrupted snapshot")
 	}
-	if !decision.DeferrableInterrupted || decision.Reason != "final_interrupted" {
-		t.Fatalf("decision = %#v, want final_interrupted defer", decision)
-	}
-	state := loadTerminalGateState(t, service, ctx, terminalGateDeferKey("thread-final", "turn-final"))
-	if state.LastReason != "final_interrupted" || state.LastDecision != string(terminalGateDefer) {
-		t.Fatalf("defer state = %#v, want final_interrupted defer", state)
-	}
-
-	recovered := terminalGateTestSnapshot("thread-final", "turn-final", "completed")
-	recovered.LatestFinalText = snapshot.LatestFinalText
-	recovered.LatestFinalFP = snapshot.LatestFinalFP
-	recovered.DetailItems = snapshot.DetailItems
-	decision, err = service.decideTelegramOriginEmptyInterruptedTerminal(ctx, &recovered, now.Add(2*time.Second))
-	if err != nil {
-		t.Fatalf("decideTelegramOriginEmptyInterruptedTerminal(recovered) failed: %v", err)
-	}
-	if decision.Action != terminalGateRecover {
-		t.Fatalf("Action = %q, want %q", decision.Action, terminalGateRecover)
+	if !decision.DeferrableInterrupted || decision.Reason != "final_interrupted" || decision.HotPoll {
+		t.Fatalf("decision = %#v, want final_interrupted accept without hot poll", decision)
 	}
 	value, err := service.store.GetState(ctx, terminalGateDeferKey("thread-final", "turn-final"))
 	if err != nil {
 		t.Fatalf("GetState(defer key) failed: %v", err)
 	}
 	if value != "" {
-		t.Fatalf("defer state = %q, want empty after recovery", value)
+		t.Fatalf("defer state = %q, want empty for accepted final", value)
 	}
 }
 
-func TestTelegramPartialInterruptedGateDefersUntilFinalOrGrace(t *testing.T) {
+func TestTelegramPartialInterruptedGateDefersProgress(t *testing.T) {
 	t.Parallel()
 
 	service := newTerminalGateTestService(t)
@@ -258,12 +262,47 @@ func TestTelegramPartialInterruptedGateDefersUntilFinalOrGrace(t *testing.T) {
 	if decision.EmptyInterrupted {
 		t.Fatal("EmptyInterrupted = true, want false for partial interrupted snapshot")
 	}
-	if !decision.DeferrableInterrupted || decision.Reason != "partial_interrupted" {
-		t.Fatalf("decision = %#v, want partial_interrupted defer", decision)
+	if !decision.DeferrableInterrupted || decision.Reason != "partial_interrupted" || !decision.HotPoll {
+		t.Fatalf("decision = %#v, want partial_interrupted defer with hot poll", decision)
 	}
 	state := loadTerminalGateState(t, service, ctx, terminalGateDeferKey("thread-partial", "turn-partial"))
 	if state.LastReason != "partial_interrupted" || state.LastDecision != string(terminalGateDefer) {
 		t.Fatalf("defer state = %#v, want partial_interrupted defer", state)
+	}
+}
+
+func TestTelegramFinalInterruptedClearsExistingDefer(t *testing.T) {
+	t.Parallel()
+
+	service := newTerminalGateTestService(t)
+	ctx := context.Background()
+	now := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	if err := service.markTelegramOriginTurn(ctx, "thread-final-clear", "turn-final-clear"); err != nil {
+		t.Fatalf("markTelegramOriginTurn failed: %v", err)
+	}
+	partial := terminalGateTestSnapshot("thread-final-clear", "turn-final-clear", "interrupted")
+	partial.LatestProgressText = "Working..."
+	if decision, err := service.decideTelegramOriginEmptyInterruptedTerminal(ctx, &partial, now); err != nil || decision.Action != terminalGateDefer {
+		t.Fatalf("partial decision = %#v err=%v, want defer", decision, err)
+	}
+
+	final := terminalGateTestSnapshot("thread-final-clear", "turn-final-clear", "interrupted")
+	final.LatestFinalText = "Done."
+	final.LatestFinalFP = "final-clear-fp"
+	final.DetailItems = []model.DetailItem{{Kind: model.DetailItemFinal, Text: "Done.", FP: "final-clear-fp"}}
+	decision, err := service.decideTelegramOriginEmptyInterruptedTerminal(ctx, &final, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("decideTelegramOriginEmptyInterruptedTerminal(final) failed: %v", err)
+	}
+	if decision.Action != terminalGateAccept || decision.Reason != "final_interrupted" || decision.HotPoll {
+		t.Fatalf("decision = %#v, want final accept without hot poll", decision)
+	}
+	value, err := service.store.GetState(ctx, terminalGateDeferKey("thread-final-clear", "turn-final-clear"))
+	if err != nil {
+		t.Fatalf("GetState(defer key) failed: %v", err)
+	}
+	if value != "" {
+		t.Fatalf("defer state = %q, want cleared", value)
 	}
 }
 

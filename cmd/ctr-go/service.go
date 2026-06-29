@@ -214,6 +214,7 @@ func runServiceInstall(args []string, in io.Reader, out io.Writer) error {
 	if !opts.Start {
 		_, _ = fmt.Fprintln(out, "  ctr-go service start")
 	}
+	printFeishuWorkspaceNextSteps(out, "  ")
 
 	if opts.Start {
 		_ = serviceStop()
@@ -338,7 +339,7 @@ func runServiceWizard(values map[string]string, in io.Reader, out io.Writer) (ma
 		wizardField{
 			Key:      "CTR_GO_CODEX_CHATS_ROOT",
 			Label:    "Codex UI Chats root",
-			Help:     "New /newchat folders are created here, usually ~/Documents/Codex.",
+			Help:     "New /new folders are created here, usually ~/Documents/Codex.",
 			Required: true,
 			Validate: validateNonEmpty,
 		},

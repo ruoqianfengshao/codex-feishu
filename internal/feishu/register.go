@@ -16,6 +16,7 @@ const (
 	defaultRegistrationLarkDomain = "accounts.larksuite.com"
 	registrationEndpoint          = "/oauth/v1/app/registration"
 	registrationSDKName           = "codex-tg-go"
+	registrationDefaultAppName    = "Codex"
 )
 
 type RegistrationClient struct {
@@ -229,6 +230,9 @@ func registrationQRCodeURL(rawURL, source string) (string, error) {
 		query.Set("source", registrationSDKName+"/"+strings.TrimSpace(source))
 	}
 	query.Set("tp", "sdk")
+	if strings.TrimSpace(query.Get("name")) == "" {
+		query.Set("name", registrationDefaultAppName)
+	}
 	parsed.RawQuery = query.Encode()
 	return parsed.String(), nil
 }

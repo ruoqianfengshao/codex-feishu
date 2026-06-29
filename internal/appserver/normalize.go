@@ -12,33 +12,34 @@ import (
 )
 
 type ThreadReadSnapshot struct {
-	Thread                    model.Thread
-	LatestTurnID              string
-	LatestTurnStatus          string
-	LatestTurnStartedAt       string
-	LatestTurnUpdatedAt       string
-	WaitingOnApproval         bool
-	WaitingOnReply            bool
-	LatestAgentMessages       []string
-	LatestAgentMessageEntries []AgentMessageEntry
-	LatestProgressFP          string
-	LatestProgressText        string
-	LatestUserMessageID       string
-	LatestUserMessageText     string
-	LatestUserMessageFP       string
-	LatestFinalFP             string
-	LatestFinalText           string
-	LatestToolID              string
-	LatestToolKind            string
-	LatestToolLabel           string
-	LatestToolStatus          string
-	LatestToolOutput          string
-	LatestToolFP              string
-	LatestToolLiveCurrent     bool
-	LatestToolStartedAt       string
-	LatestToolUpdatedAt       string
-	PlanPrompt                *model.PlanPrompt
-	DetailItems               []model.DetailItem
+	Thread                     model.Thread
+	LatestTurnID               string
+	LatestTurnStatus           string
+	LatestTurnStartedAt        string
+	LatestTurnUpdatedAt        string
+	WaitingOnApproval          bool
+	WaitingOnReply             bool
+	LatestAgentMessages        []string
+	LatestAgentMessageEntries  []AgentMessageEntry
+	LatestProgressFP           string
+	LatestProgressText         string
+	LatestUserMessageID        string
+	LatestUserMessageText      string
+	LatestUserMessageImagePath string
+	LatestUserMessageFP        string
+	LatestFinalFP              string
+	LatestFinalText            string
+	LatestToolID               string
+	LatestToolKind             string
+	LatestToolLabel            string
+	LatestToolStatus           string
+	LatestToolOutput           string
+	LatestToolFP               string
+	LatestToolLiveCurrent      bool
+	LatestToolStartedAt        string
+	LatestToolUpdatedAt        string
+	PlanPrompt                 *model.PlanPrompt
+	DetailItems                []model.DetailItem
 }
 
 type AgentMessageEntry struct {
@@ -71,10 +72,11 @@ func ThreadFromPayload(payload map[string]any) model.Thread {
 	id := stringValue(threadPayload["id"], stringValue(threadPayload["threadId"], ""))
 	cwd := stringValue(threadPayload["cwd"], "")
 	project, directory := model.ProjectNameFromCWD(cwd)
-	title := stringValue(threadPayload["name"], stringValue(threadPayload["title"], id))
+	title := stringValue(threadPayload["name"], stringValue(threadPayload["title"], ""))
 	preview := stringValue(threadPayload["preview"], "")
 	status := statusText(threadPayload["status"])
 	preferredModel := stringValue(threadPayload["model"], stringValue(payload["model"], ""))
+	archived := boolValue(threadPayload["archived"]) || boolValue(threadPayload["isArchived"]) || boolValue(threadPayload["deleted"]) || boolValue(threadPayload["isDeleted"])
 	raw, _ := json.Marshal(threadPayload)
 	updatedAt := payloadActivityAt(threadPayload)
 	if nestedThread {
@@ -105,7 +107,7 @@ func ThreadFromPayload(payload map[string]any) model.Thread {
 		LastPreview:    preview,
 		ActiveTurnID:   activeTurnID,
 		PreferredModel: preferredModel,
-		Archived:       false,
+		Archived:       archived,
 		Raw:            raw,
 	}
 }
@@ -146,9 +148,10 @@ func SnapshotFromThreadRead(result map[string]any) ThreadReadSnapshot {
 	snapshot.LatestAgentMessageEntries = collectAgentMessageEntriesFromItems(items, 3)
 	snapshot.DetailItems = collectDetailItemsFromItems(items, snapshot.LatestTurnStatus)
 	snapshot.PlanPrompt = syntheticPlanPrompt(snapshot.Thread, snapshot.LatestTurnID, items, snapshot.WaitingOnReply)
-	userID, userText, userFP := latestUserMessage(items)
+	userID, userText, userImagePath, userFP := latestUserMessage(items)
 	snapshot.LatestUserMessageID = userID
 	snapshot.LatestUserMessageText = userText
+	snapshot.LatestUserMessageImagePath = userImagePath
 	snapshot.LatestUserMessageFP = userFP
 	if userText != "" && shouldUseLatestUserPreview(snapshot.Thread.LastPreview, threadUpdatedAt, latestTurnUpdatedAt) {
 		snapshot.Thread.LastPreview = userText
@@ -887,7 +890,7 @@ func latestFinalAgentMessage(items []any) (string, string) {
 	return "", ""
 }
 
-func latestUserMessage(items []any) (string, string, string) {
+func latestUserMessage(items []any) (string, string, string, string) {
 	for itemIndex := len(items) - 1; itemIndex >= 0; itemIndex-- {
 		item, _ := items[itemIndex].(map[string]any)
 		if strings.TrimSpace(stringValue(item["type"], "")) != "userMessage" {
@@ -898,9 +901,13 @@ func latestUserMessage(items []any) (string, string, string) {
 			continue
 		}
 		id := stringValue(item["id"], "")
-		return id, text, fingerprint("userMessage", id, text)
+		imagePath := userMessageImagePath(item)
+		if imagePath != "" {
+			return id, text, imagePath, fingerprint("userMessage", id, text, imagePath)
+		}
+		return id, text, "", fingerprint("userMessage", id, text)
 	}
-	return "", "", ""
+	return "", "", "", ""
 }
 
 func collectDetailItemsFromItems(items []any, turnStatus string) []model.DetailItem {
@@ -1268,12 +1275,98 @@ func userMessageText(item map[string]any) string {
 		if part == nil {
 			continue
 		}
-		text := strings.TrimSpace(stringValue(part["text"], ""))
-		if text != "" {
+		if text := strings.TrimSpace(stringValue(part["text"], "")); text != "" {
+			if path := extractImagePathFromText(text); path != "" {
+				parts = append(parts, "[Image: "+path+"]")
+				continue
+			}
+			parts = append(parts, text)
+			continue
+		}
+		if text := userMessageMediaText(part); text != "" {
 			parts = append(parts, text)
 		}
 	}
 	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func userMessageMediaText(part map[string]any) string {
+	itemType := strings.TrimSpace(stringValue(part["type"], ""))
+	path := firstNonEmptyUserMessageString(
+		extractImagePathFromText(stringValue(part["text"], "")),
+		stringValue(part["path"], ""),
+		stringValue(part["file_path"], ""),
+		stringValue(part["filePath"], ""),
+		stringValue(part["image_path"], ""),
+		stringValue(part["imagePath"], ""),
+	)
+	switch itemType {
+	case "input_image", "image", "local_image":
+		if path != "" {
+			return "[Image: " + path + "]"
+		}
+		return "[Image]"
+	default:
+		if path != "" {
+			return "[Image: " + path + "]"
+		}
+		return ""
+	}
+}
+
+func firstNonEmptyUserMessageString(values ...string) string {
+	for _, value := range values {
+		if text := strings.TrimSpace(value); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func userMessageImagePath(item map[string]any) string {
+	if path := userMessagePartImagePath(item); path != "" {
+		return path
+	}
+	content, _ := item["content"].([]any)
+	for _, raw := range content {
+		part, _ := raw.(map[string]any)
+		if part == nil {
+			continue
+		}
+		if path := userMessagePartImagePath(part); path != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+func userMessagePartImagePath(part map[string]any) string {
+	return firstNonEmptyUserMessageString(
+		extractImagePathFromText(stringValue(part["text"], "")),
+		stringValue(part["path"], ""),
+		stringValue(part["file_path"], ""),
+		stringValue(part["filePath"], ""),
+		stringValue(part["image_path"], ""),
+		stringValue(part["imagePath"], ""),
+	)
+}
+
+func extractImagePathFromText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	const marker = `path="`
+	start := strings.Index(text, marker)
+	if start < 0 {
+		return ""
+	}
+	start += len(marker)
+	end := strings.Index(text[start:], `"`)
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(text[start : start+end])
 }
 
 func stringSliceValue(value any) []string {

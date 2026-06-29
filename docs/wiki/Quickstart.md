@@ -10,13 +10,21 @@ and writes the returned app id and secret to the private local config. If you
 already have an enterprise self-built app, you can still configure its app id
 and secret manually.
 
-For input-box shortcuts in Feishu/Lark, enable the bot custom menu in the
-developer console and publish a new app version. The menu is a Feishu one-on-one
-bot chat feature. Prefer menu items that use "send text message" with existing
-commands such as `/help`, `/threads`, `/projects`, `/settings`, `/status`, and
-`/repair`. If a menu item uses "push event", subscribe to
-`application.bot.menu_v6` and set event keys such as `help`, `threads`,
-`projects`, `settings`, `status`, `observe_all`, `observe_off`, or `repair`.
+`ctr-go feishu setup` presets the created app name to `Codex`. For input-box
+shortcuts in Feishu/Lark, configure the bot custom menu in the developer
+console and publish a new app version. The menu is a one-on-one bot chat
+feature. Recommended menu items use "send text message":
+
+- 首页 -> `/workspace`
+- 最近会话 -> `/threads`
+- 项目 -> `/projects`
+- 新建 Chat -> `/newchat`
+- 设置 -> `/settings`
+- 修复 -> `/repair`
+
+If a menu item uses "push event", subscribe to `application.bot.menu_v6` and use
+event keys such as `workspace`, `threads`, `projects`, `newchat`, `settings`, or
+`repair`.
 
 ## 2. Download And Initialize
 
@@ -94,21 +102,20 @@ go run ./cmd/ctr-go doctor
 go run ./cmd/ctr-go daemon run
 ```
 
-## 3. Enable Observer
+## 3. Open The Workspace
 
 In Telegram or Feishu/Lark:
 
 ```text
-/start
-/observe all
+/workspace
 /threads
 /projects
 ```
 
-Start or continue a Codex thread from GUI/CLI. The bot should render the run in
-the selected adapter chat. Telegram only uses normal notifications for
-`New run`, `[Plan]`, and `[Final]`; Feishu/Lark delivery follows the platform's
-chat notification behavior.
+Open a Codex thread from the workspace or recent chats list, then reply in that
+thread's chat topic to continue remote control. Telegram only uses normal
+notifications for `New run`, `[Plan]`, and `[Final]`; Feishu/Lark delivery
+follows the platform's chat notification behavior.
 
 Use `/plan` or `/reply --plan` for Plan Mode. If a thread remains in Plan Mode,
 press `Turn off Plan` on the Plan Final Card, or use `/stop <thread>`, then send
@@ -122,6 +129,4 @@ project must already exist in the cached Codex thread list.
 Codex UI Chats stored under `Documents/Codex` appear under the `Chats` section
 instead of as normal projects. Use `Open Chats` for the full paginated list, or
 `/newchat <prompt>` to create a new Codex UI Chat under
-`Documents/Codex/<date>/<prompt-slug>`. Use `/newthread <prompt>` for a thread
-without choosing a project or creating a Chat folder; App Server may still
-attach the daemon default cwd.
+`Documents/Codex/<date>/<prompt-slug>`.

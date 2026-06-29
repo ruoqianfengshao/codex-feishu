@@ -99,8 +99,8 @@ func TestVisualHeaderShowsProjectSegmentForWorkspaceThread(t *testing.T) {
 	if !strings.Contains(header, "[codex-tg-contro...]") {
 		t.Fatalf("header = %q, want project segment", header)
 	}
-	if !strings.Contains(header, "[Implement Feishu bridge]") || !strings.Contains(header, "[T:thread]") || !strings.Contains(header, "[R:turn]") || !strings.Contains(header, "[Final]") {
-		t.Fatalf("header = %q, want title/thread/turn/kind segments", header)
+	if !strings.Contains(header, "[Implement Feishu bridge]") || strings.Contains(header, "[T:") || strings.Contains(header, "[R:") || !strings.Contains(header, "[Final]") {
+		t.Fatalf("header = %q, want title/kind segments without thread/turn ids", header)
 	}
 }
 
@@ -118,8 +118,8 @@ func TestVisualHeaderOmitsProjectSegmentForCodexChatThread(t *testing.T) {
 	if strings.Contains(header, "[iam]") {
 		t.Fatalf("header = %q, want no Codex chat project segment", header)
 	}
-	if !strings.Contains(header, "[019efe1a-c0e7-7722-adf5-f03...]") || !strings.Contains(header, "[T:thread]") || !strings.Contains(header, "[R:turn]") || !strings.Contains(header, "[Final]") {
-		t.Fatalf("header = %q, want title/thread/turn/kind segments", header)
+	if !strings.Contains(header, "[019efe1a-c0e7-7722-adf5-f03...]") || strings.Contains(header, "[T:") || strings.Contains(header, "[R:") || !strings.Contains(header, "[Final]") {
+		t.Fatalf("header = %q, want title/kind segments without thread/turn ids", header)
 	}
 }
 

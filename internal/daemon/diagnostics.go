@@ -298,8 +298,10 @@ func (s *Service) maybeLogTelegramOriginTerminal(ctx context.Context, snapshot a
 	if sourceMode != model.PanelSourceTelegramInput {
 		return
 	}
-	if decision, err := s.decideTelegramOriginEmptyInterruptedTerminal(ctx, &snapshot, time.Now().UTC()); err == nil && decision.Action == terminalGateDefer {
-		return
+	if decision, err := s.decideTelegramOriginEmptyInterruptedTerminal(ctx, &snapshot, time.Now().UTC()); err == nil {
+		if decision.Action == terminalGateDefer {
+			return
+		}
 	}
 	key := telegramOriginTerminalLoggedKey(threadID, turnID)
 	if key == "" {

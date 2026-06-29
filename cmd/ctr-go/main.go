@@ -244,7 +244,7 @@ func runFeishuSetupWithOptions(opts feishuSetupOptions, in io.Reader, out io.Wri
 	_, _ = fmt.Fprintln(out, "\nNext steps")
 	_, _ = fmt.Fprintln(out, "  ctr-go doctor")
 	_, _ = fmt.Fprintln(out, "  ctr-go daemon run")
-	_, _ = fmt.Fprintln(out, "  Configure bot menu shortcuts in the Feishu developer console if you want them.")
+	printFeishuWorkspaceNextSteps(out, "  ")
 	return nil
 }
 
@@ -594,7 +594,14 @@ func runInit(args []string, in io.Reader, out io.Writer) error {
 	_, _ = fmt.Fprintln(out, "Next steps:")
 	_, _ = fmt.Fprintln(out, "  ctr-go doctor")
 	_, _ = fmt.Fprintln(out, "  ctr-go daemon run")
+	printFeishuWorkspaceNextSteps(out, "  ")
 	return nil
+}
+
+func printFeishuWorkspaceNextSteps(out io.Writer, prefix string) {
+	_, _ = fmt.Fprintln(out, prefix+"Open Feishu/Lark and send /start to the Codex bot.")
+	_, _ = fmt.Fprintln(out, prefix+"Use the Codex bot DM as the daily workspace.")
+	_, _ = fmt.Fprintln(out, prefix+"Each Codex thread opens as a topic reply; reply in that topic to continue remote control.")
 }
 
 func promptRequired(reader *bufio.Reader, out io.Writer, label string) (string, error) {

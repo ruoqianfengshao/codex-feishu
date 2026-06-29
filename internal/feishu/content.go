@@ -22,6 +22,10 @@ type fileContent struct {
 	FileKey string `json:"file_key"`
 }
 
+type imageContent struct {
+	ImageKey string `json:"image_key"`
+}
+
 func encodeTextContent(text string) (string, error) {
 	data, err := json.Marshal(textContent{Text: text})
 	if err != nil {
@@ -47,6 +51,17 @@ func parseTextContent(messageType, raw string) string {
 		return strings.TrimSpace(raw)
 	}
 	return strings.TrimSpace(payload.Text)
+}
+
+func parseImageKeyContent(messageType, raw string) string {
+	if strings.TrimSpace(messageType) != "image" {
+		return ""
+	}
+	var payload imageContent
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.ImageKey)
 }
 
 func renderPlainText(rendered model.RenderedMessage) string {

@@ -83,16 +83,6 @@ func (s *Store) initialize(ctx context.Context) error {
 		updated_at TEXT NOT NULL
 	);
 
-	CREATE TABLE IF NOT EXISTS thread_bindings (
-		chat_key TEXT PRIMARY KEY,
-		chat_id INTEGER NOT NULL,
-		topic_id INTEGER NOT NULL,
-		thread_id TEXT NOT NULL,
-		mode TEXT NOT NULL,
-		created_at TEXT NOT NULL,
-		updated_at TEXT NOT NULL
-	);
-
 	CREATE TABLE IF NOT EXISTS observer_targets (
 		chat_key TEXT PRIMARY KEY,
 		chat_id INTEGER NOT NULL,
@@ -250,7 +240,6 @@ func (s *Store) initialize(ctx context.Context) error {
 
 	CREATE INDEX IF NOT EXISTS idx_threads_updated_at ON threads(updated_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_threads_project_updated_at ON threads(project_name, updated_at DESC);
-	CREATE INDEX IF NOT EXISTS idx_bindings_thread_id ON thread_bindings(thread_id);
 	CREATE INDEX IF NOT EXISTS idx_observer_targets_enabled_updated_at ON observer_targets(enabled, updated_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_delivery_queue_status_available_at ON delivery_queue(status, available_at);
 	CREATE INDEX IF NOT EXISTS idx_pending_approvals_status_updated_at ON pending_approvals(status, updated_at DESC);
@@ -261,6 +250,12 @@ func (s *Store) initialize(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_feishu_thread_topics_thread ON feishu_thread_topics(feishu_thread_id);
 	`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS thread_bindings`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM daemon_state WHERE key = 'ui.panel_mode'`); err != nil {
 		return err
 	}
 	if err := s.ensureColumn(ctx, "thread_panels", "source_mode", `ALTER TABLE thread_panels ADD COLUMN source_mode TEXT NOT NULL DEFAULT 'explicit'`); err != nil {
@@ -405,12 +400,13 @@ func (s *Store) ListThreads(ctx context.Context, limit int, search string) ([]mo
 }
 
 const visibleThreadPredicateSQL = `(
-	lower(trim(cast(coalesce(json_extract(raw_json, '$.ephemeral'), json_extract(raw_json, '$.thread.ephemeral'), '') as text))) NOT IN ('1', 'true', 'yes')
+	archived = 0
+	AND lower(trim(cast(coalesce(json_extract(raw_json, '$.ephemeral'), json_extract(raw_json, '$.thread.ephemeral'), '') as text))) NOT IN ('1', 'true', 'yes')
 	AND trim(cast(coalesce(json_extract(raw_json, '$.source.subAgent'), json_extract(raw_json, '$.thread.source.subAgent'), '') as text)) = ''
 )`
 
 func (s *Store) CountThreads(ctx context.Context) (int, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT count(*) FROM threads`)
+	row := s.db.QueryRowContext(ctx, `SELECT count(*) FROM threads WHERE `+visibleThreadPredicateSQL)
 	var count int
 	return count, row.Scan(&count)
 }
@@ -497,55 +493,6 @@ func (s *Store) MarkLiveEvent(ctx context.Context, threadID string, when model.T
 	}
 	snapshot.LastRichLiveEventAt = when
 	return s.UpsertSnapshot(ctx, threadID, *snapshot)
-}
-
-func (s *Store) SetBinding(ctx context.Context, chatID, topicID int64, threadID, mode string) error {
-	now := string(model.NowString())
-	chatKey := model.ChatKey(chatID, topicID)
-	_, err := s.db.ExecContext(ctx, `
-	INSERT INTO thread_bindings(chat_key, chat_id, topic_id, thread_id, mode, created_at, updated_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?)
-	ON CONFLICT(chat_key) DO UPDATE SET thread_id = excluded.thread_id, mode = excluded.mode, updated_at = excluded.updated_at`,
-		chatKey, chatID, topicID, threadID, mode, now, now,
-	)
-	return err
-}
-
-func (s *Store) ClearBinding(ctx context.Context, chatID, topicID int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM thread_bindings WHERE chat_key = ?`, model.ChatKey(chatID, topicID))
-	return err
-}
-
-func (s *Store) GetBinding(ctx context.Context, chatID, topicID int64) (*model.ThreadBinding, error) {
-	row := s.db.QueryRowContext(ctx, `
-	SELECT chat_key, chat_id, topic_id, thread_id, mode, created_at, updated_at
-	FROM thread_bindings WHERE chat_key = ?`, model.ChatKey(chatID, topicID))
-	var binding model.ThreadBinding
-	err := row.Scan(&binding.ChatKey, &binding.ChatID, &binding.TopicID, &binding.ThreadID, &binding.Mode, &binding.CreatedAt, &binding.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &binding, nil
-}
-
-func (s *Store) ListBoundThreadIDs(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT thread_id FROM thread_bindings ORDER BY updated_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []string{}
-	for rows.Next() {
-		var threadID string
-		if err := rows.Scan(&threadID); err != nil {
-			return nil, err
-		}
-		out = append(out, threadID)
-	}
-	return out, rows.Err()
 }
 
 func (s *Store) SetObserverTarget(ctx context.Context, chatID, topicID int64, enabled bool) error {
@@ -756,6 +703,41 @@ func (s *Store) GetFeishuThreadTopicByCodexThread(ctx context.Context, chatID in
 	SELECT chat_id, open_chat_id, codex_thread_id, root_message_id, root_open_message_id, coalesce(feishu_thread_id, ''), created_at, updated_at
 	FROM feishu_thread_topics WHERE chat_id = ? AND codex_thread_id = ?`, chatID, strings.TrimSpace(threadID))
 	return scanFeishuThreadTopic(row)
+}
+
+func (s *Store) GetAnyFeishuThreadTopicByCodexThread(ctx context.Context, threadID string) (*model.FeishuThreadTopic, error) {
+	row := s.db.QueryRowContext(ctx, `
+	SELECT chat_id, open_chat_id, codex_thread_id, root_message_id, root_open_message_id, coalesce(feishu_thread_id, ''), created_at, updated_at
+	FROM feishu_thread_topics WHERE codex_thread_id = ?
+	ORDER BY updated_at DESC, created_at DESC LIMIT 1`, strings.TrimSpace(threadID))
+	return scanFeishuThreadTopic(row)
+}
+
+func (s *Store) ListFeishuThreadTopics(ctx context.Context, limit int) ([]model.FeishuThreadTopic, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+	SELECT chat_id, open_chat_id, codex_thread_id, root_message_id, root_open_message_id, coalesce(feishu_thread_id, ''), created_at, updated_at
+	FROM feishu_thread_topics
+	ORDER BY updated_at DESC, created_at DESC
+	LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []model.FeishuThreadTopic{}
+	for rows.Next() {
+		var item model.FeishuThreadTopic
+		if err := rows.Scan(&item.ChatID, &item.OpenChatID, &item.ThreadID, &item.RootMessageID, &item.RootOpenMessageID, &item.FeishuThreadID, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *Store) GetFeishuThreadTopicByRootOpenMessageID(ctx context.Context, openChatID, rootOpenMessageID string) (*model.FeishuThreadTopic, error) {
@@ -1008,26 +990,14 @@ func (s *Store) ListState(ctx context.Context) (map[string]string, error) {
 }
 
 func (s *Store) GetChatContext(ctx context.Context, chatID, topicID int64) (*model.ChatContext, error) {
-	binding, err := s.GetBinding(ctx, chatID, topicID)
-	if err != nil {
-		return nil, err
-	}
 	globalTarget, _, err := s.GetGlobalObserverTarget(ctx)
 	if err != nil {
 		return nil, err
 	}
 	observerEnabled := globalTarget != nil && globalTarget.ChatID == chatID && globalTarget.TopicID == topicID
-	contextState := &model.ChatContext{Mode: "unbound", Binding: binding, ObserverEnabled: observerEnabled, ObserverTarget: globalTarget}
+	contextState := &model.ChatContext{Mode: "unbound", ObserverEnabled: observerEnabled, ObserverTarget: globalTarget}
 	if observerEnabled {
-		contextState.Mode = model.BindingModeObserver
-	}
-	if binding != nil {
-		contextState.Mode = binding.Mode
-		thread, err := s.GetThread(ctx, binding.ThreadID)
-		if err != nil {
-			return nil, err
-		}
-		contextState.Thread = thread
+		contextState.Mode = "observer"
 	}
 	return contextState, nil
 }

@@ -19,15 +19,12 @@ import (
 	"github.com/mideco-tech/codex-tg/internal/model"
 )
 
-func TestResolveRoutePrecedenceExplicitThenReplyThenBinding(t *testing.T) {
+func TestResolveRoutePrecedenceExplicitThenReplyThenNone(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
 	ctx := context.Background()
 
-	if err := service.store.SetBinding(ctx, 123456789, 0, "binding-thread", model.BindingModeBound); err != nil {
-		t.Fatalf("SetBinding failed: %v", err)
-	}
 	if err := service.store.PutMessageRoute(ctx, model.MessageRoute{
 		ChatID:    123456789,
 		TopicID:   0,
@@ -58,24 +55,21 @@ func TestResolveRoutePrecedenceExplicitThenReplyThenBinding(t *testing.T) {
 		t.Fatalf("reply route turn/request = %#v, want reply-turn without request", reply)
 	}
 
-	binding, err := service.resolveRoute(ctx, 123456789, 0, "", 0)
+	none, err := service.resolveRoute(ctx, 123456789, 0, "", 0)
 	if err != nil {
-		t.Fatalf("resolveRoute(binding) failed: %v", err)
+		t.Fatalf("resolveRoute(none) failed: %v", err)
 	}
-	if binding.ThreadID != "binding-thread" || binding.Source != model.RouteSourceBinding {
-		t.Fatalf("binding route = %#v, want binding-thread / binding", binding)
+	if none.ThreadID != "" || none.Source != model.RouteSourceNone {
+		t.Fatalf("none route = %#v, want no route", none)
 	}
 }
 
-func TestResolveRouteFromFeishuPlainTextPrefersLatestCurrentPanelOverBinding(t *testing.T) {
+func TestResolveRouteFromFeishuPlainTextUsesLatestCurrentPanelOnly(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
 	ctx := context.Background()
 
-	if err := service.store.SetBinding(ctx, 123456789, 0, "binding-thread", model.BindingModeBound); err != nil {
-		t.Fatalf("SetBinding failed: %v", err)
-	}
 	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
 		ChatID:        123456789,
 		TopicID:       0,
@@ -100,8 +94,8 @@ func TestResolveRouteFromFeishuPlainTextPrefersLatestCurrentPanelOverBinding(t *
 	if err != nil {
 		t.Fatalf("resolveRouteFromSource(telegram) failed: %v", err)
 	}
-	if telegram.ThreadID != "binding-thread" || telegram.Source != model.RouteSourceBinding {
-		t.Fatalf("telegram route = %#v, want binding-thread / binding", telegram)
+	if telegram.ThreadID != "" || telegram.Source != model.RouteSourceNone {
+		t.Fatalf("telegram route = %#v, want no route", telegram)
 	}
 }
 
@@ -243,7 +237,7 @@ func TestCurrentBackgroundTargetDefaultsMovesAndDisables(t *testing.T) {
 	}
 }
 
-func TestObserveCommandsMoveAndDisableGlobalTarget(t *testing.T) {
+func TestObserveCommandIsRemoved(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -256,72 +250,16 @@ func TestObserveCommandsMoveAndDisableGlobalTarget(t *testing.T) {
 	if response == nil {
 		t.Fatal("handleCommand(/observe all) returned nil response")
 	}
+	if !strings.Contains(response.Text, "Global observer has been removed") {
+		t.Fatalf("response = %#v, want removed message", response)
+	}
 
 	target, configured, err := service.store.GetGlobalObserverTarget(ctx)
 	if err != nil {
 		t.Fatalf("GetGlobalObserverTarget(after /observe all) failed: %v", err)
 	}
-	if !configured || target == nil {
-		t.Fatalf("global target after /observe all = %#v configured=%t, want configured target", target, configured)
-	}
-	if target.ChatID != 42 || target.TopicID != 9 {
-		t.Fatalf("global target after /observe all = %#v, want 42:9", target)
-	}
-	sinceUnix, ok, err := service.store.GetGlobalObserverSinceUnix(ctx)
-	if err != nil {
-		t.Fatalf("GetGlobalObserverSinceUnix(after /observe all) failed: %v", err)
-	}
-	if !ok || sinceUnix <= 0 {
-		t.Fatalf("GetGlobalObserverSinceUnix(after /observe all) = %d ok=%t, want positive value", sinceUnix, ok)
-	}
-
-	response, err = service.handleCommand(ctx, 42, 9, "/observe off", 0)
-	if err != nil {
-		t.Fatalf("handleCommand(/observe off) failed: %v", err)
-	}
-	if response == nil {
-		t.Fatal("handleCommand(/observe off) returned nil response")
-	}
-
-	target, configured, err = service.store.GetGlobalObserverTarget(ctx)
-	if err != nil {
-		t.Fatalf("GetGlobalObserverTarget(after /observe off) failed: %v", err)
-	}
-	if !configured {
-		t.Fatal("GetGlobalObserverTarget(after /observe off) should remain configured")
-	}
-	if target != nil {
-		t.Fatalf("global target after /observe off = %#v, want nil", target)
-	}
-}
-
-func TestBindingAndGlobalObserverCanCoexistAtServiceLevel(t *testing.T) {
-	t.Parallel()
-
-	service := newTestService(t)
-	ctx := context.Background()
-
-	if err := service.store.SetGlobalObserverTarget(ctx, 123456789, 0, true); err != nil {
-		t.Fatalf("SetGlobalObserverTarget failed: %v", err)
-	}
-	if err := service.store.SetBinding(ctx, 123456789, 0, "thread-1", model.BindingModeBound); err != nil {
-		t.Fatalf("SetBinding failed: %v", err)
-	}
-
-	target, configured, err := service.store.GetGlobalObserverTarget(ctx)
-	if err != nil {
-		t.Fatalf("GetGlobalObserverTarget failed: %v", err)
-	}
-	if !configured || target == nil || target.ChatID != 123456789 {
-		t.Fatalf("global target = %#v configured=%t, want enabled target for bound chat", target, configured)
-	}
-
-	binding, err := service.store.GetBinding(ctx, 123456789, 0)
-	if err != nil {
-		t.Fatalf("GetBinding failed: %v", err)
-	}
-	if binding == nil || binding.ThreadID != "thread-1" {
-		t.Fatalf("binding = %#v, want thread-1", binding)
+	if configured || target != nil {
+		t.Fatalf("global target after removed /observe all = %#v configured=%t, want none", target, configured)
 	}
 }
 
@@ -391,7 +329,7 @@ func TestTrackedThreadsSkipsIdleRecentHistoryWithoutBindingsOrPanels(t *testing.
 		Title:        "Active now",
 		ProjectName:  "Codex",
 		UpdatedAt:    now,
-		Status:       "idle",
+		Status:       "inProgress",
 		ActiveTurnID: "turn-1",
 	}
 	if err := service.store.UpsertThread(ctx, idle); err != nil {
@@ -419,6 +357,7 @@ func TestThreadsCommandHidesInternalSubAgentThreads(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
+	service.now = func() time.Time { return time.Unix(70, 0).UTC() }
 	ctx := context.Background()
 	visible := model.Thread{
 		ID:            "visible-thread",
@@ -426,6 +365,7 @@ func TestThreadsCommandHidesInternalSubAgentThreads(t *testing.T) {
 		ProjectName:   "codex-tg",
 		DirectoryName: "codex-tg",
 		UpdatedAt:     10,
+		Status:        "idle",
 		LastPreview:   "normal user request",
 		Raw:           json.RawMessage(`{"id":"visible-thread","preview":"normal user request"}`),
 	}
@@ -437,34 +377,343 @@ func TestThreadsCommandHidesInternalSubAgentThreads(t *testing.T) {
 		UpdatedAt:     20,
 		Raw:           json.RawMessage(`{"thread":{"id":"01900000-0000-7000-8000-000000000014","ephemeral":true,"source":{"subAgent":"memory_consolidation"}}}`),
 	}
+	archived := model.Thread{
+		ID:            "archived-thread",
+		Title:         "Archived work",
+		ProjectName:   "archive",
+		DirectoryName: "archive",
+		UpdatedAt:     30,
+		Archived:      true,
+		Raw:           json.RawMessage(`{"id":"archived-thread"}`),
+	}
+	notLoadedIDTitle := model.Thread{
+		ID:            "019efe1a-c0e7-7722-adf5-f036e91d7ec1",
+		Title:         "019efe1a-c0e7-7722-adf5-f036e91d7ec1",
+		ProjectName:   "iam",
+		DirectoryName: "iam",
+		UpdatedAt:     60,
+		Status:        "notLoaded",
+		Raw:           json.RawMessage(`{"id":"019efe1a-c0e7-7722-adf5-f036e91d7ec1","name":null}`),
+	}
 	if err := service.store.UpsertThread(ctx, visible); err != nil {
 		t.Fatalf("UpsertThread(visible) failed: %v", err)
 	}
 	if err := service.store.UpsertThread(ctx, internal); err != nil {
 		t.Fatalf("UpsertThread(internal) failed: %v", err)
 	}
+	if err := service.store.UpsertThread(ctx, archived); err != nil {
+		t.Fatalf("UpsertThread(archived) failed: %v", err)
+	}
+	if err := service.store.UpsertThread(ctx, notLoadedIDTitle); err != nil {
+		t.Fatalf("UpsertThread(notLoadedIDTitle) failed: %v", err)
+	}
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/threads 8", 0)
+	response, err := service.handleCommand(ctx, 123456789, 0, "/chats 8", 0)
 	if err != nil {
-		t.Fatalf("handleCommand(/threads) failed: %v", err)
+		t.Fatalf("handleCommand(/chats) failed: %v", err)
 	}
 	if response == nil {
-		t.Fatal("handleCommand(/threads) returned nil response")
+		t.Fatal("handleCommand(/chats) returned nil response")
 	}
 	if !strings.Contains(response.Text, "Visible work") {
-		t.Fatalf("/threads text missing visible thread:\n%s", response.Text)
+		t.Fatalf("/chats text missing visible thread:\n%s", response.Text)
 	}
 	if strings.Contains(response.Text, "memories") || strings.Contains(response.Text, internal.ID) {
-		t.Fatalf("/threads text contains internal thread:\n%s", response.Text)
+		t.Fatalf("/chats text contains internal thread:\n%s", response.Text)
 	}
-	if len(response.Buttons) != 1 || len(response.Buttons[0]) != 1 || response.Buttons[0][0].Text != "Open 1" {
-		t.Fatalf("/threads buttons = %#v, want one Open 1 button", response.Buttons)
+	if strings.Contains(response.Text, "Archived work") || strings.Contains(response.Text, archived.ID) {
+		t.Fatalf("/chats text contains archived thread:\n%s", response.Text)
 	}
-	if len(response.Sections) != 2 {
-		t.Fatalf("/threads sections = %#v, want header plus visible thread", response.Sections)
+	if strings.Contains(response.Text, "iam") || strings.Contains(response.Text, notLoadedIDTitle.ID) {
+		t.Fatalf("/chats text contains unavailable id-title notLoaded thread:\n%s", response.Text)
 	}
-	if response.Sections[1].Text == "" || len(response.Sections[1].Buttons) != 1 || len(response.Sections[1].Buttons[0]) != 1 || response.Sections[1].Buttons[0][0].Text != "Open 1" {
-		t.Fatalf("/threads section = %#v, want visible thread text with Open 1 button", response.Sections[1])
+	if !strings.Contains(response.Text, "codex-tg\nVisible work    1 分钟前") {
+		t.Fatalf("/chats text missing grouped visible thread:\n%s", response.Text)
+	}
+	if strings.Contains(response.Text, "All chats") {
+		t.Fatalf("/chats text contains removed heading:\n%s", response.Text)
+	}
+	if len(response.Buttons) != 1 || len(response.Buttons[0]) != 1 || response.Buttons[0][0].Text != "Open" {
+		t.Fatalf("/chats buttons = %#v, want one Open button", response.Buttons)
+	}
+	if len(response.Sections) != 1 {
+		t.Fatalf("/chats sections = %#v, want project section", response.Sections)
+	}
+	if response.Sections[0].Text != "codex-tg" {
+		t.Fatalf("/chats project section = %#v, want codex-tg", response.Sections[0])
+	}
+	if !response.Sections[0].Heading {
+		t.Fatalf("/chats project section = %#v, want heading section", response.Sections[0])
+	}
+	if len(response.Sections[0].Rows) != 1 || response.Sections[0].Rows[0].Title != "Visible work" || response.Sections[0].Rows[0].Trailing != "1 分钟前" || response.Sections[0].Rows[0].Button.Text != "Open" {
+		t.Fatalf("/chats project section = %#v, want visible thread row with Open button", response.Sections[0])
+	}
+}
+
+func TestThreadsCommandGroupsThreadsByProject(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.now = func() time.Time { return time.Unix(200, 0).UTC() }
+	ctx := context.Background()
+	threads := []model.Thread{
+		{
+			ID:          "project-a-new",
+			Title:       "A new",
+			ProjectName: "project-a",
+			UpdatedAt:   140,
+			Raw:         json.RawMessage(`{"id":"project-a-new"}`),
+		},
+		{
+			ID:          "temp-chat",
+			Title:       "Temporary chat",
+			CWD:         "/Users/example/Documents/Codex/2026-06-26/you",
+			ProjectName: "you",
+			UpdatedAt:   120,
+			Raw:         json.RawMessage(`{"id":"temp-chat"}`),
+		},
+		{
+			ID:          "project-a-old",
+			Title:       "A old",
+			ProjectName: "project-a",
+			UpdatedAt:   80,
+			Raw:         json.RawMessage(`{"id":"project-a-old"}`),
+		},
+		{
+			ID:          "project-b",
+			Title:       "B thread",
+			ProjectName: "project-b",
+			UpdatedAt:   60,
+			Raw:         json.RawMessage(`{"id":"project-b"}`),
+		},
+	}
+	for _, thread := range threads {
+		if err := service.store.UpsertThread(ctx, thread); err != nil {
+			t.Fatalf("UpsertThread(%s) failed: %v", thread.ID, err)
+		}
+	}
+
+	response, err := service.handleCommand(ctx, 123456789, 0, "/chats 8", 0)
+	if err != nil {
+		t.Fatalf("handleCommand(/chats) failed: %v", err)
+	}
+	if response == nil {
+		t.Fatal("handleCommand(/chats) returned nil response")
+	}
+	for _, needle := range []string{"project-a", "A new    1 分钟前", "A old    2 分钟前", "临时对话", "Temporary chat    1 分钟前", "project-b", "B thread    2 分钟前"} {
+		if !strings.Contains(response.Text, needle) {
+			t.Fatalf("/chats text missing %q:\n%s", needle, response.Text)
+		}
+	}
+	requireTextOrder(t, response.Text, "project-a", "A new")
+	requireTextOrder(t, response.Text, "A new", "A old")
+	requireTextOrder(t, response.Text, "project-a", "临时对话")
+	requireTextOrder(t, response.Text, "临时对话", "project-b")
+	if len(response.Sections) != 3 {
+		t.Fatalf("/chats sections = %#v, want three project sections", response.Sections)
+	}
+	if response.Sections[0].Divider || !response.Sections[1].Divider || !response.Sections[2].Divider {
+		t.Fatalf("/chats sections = %#v, want dividers before second and later projects", response.Sections)
+	}
+	if len(response.Buttons) != 4 {
+		t.Fatalf("/chats buttons = %#v, want one Open button per thread", response.Buttons)
+	}
+	for _, row := range response.Buttons {
+		if len(row) != 1 || row[0].Text != "Open" {
+			t.Fatalf("/chats button row = %#v, want single Open button", row)
+		}
+	}
+}
+
+func TestWorkspaceCommandReturnsDashboardCard(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "workspace-thread",
+		Title:       "Workspace task",
+		ProjectName: "Codex",
+		UpdatedAt:   time.Now().UTC().Unix(),
+		Raw:         json.RawMessage(`{"id":"workspace-thread"}`),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+
+	response, err := service.handleCommand(ctx, 123456789, 0, "/start", 0)
+	if err != nil {
+		t.Fatalf("handleCommand(/start) failed: %v", err)
+	}
+	if response == nil || !strings.Contains(response.Text, "Codex Workspace") || !strings.Contains(response.Text, "Cached threads: 1") {
+		t.Fatalf("/start response = %#v, want dashboard card", response)
+	}
+	var labels []string
+	for _, row := range response.Buttons {
+		for _, button := range row {
+			labels = append(labels, button.Text)
+		}
+	}
+	for _, want := range []string{"Recent chats", "Projects", "Status", "Settings"} {
+		if !containsString(labels, want) {
+			t.Fatalf("/start buttons = %#v, missing %q", labels, want)
+		}
+	}
+}
+
+func TestWorkspaceCommandUsesEnglishLanguagePreference(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	if err := service.store.SetState(ctx, botLanguageStateKey, botLanguageEnglish); err != nil {
+		t.Fatalf("SetState(language) failed: %v", err)
+	}
+	response, err := service.handleCommand(ctx, 123456789, 0, "/start", 0)
+	if err != nil {
+		t.Fatalf("handleCommand(/start) failed: %v", err)
+	}
+	if response == nil || !strings.Contains(response.Text, "Codex Workspace") || !strings.Contains(response.Text, "Cached threads: 0") {
+		t.Fatalf("/start response = %#v, want English dashboard", response)
+	}
+}
+
+func TestStatusCommandReturnsWorkspaceStatsCard(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	service.startedAt = time.Date(2026, time.June, 28, 9, 0, 0, 0, time.UTC)
+	service.now = func() time.Time {
+		return time.Date(2026, time.June, 28, 10, 2, 3, 0, time.UTC)
+	}
+	if err := service.store.SetState(ctx, botLanguageStateKey, botLanguageChinese); err != nil {
+		t.Fatalf("SetState(language) failed: %v", err)
+	}
+	if err := service.store.UpsertThread(ctx, model.Thread{
+		ID:          "status-thread",
+		Title:       "Status thread",
+		CWD:         "/Users/example/status-project",
+		ProjectName: "status-project",
+		UpdatedAt:   service.now().Unix(),
+		Raw:         json.RawMessage(`{"id":"status-thread"}`),
+	}); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if err := service.store.UpsertThread(ctx, model.Thread{
+		ID:          "status-chat",
+		Title:       "Status chat",
+		CWD:         config.DefaultCodexChatsRoot() + "/status-chat",
+		ProjectName: "Chats",
+		UpdatedAt:   service.now().Unix() - 1,
+		Raw:         json.RawMessage(`{"id":"status-chat"}`),
+	}); err != nil {
+		t.Fatalf("UpsertThread(chat) failed: %v", err)
+	}
+	response, err := service.handleCommand(ctx, 123456789, 0, "/status", 0)
+	if err != nil {
+		t.Fatalf("handleCommand(/status) failed: %v", err)
+	}
+	if response == nil || response.Text != "Codex 状态总览" {
+		t.Fatalf("/status response = %#v, want status card response", response)
+	}
+	if got, want := sectionTitles(response.Sections), []string{"系统", "启动", "Codex", "会话", "飞书"}; !equalStrings(got, want) {
+		t.Fatalf("/status sections = %#v, want %#v", got, want)
+	}
+	if strings.Contains(response.Text, "Mode:") || strings.Contains(response.Text, "Thread ID:") || strings.Contains(response.Text, "status-thread") {
+		t.Fatalf("/status text = %q, should not include current chat context", response.Text)
+	}
+	assertSectionRows(t, response.Sections[0], map[string]string{
+		"核心":   "未就绪",
+		"运行时长": "1h 02m",
+	})
+	assertSectionRows(t, response.Sections[1], map[string]string{
+		"启动时间": "2026-06-28 09:00:00",
+	})
+	assertSectionRows(t, response.Sections[3], map[string]string{
+		"缓存会话": "2",
+		"项目数量": "1",
+		"临时会话": "1",
+		"跟踪会话": "2",
+		"发送队列": "0",
+	})
+	assertSectionRows(t, response.Sections[4], map[string]string{
+		"语言":   "中文",
+		"话题模式": "单聊话题",
+	})
+	if got := len(response.Sections[4].Rows); got != 2 {
+		t.Fatalf("Feishu rows = %d, want language/topic only", got)
+	}
+	if token := callbackTokenForButton(response.Sections[4].Buttons, "English"); token == "" {
+		t.Fatalf("Feishu buttons = %#v, want English language switch", response.Sections[4].Buttons)
+	}
+	token := callbackTokenForButton(response.Sections[4].Buttons, "English")
+	switched, err := service.HandleCallback(ctx, 123456789, 0, 902, 123456789, token)
+	if err != nil {
+		t.Fatalf("HandleCallback(status language switch) failed: %v", err)
+	}
+	if switched == nil || switched.Text != "Codex Remote Status" || switched.CallbackText != "Language saved." {
+		t.Fatalf("status language switch response = %#v, want refreshed English status", switched)
+	}
+	assertSectionRows(t, switched.Sections[4], map[string]string{
+		"Language":   "English",
+		"Topic mode": "P2P topic",
+	})
+}
+
+func TestPlainTextWithoutRouteReturnsWorkspaceHint(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	response, err := service.handlePlainText(ctx, 123456789, 0, "随便问一句", 0)
+	if err != nil {
+		t.Fatalf("handlePlainText failed: %v", err)
+	}
+	if response == nil || !strings.Contains(response.Text, "No Codex thread is selected yet") {
+		t.Fatalf("response = %#v, want Chinese workspace routing hint", response)
+	}
+	var labels []string
+	for _, row := range response.Buttons {
+		for _, button := range row {
+			labels = append(labels, button.Text)
+		}
+	}
+	for _, want := range []string{"Workspace", "Recent chats", "Projects"} {
+		if !containsString(labels, want) {
+			t.Fatalf("hint buttons = %#v, missing %q", labels, want)
+		}
+	}
+	token := callbackTokenForButton(response.Buttons, "Workspace")
+	if token == "" {
+		t.Fatalf("hint buttons = %#v, want workspace token", response.Buttons)
+	}
+	callbackResponse, err := service.HandleCallback(ctx, 123456789, 0, 903, 123456789, token)
+	if err != nil {
+		t.Fatalf("HandleCallback(workspace) failed: %v", err)
+	}
+	if callbackResponse == nil || !strings.Contains(callbackResponse.Text, "Codex Workspace") {
+		t.Fatalf("callback response = %#v, want workspace overview", callbackResponse)
+	}
+}
+
+func TestPlainTextWithoutRouteUsesEnglishWorkspaceHint(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	if err := service.store.SetState(ctx, botLanguageStateKey, botLanguageEnglish); err != nil {
+		t.Fatalf("SetState(language) failed: %v", err)
+	}
+	response, err := service.handlePlainText(ctx, 123456789, 0, "hello", 0)
+	if err != nil {
+		t.Fatalf("handlePlainText failed: %v", err)
+	}
+	if response == nil || !strings.Contains(response.Text, "No Codex thread is selected yet") {
+		t.Fatalf("response = %#v, want English workspace routing hint", response)
+	}
+	if callbackTokenForButton(response.Buttons, "Workspace") == "" {
+		t.Fatalf("hint buttons = %#v, want Workspace", response.Buttons)
 	}
 }
 
@@ -509,15 +758,20 @@ func TestFeishuShowThreadCallbackReturnsVisibleOpenResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleCallbackFromSource(feishu) failed: %v", err)
 	}
-	if feishuResponse == nil || !strings.Contains(feishuResponse.Text, "已打开会话") || !strings.Contains(feishuResponse.Text, thread.ID) {
-		t.Fatalf("feishuResponse = %#v, want visible open response", feishuResponse)
+	if feishuResponse == nil || feishuResponse.CallbackText != "Opening topic..." || feishuResponse.ThreadID != thread.ID {
+		t.Fatalf("feishuResponse = %#v, want immediate opening ack", feishuResponse)
 	}
-	if sender.topic == nil || sender.topic.ThreadID != thread.ID || sender.topic.RootMessageID == 0 {
-		t.Fatalf("sender.topic = %#v, want Feishu topic for opened thread", sender.topic)
-	}
-	panel, err := service.store.GetCurrentThreadPanel(ctx, 123456789, 0, thread.ID)
-	if err != nil {
-		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
+	var panel *model.ThreadPanel
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		panel, err = service.store.GetCurrentThreadPanel(ctx, 123456789, 0, thread.ID)
+		if err != nil {
+			t.Fatalf("GetCurrentThreadPanel failed: %v", err)
+		}
+		if panel != nil && panel.SourceMode == model.PanelSourceFeishuInput {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if panel == nil || panel.SourceMode != model.PanelSourceFeishuInput {
 		t.Fatalf("panel = %#v, want feishu_input panel", panel)
@@ -571,13 +825,13 @@ func TestProjectsCommandShowsProjectButtonsGroupedByCWD(t *testing.T) {
 	if response == nil {
 		t.Fatal("handleCommand(/projects) returned nil response")
 	}
-	if !strings.Contains(response.Text, "/Users/example/work/a/codex-tg") || !strings.Contains(response.Text, "/Users/example/work/b/codex-tg") {
-		t.Fatalf("/projects text missing grouped cwd entries:\n%s", response.Text)
+	if !strings.Contains(response.Text, "codex-tg") || len(response.Sections) == 0 || len(response.Sections[0].Rows) != 2 {
+		t.Fatalf("/projects response missing grouped project rows: text=\n%s\nsections=%#v", response.Text, response.Sections)
 	}
 	if strings.Contains(response.Text, "key:") {
 		t.Fatalf("/projects text renders internal project key:\n%s", response.Text)
 	}
-	if !strings.Contains(response.Text, "last thread: A two") || !strings.Contains(response.Text, "last thread: B one") {
+	if !strings.Contains(response.Text, "A two") || !strings.Contains(response.Text, "B one") {
 		t.Fatalf("/projects text missing latest thread labels:\n%s", response.Text)
 	}
 	if got := countButtonsContaining(response.Buttons, "codex-tg"); got != 2 {
@@ -674,10 +928,13 @@ func TestProjectsCommandShowsChatsSectionAndSortsByRecency(t *testing.T) {
 	if response == nil {
 		t.Fatal("handleCommand(/projects) returned nil response")
 	}
-	for _, needle := range []string{"Projects", "Project page 1/1", "Latest Chats: showing 3 of 3", "Open Chats", "Newer Chat", "Windows Chat", "Older Chat"} {
+	for _, needle := range []string{"Projects 1/1", "Projects 2/2", "Chats 3/3", "Newer Chat", "Windows Chat", "Older Chat"} {
 		if !strings.Contains(response.Text, needle) {
 			t.Fatalf("/projects text missing %q:\n%s", needle, response.Text)
 		}
+	}
+	if len(response.Sections) != 2 {
+		t.Fatalf("/projects sections = %#v, want projects and chats sections", response.Sections)
 	}
 	requireTextOrder(t, response.Text, "new-project", "old-project")
 	requireTextOrder(t, response.Text, "Newer Chat", "Windows Chat")
@@ -688,7 +945,7 @@ func TestProjectsCommandShowsChatsSectionAndSortsByRecency(t *testing.T) {
 	if strings.Contains(response.Text, "key:") {
 		t.Fatalf("/projects text renders internal project key:\n%s", response.Text)
 	}
-	if !strings.Contains(response.Text, "last thread: New project") || !strings.Contains(response.Text, "last thread: Old project") {
+	if !strings.Contains(response.Text, "New project") || !strings.Contains(response.Text, "Old project") {
 		t.Fatalf("/projects text missing latest project thread labels:\n%s", response.Text)
 	}
 	for _, label := range []string{"1. new-project", "2. old-project", "Chat 1. Newer Chat", "Chat 2. Windows Chat", "Chat 3. Older Chat"} {
@@ -741,10 +998,10 @@ func TestProjectsPaginationUsesPreviewLimitsAndKeepsLatestChats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleCommand(/projects) failed: %v", err)
 	}
-	if !strings.Contains(page1.Text, "Project page 1/3") || !strings.Contains(page1.Text, "project-5") || !strings.Contains(page1.Text, "project-4") || strings.Contains(page1.Text, "project-3") {
+	if !strings.Contains(page1.Text, "Projects 1/3") || !strings.Contains(page1.Text, "project-5") || !strings.Contains(page1.Text, "project-4") || strings.Contains(page1.Text, "project-3") {
 		t.Fatalf("page1 text =\n%s\nwant first two recent projects only", page1.Text)
 	}
-	if !strings.Contains(page1.Text, "Latest Chats: showing 1 of 2") || !strings.Contains(page1.Text, "Chat 2") || strings.Contains(page1.Text, "Chat 1") {
+	if !strings.Contains(page1.Text, "Chats 1/2") || !strings.Contains(page1.Text, "Chat 2") || strings.Contains(page1.Text, "Chat 1") {
 		t.Fatalf("page1 text =\n%s\nwant latest one chat preview", page1.Text)
 	}
 	for _, label := range []string{"1. project-5", "2. project-4", "Chat 1. Chat 2"} {
@@ -760,7 +1017,7 @@ func TestProjectsPaginationUsesPreviewLimitsAndKeepsLatestChats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleCallback(next projects page) failed: %v", err)
 	}
-	if !strings.Contains(page2.Text, "Project page 2/3") || !strings.Contains(page2.Text, "project-3") || !strings.Contains(page2.Text, "project-2") || strings.Contains(page2.Text, "project-5") {
+	if !strings.Contains(page2.Text, "Projects 2/3") || !strings.Contains(page2.Text, "project-3") || !strings.Contains(page2.Text, "project-2") || strings.Contains(page2.Text, "project-5") {
 		t.Fatalf("page2 text =\n%s\nwant second page projects only", page2.Text)
 	}
 	if !strings.Contains(page2.Text, "Chat 2") || strings.Contains(page2.Text, "Chat 1") {
@@ -809,7 +1066,7 @@ func TestOpenChatsPaginatesAndChatSelectionBindsThread(t *testing.T) {
 	if !strings.Contains(chats.Text, "Chats") || !strings.Contains(chats.Text, "Page 1/2") || !strings.Contains(chats.Text, "Chat 5") || strings.Contains(chats.Text, "Chat 2") {
 		t.Fatalf("chats text =\n%s\nwant first page of recent chats", chats.Text)
 	}
-	if strings.Contains(chats.Text, "New thread") || callbackTokenForButton(chats.Buttons, "New thread") != "" {
+	if strings.Contains(chats.Text, "新线程") || callbackTokenForButton(chats.Buttons, "新线程") != "" {
 		t.Fatalf("chats response = %#v, want no New thread action", chats)
 	}
 	chatToken := callbackTokenForButton(chats.Buttons, "Chat 1. Chat 5")
@@ -822,13 +1079,6 @@ func TestOpenChatsPaginatesAndChatSelectionBindsThread(t *testing.T) {
 	}
 	if opened == nil || opened.ThreadID != "chat-5-thread" {
 		t.Fatalf("opened = %#v, want newest chat thread", opened)
-	}
-	binding, err := service.store.GetBinding(ctx, 123456789, 0)
-	if err != nil {
-		t.Fatalf("GetBinding failed: %v", err)
-	}
-	if binding == nil || binding.ThreadID != "chat-5-thread" {
-		t.Fatalf("binding = %#v, want selected chat binding", binding)
 	}
 }
 
@@ -852,7 +1102,7 @@ func TestProjectsCloseDeletesMenuMessage(t *testing.T) {
 	}
 }
 
-func TestProjectOpenShowsNewThreadMenu(t *testing.T) {
+func TestProjectOpenShowsInteractiveThreadList(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -869,6 +1119,18 @@ func TestProjectOpenShowsNewThreadMenu(t *testing.T) {
 	if err := service.store.UpsertThread(ctx, thread); err != nil {
 		t.Fatalf("UpsertThread failed: %v", err)
 	}
+	if err := service.store.UpsertThread(ctx, model.Thread{
+		ID:            "archived-project-thread",
+		Title:         "Archived thread",
+		CWD:           "/Users/example/project",
+		ProjectName:   "project",
+		DirectoryName: "project",
+		UpdatedAt:     9,
+		Archived:      true,
+		Raw:           json.RawMessage(`{"id":"archived-project-thread"}`),
+	}); err != nil {
+		t.Fatalf("UpsertThread(archived) failed: %v", err)
+	}
 
 	projects, err := service.handleCommand(ctx, 123456789, 0, "/projects", 0)
 	if err != nil {
@@ -883,17 +1145,25 @@ func TestProjectOpenShowsNewThreadMenu(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleCallback(project_open) failed: %v", err)
 	}
-	if menu == nil || !strings.Contains(menu.Text, "Project") || !strings.Contains(menu.Text, "/Users/example/project") {
-		t.Fatalf("project menu = %#v, want project cwd", menu)
+	if menu == nil || !strings.Contains(menu.Text, "Threads for project") {
+		t.Fatalf("project threads = %#v, want project thread list", menu)
 	}
-	for _, label := range []string{"New thread", "Threads", "Bind latest"} {
-		if callbackTokenForButton(menu.Buttons, label) == "" {
-			t.Fatalf("project menu buttons = %#v, want %q", menu.Buttons, label)
-		}
+	if strings.Contains(menu.Text, "Archived thread") {
+		t.Fatalf("project threads text = %q, want archived thread hidden", menu.Text)
+	}
+	if len(menu.Sections) != 1 || menu.Sections[0].Text != "project" || len(menu.Sections[0].Rows) != 1 {
+		t.Fatalf("project sections = %#v, want one project section with one visible row", menu.Sections)
+	}
+	row := menu.Sections[0].Rows[0]
+	if row.Title != "Menu thread" || row.Trailing == "" || row.Button.Text != "Open" || row.Button.CallbackData == "" {
+		t.Fatalf("project row = %#v, want clickable visible thread row", row)
+	}
+	if callbackTokenForButton(menu.Buttons, "New thread") != "" || callbackTokenForButton(menu.Buttons, "Threads") != "" {
+		t.Fatalf("project buttons = %#v, want no intermediate project menu actions", menu.Buttons)
 	}
 }
 
-func TestProjectNewThreadArmsThenPlainTextCreatesThread(t *testing.T) {
+func TestProjectNewThreadArmsThenFirstPromptCreatesThreadAndFeishuTopic(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -913,14 +1183,14 @@ func TestProjectNewThreadArmsThenPlainTextCreatesThread(t *testing.T) {
 		t.Fatalf("UpsertThread(project) failed: %v", err)
 	}
 	stub := &stubSession{
-		threadStartResult: map[string]any{"thread": map[string]any{"id": "new-thread-id", "cwd": "/Users/example/project", "title": "New thread"}},
+		threadStartResult: map[string]any{"thread": map[string]any{"id": "new-thread-id", "cwd": "/Users/example/project", "title": "新线程"}},
 		threadReads: map[string]map[string]any{
 			"new-thread-id": {
 				"thread": map[string]any{
 					"id":     "new-thread-id",
-					"title":  "New thread",
 					"cwd":    "/Users/example/project",
-					"status": "active",
+					"title":  "Real title from first prompt",
+					"status": "inProgress",
 					"turns": []any{map[string]any{
 						"id":     "started-turn",
 						"status": "inProgress",
@@ -938,36 +1208,38 @@ func TestProjectNewThreadArmsThenPlainTextCreatesThread(t *testing.T) {
 	if armToken == "" {
 		t.Fatalf("project menu buttons = %#v, want New thread", menu.Buttons)
 	}
-	armed, err := service.HandleCallback(ctx, 123456789, 0, 42, 123456789, armToken)
+	armed, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, armToken, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(New thread) failed: %v", err)
 	}
 	if armed == nil || !strings.Contains(armed.Text, "Send the first prompt") {
 		t.Fatalf("armed response = %#v, want prompt instruction", armed)
 	}
+	if len(stub.threadStartCalls) != 0 || len(stub.turnStartCalls) != 0 {
+		t.Fatalf("calls after arm: threadStart=%#v turnStart=%#v, want none", stub.threadStartCalls, stub.turnStartCalls)
+	}
 
-	response, err := service.handlePlainText(ctx, 123456789, 0, "first prompt", 0)
+	response, err := service.handlePlainTextFromSource(ctx, 123456789, 0, "first prompt", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handlePlainText(first prompt) failed: %v", err)
 	}
 	if response == nil || response.ThreadID != "new-thread-id" || response.TurnID != "started-turn" {
 		t.Fatalf("response = %#v, want new thread/turn", response)
 	}
+	if !strings.Contains(response.Text, "Codex thread topic opened") {
+		t.Fatalf("response = %#v, want visible Feishu topic open message", response)
+	}
 	if len(stub.threadStartCalls) != 1 || stub.threadStartCalls[0] != "/Users/example/project" {
 		t.Fatalf("threadStartCalls = %#v, want project cwd", stub.threadStartCalls)
 	}
 	if len(stub.turnStartCalls) != 1 {
-		t.Fatalf("turnStartCalls = %#v, want one turn start", stub.turnStartCalls)
+		t.Fatalf("turnStartCalls = %#v, want first prompt after arm", stub.turnStartCalls)
 	}
 	if got := stub.turnStartCalls[0]; got.threadID != "new-thread-id" || got.message != "first prompt" || got.cwd != "/Users/example/project" {
 		t.Fatalf("turnStartCall = %#v, want new thread first prompt in project cwd", got)
 	}
-	binding, err := service.store.GetBinding(ctx, 123456789, 0)
-	if err != nil {
-		t.Fatalf("GetBinding failed: %v", err)
-	}
-	if binding == nil || binding.ThreadID != "new-thread-id" {
-		t.Fatalf("binding = %#v, want new thread binding", binding)
+	if len(sender.messages) == 0 || !strings.Contains(sender.messages[0].text, "Real title from first prompt") {
+		t.Fatalf("sender messages = %#v, want topic root created from refreshed title", sender.messages)
 	}
 }
 
@@ -992,9 +1264,12 @@ func TestProjectNewThreadRejectsThreadStartWithoutID(t *testing.T) {
 	service.liveConnected = true
 
 	menu := openOnlyProjectMenu(t, service, ctx)
-	_, err := service.HandleCallback(ctx, 123456789, 0, 42, 123456789, callbackTokenForButton(menu.Buttons, "New thread"))
+	armed, err := service.HandleCallback(ctx, 123456789, 0, 42, 123456789, callbackTokenForButton(menu.Buttons, "New thread"))
 	if err != nil {
 		t.Fatalf("HandleCallback(New thread) failed: %v", err)
+	}
+	if armed == nil || !strings.Contains(armed.Text, "Send the first prompt") {
+		t.Fatalf("armed response = %#v, want prompt instruction", armed)
 	}
 	response, err := service.handlePlainText(ctx, 123456789, 0, "first prompt", 0)
 	if err != nil {
@@ -1005,57 +1280,6 @@ func TestProjectNewThreadRejectsThreadStartWithoutID(t *testing.T) {
 	}
 	if len(stub.turnStartCalls) != 0 {
 		t.Fatalf("turnStartCalls = %#v, want no turn start without thread id", stub.turnStartCalls)
-	}
-}
-
-func TestProjectNewThreadTurnStartFailureSavesThread(t *testing.T) {
-	t.Parallel()
-
-	service := newTestService(t)
-	ctx := context.Background()
-	if err := service.store.UpsertThread(ctx, model.Thread{
-		ID:            "project-source-thread",
-		Title:         "Source",
-		CWD:           "/Users/example/project",
-		ProjectName:   "project",
-		DirectoryName: "project",
-		UpdatedAt:     10,
-		Raw:           json.RawMessage(`{"id":"project-source-thread"}`),
-	}); err != nil {
-		t.Fatalf("UpsertThread failed: %v", err)
-	}
-	stub := &stubSession{
-		threadStartResult: map[string]any{"thread": map[string]any{"id": "new-thread-id", "cwd": "/Users/example/project"}},
-		turnStartErr:      errors.New("turn start failed"),
-	}
-	service.live = stub
-	service.liveConnected = true
-
-	menu := openOnlyProjectMenu(t, service, ctx)
-	_, err := service.HandleCallback(ctx, 123456789, 0, 42, 123456789, callbackTokenForButton(menu.Buttons, "New thread"))
-	if err != nil {
-		t.Fatalf("HandleCallback(New thread) failed: %v", err)
-	}
-	response, err := service.handlePlainText(ctx, 123456789, 0, "first prompt", 0)
-	if err != nil {
-		t.Fatalf("handlePlainText failed: %v", err)
-	}
-	if response == nil || !strings.Contains(response.Text, "Created thread") || !strings.Contains(response.Text, "could not start first turn") {
-		t.Fatalf("response = %#v, want recoverable turn start failure", response)
-	}
-	thread, err := service.store.GetThread(ctx, "new-thread-id")
-	if err != nil {
-		t.Fatalf("GetThread failed: %v", err)
-	}
-	if thread == nil || thread.CWD != "/Users/example/project" {
-		t.Fatalf("thread = %#v, want saved new thread", thread)
-	}
-	binding, err := service.store.GetBinding(ctx, 123456789, 0)
-	if err != nil {
-		t.Fatalf("GetBinding failed: %v", err)
-	}
-	if binding == nil || binding.ThreadID != "new-thread-id" {
-		t.Fatalf("binding = %#v, want new thread binding for recovery", binding)
 	}
 }
 
@@ -1092,9 +1316,9 @@ func TestNewChatCommandCreatesCodexUIChatCWDAndBinds(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/newchat Проверь tool call по погоде", 0)
+	response, err := service.handleCommand(ctx, 123456789, 0, "/new Проверь tool call по погоде", 0)
 	if err != nil {
-		t.Fatalf("handleCommand(/newchat) failed: %v", err)
+		t.Fatalf("handleCommand(/new) failed: %v", err)
 	}
 	if response == nil || response.ThreadID != "new-chat-thread" || response.TurnID != "started-turn" {
 		t.Fatalf("response = %#v, want new chat thread/turn", response)
@@ -1125,13 +1349,6 @@ func TestNewChatCommandCreatesCodexUIChatCWDAndBinds(t *testing.T) {
 	if len(catalog.Chats) != 1 || catalog.Chats[0].ID != "new-chat-thread" {
 		t.Fatalf("catalog.Chats = %#v, want new chat thread", catalog.Chats)
 	}
-	binding, err := service.store.GetBinding(ctx, 123456789, 0)
-	if err != nil {
-		t.Fatalf("GetBinding failed: %v", err)
-	}
-	if binding == nil || binding.ThreadID != "new-chat-thread" {
-		t.Fatalf("binding = %#v, want new chat binding", binding)
-	}
 }
 
 func TestNewChatCWDUsesFallbackSlugAndCollisionSuffix(t *testing.T) {
@@ -1157,65 +1374,6 @@ func TestNewChatCWDUsesFallbackSlugAndCollisionSuffix(t *testing.T) {
 	}
 }
 
-func TestNewThreadCommandCreatesThreadWithoutCWDAndBinds(t *testing.T) {
-	t.Parallel()
-
-	service := newTestService(t)
-	sender := &recordingSender{}
-	service.SetSender(sender)
-	ctx := context.Background()
-	stub := &stubSession{
-		threadStartResult: map[string]any{"thread": map[string]any{"id": "new-thread-without-cwd", "title": "New thread"}},
-		threadReads: map[string]map[string]any{
-			"new-thread-without-cwd": {
-				"thread": map[string]any{
-					"id":     "new-thread-without-cwd",
-					"title":  "New thread",
-					"status": "active",
-					"turns": []any{map[string]any{
-						"id":     "started-turn",
-						"status": "inProgress",
-						"items":  []any{map[string]any{"id": "user-item", "type": "userMessage", "content": []any{map[string]any{"text": "scratch prompt"}}}},
-					}},
-				},
-			},
-		},
-	}
-	service.live = stub
-	service.liveConnected = true
-
-	response, err := service.handleCommand(ctx, 123456789, 0, "/newthread scratch prompt", 0)
-	if err != nil {
-		t.Fatalf("handleCommand(/newthread) failed: %v", err)
-	}
-	if response == nil || response.ThreadID != "new-thread-without-cwd" || response.TurnID != "started-turn" {
-		t.Fatalf("response = %#v, want no-cwd thread/turn", response)
-	}
-	if len(stub.threadStartCalls) != 1 || stub.threadStartCalls[0] != "" {
-		t.Fatalf("threadStartCalls = %#v, want no cwd", stub.threadStartCalls)
-	}
-	if len(stub.turnStartCalls) != 1 {
-		t.Fatalf("turnStartCalls = %#v, want one turn start", stub.turnStartCalls)
-	}
-	if got := stub.turnStartCalls[0]; got.threadID != "new-thread-without-cwd" || got.message != "scratch prompt" || got.cwd != "" {
-		t.Fatalf("turnStartCall = %#v, want no-cwd first prompt", got)
-	}
-	thread, err := service.store.GetThread(ctx, "new-thread-without-cwd")
-	if err != nil {
-		t.Fatalf("GetThread failed: %v", err)
-	}
-	if thread == nil || thread.CWD != "" || thread.ProjectName == "Chats" {
-		t.Fatalf("thread = %#v, want no-cwd non-Chat thread", thread)
-	}
-	binding, err := service.store.GetBinding(ctx, 123456789, 0)
-	if err != nil {
-		t.Fatalf("GetBinding failed: %v", err)
-	}
-	if binding == nil || binding.ThreadID != "new-thread-without-cwd" {
-		t.Fatalf("binding = %#v, want newthread binding", binding)
-	}
-}
-
 func TestNewChatCommandRejectsMissingThreadID(t *testing.T) {
 	t.Parallel()
 
@@ -1226,9 +1384,9 @@ func TestNewChatCommandRejectsMissingThreadID(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/newchat first chat prompt", 0)
+	response, err := service.handleCommand(ctx, 123456789, 0, "/new first chat prompt", 0)
 	if err != nil {
-		t.Fatalf("handleCommand(/newchat) failed: %v", err)
+		t.Fatalf("handleCommand(/new) failed: %v", err)
 	}
 	if response == nil || !strings.Contains(response.Text, "could not create thread") {
 		t.Fatalf("response = %#v, want missing thread id error", response)
@@ -1255,9 +1413,9 @@ func TestNewChatCommandTurnStartFailureSavesAndBindsThread(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/newchat first chat prompt", 0)
+	response, err := service.handleCommand(ctx, 123456789, 0, "/new first chat prompt", 0)
 	if err != nil {
-		t.Fatalf("handleCommand(/newchat) failed: %v", err)
+		t.Fatalf("handleCommand(/new) failed: %v", err)
 	}
 	if response == nil || !strings.Contains(response.Text, "Created thread") || !strings.Contains(response.Text, "could not start first turn") {
 		t.Fatalf("response = %#v, want recoverable turn start failure", response)
@@ -1268,48 +1426,6 @@ func TestNewChatCommandTurnStartFailureSavesAndBindsThread(t *testing.T) {
 	}
 	if thread == nil || thread.ProjectName != "Chats" || thread.CWD != expectedCWD {
 		t.Fatalf("thread = %#v, want saved Chats thread with cwd %q", thread, expectedCWD)
-	}
-	binding, err := service.store.GetBinding(ctx, 123456789, 0)
-	if err != nil {
-		t.Fatalf("GetBinding failed: %v", err)
-	}
-	if binding == nil || binding.ThreadID != "new-chat-thread" {
-		t.Fatalf("binding = %#v, want new chat binding for recovery", binding)
-	}
-}
-
-func TestNewThreadCommandTurnStartFailureSavesAndBindsThread(t *testing.T) {
-	t.Parallel()
-
-	service := newTestService(t)
-	ctx := context.Background()
-	stub := &stubSession{
-		threadStartResult: map[string]any{"thread": map[string]any{"id": "no-cwd-thread", "title": "No cwd"}},
-		turnStartErr:      errors.New("turn start failed"),
-	}
-	service.live = stub
-	service.liveConnected = true
-
-	response, err := service.handleCommand(ctx, 123456789, 0, "/newthread scratch prompt", 0)
-	if err != nil {
-		t.Fatalf("handleCommand(/newthread) failed: %v", err)
-	}
-	if response == nil || !strings.Contains(response.Text, "Created thread") || !strings.Contains(response.Text, "could not start first turn") {
-		t.Fatalf("response = %#v, want recoverable turn start failure", response)
-	}
-	thread, err := service.store.GetThread(ctx, "no-cwd-thread")
-	if err != nil {
-		t.Fatalf("GetThread failed: %v", err)
-	}
-	if thread == nil || thread.CWD != "" || thread.ProjectName == "Chats" {
-		t.Fatalf("thread = %#v, want saved no-cwd non-Chat thread", thread)
-	}
-	binding, err := service.store.GetBinding(ctx, 123456789, 0)
-	if err != nil {
-		t.Fatalf("GetBinding failed: %v", err)
-	}
-	if binding == nil || binding.ThreadID != "no-cwd-thread" {
-		t.Fatalf("binding = %#v, want no-cwd thread binding for recovery", binding)
 	}
 }
 
@@ -1351,14 +1467,11 @@ func TestSummaryPanelDoesNotShowStalePendingUserInputButtons(t *testing.T) {
 	}
 }
 
-func TestTrackedThreadsIncludesRecentlyChangedTerminalThreadForGlobalObserver(t *testing.T) {
+func TestTrackedThreadsSkipsRecentlyChangedTerminalThreadWithoutObserver(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
 	ctx := context.Background()
-	if err := service.store.SetGlobalObserverTarget(ctx, 123456789, 0, true); err != nil {
-		t.Fatalf("SetGlobalObserverTarget failed: %v", err)
-	}
 
 	thread := model.Thread{
 		ID:          "recent-terminal",
@@ -1381,15 +1494,45 @@ func TestTrackedThreadsIncludesRecentlyChangedTerminalThreadForGlobalObserver(t 
 	}
 
 	tracked := service.trackedThreads(ctx, 10)
-	found := false
 	for _, candidate := range tracked {
 		if candidate.ID == thread.ID {
-			found = true
-			break
+			t.Fatalf("tracked threads include passive terminal change after observer removal: %#v", tracked)
 		}
 	}
-	if !found {
-		t.Fatalf("tracked threads do not include recent terminal change: %#v", tracked)
+}
+
+func TestTrackedThreadsSkipsArchivedCurrentPanelThread(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "archived-current-panel",
+		Title:       "Archived current panel",
+		ProjectName: "Codex",
+		UpdatedAt:   time.Now().UTC().Unix(),
+		Status:      "active",
+		Archived:    true,
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:      123456789,
+		TopicID:     0,
+		ProjectName: "Codex",
+		ThreadID:    thread.ID,
+		SourceMode:  model.PanelSourceExplicit,
+		Status:      "active",
+	}); err != nil {
+		t.Fatalf("CreateThreadPanel failed: %v", err)
+	}
+
+	tracked := service.trackedThreads(ctx, 10)
+	for _, candidate := range tracked {
+		if candidate.ID == thread.ID {
+			t.Fatalf("tracked threads include archived current panel thread: %#v", tracked)
+		}
 	}
 }
 
@@ -1416,6 +1559,31 @@ func TestTrackedThreadsSkipsRecentTerminalChangeThatPredatesObserveEnable(t *tes
 	for _, thread := range tracked {
 		if thread.ID == "recent-before-enable" {
 			t.Fatalf("tracked threads unexpectedly include completion from before /observe all: %#v", tracked)
+		}
+	}
+}
+
+func TestTrackedThreadsSkipsNotLoadedThreadWithStaleActiveTurn(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:           "not-loaded-stale-active",
+		Title:        "Not loaded stale active",
+		ProjectName:  "Codex",
+		UpdatedAt:    time.Now().UTC().Unix(),
+		Status:       "notLoaded",
+		ActiveTurnID: "stale-turn",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+
+	tracked := service.trackedThreads(ctx, 10)
+	for _, candidate := range tracked {
+		if candidate.ID == thread.ID {
+			t.Fatalf("tracked threads include notLoaded thread with stale active turn: %#v", tracked)
 		}
 	}
 }
@@ -1521,6 +1689,96 @@ func TestCurrentPanelThreadIDsSkipTerminalExplicitPanels(t *testing.T) {
 	}
 }
 
+func TestFeishuTopicMappedThreadsRemainTrackedAfterTerminalPanel(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+
+	thread := model.Thread{ID: "thread-feishu-topic-subscription", Title: "Feishu topic subscription", ProjectName: "Codex", UpdatedAt: time.Now().UTC().Unix(), Status: "idle"}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:           123456789,
+		TopicID:          0,
+		ProjectName:      "Codex",
+		ThreadID:         thread.ID,
+		SourceMode:       model.PanelSourceFeishuInput,
+		SummaryMessageID: 1,
+		CurrentTurnID:    "turn-completed",
+		Status:           "completed",
+		ArchiveEnabled:   true,
+	}); err != nil {
+		t.Fatalf("CreateThreadPanel failed: %v", err)
+	}
+	if err := service.store.SupersedeCurrentThreadPanelsExcept(ctx, thread.ID, 0, 0); err != nil {
+		t.Fatalf("SupersedeCurrentThreadPanelsExcept failed: %v", err)
+	}
+	if err := service.store.UpsertFeishuThreadTopic(ctx, model.FeishuThreadTopic{
+		ChatID:            123456789,
+		OpenChatID:        "oc_test",
+		ThreadID:          thread.ID,
+		RootMessageID:     9001,
+		RootOpenMessageID: "om_test",
+		FeishuThreadID:    "omt_test",
+	}); err != nil {
+		t.Fatalf("UpsertFeishuThreadTopic failed: %v", err)
+	}
+
+	tracked := service.trackedThreads(ctx, 10)
+	found := false
+	for _, candidate := range tracked {
+		if candidate.ID == thread.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("trackedThreads = %#v, want Feishu topic-mapped thread", tracked)
+	}
+	if !service.threadNeedsLiveSync(ctx, thread.ID) {
+		t.Fatal("threadNeedsLiveSync returned false for Feishu topic-mapped thread")
+	}
+}
+
+func TestAttachTrackedMarksArchivedFeishuTopicThreadFromResumeError(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	thread := model.Thread{ID: "thread-feishu-topic-archived", Title: "Archived topic", ProjectName: "Codex", CWD: "/tmp/project", UpdatedAt: time.Now().UTC().Unix(), Status: "idle"}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if err := service.store.UpsertFeishuThreadTopic(ctx, model.FeishuThreadTopic{
+		ChatID:            123456789,
+		OpenChatID:        "oc_archived",
+		ThreadID:          thread.ID,
+		RootMessageID:     9001,
+		RootOpenMessageID: "om_archived",
+		FeishuThreadID:    "omt_archived",
+	}); err != nil {
+		t.Fatalf("UpsertFeishuThreadTopic failed: %v", err)
+	}
+	stub := &stubSession{threadResumeErr: fmt.Errorf("session %s is archived. Run `codex unarchive %s` to unarchive it first.", thread.ID, thread.ID)}
+	service.live = stub
+	service.liveConnected = true
+
+	service.attachTracked(ctx)
+
+	stored, err := service.store.GetThread(ctx, thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread failed: %v", err)
+	}
+	if stored == nil || !stored.Archived {
+		t.Fatalf("stored thread = %#v, want archived", stored)
+	}
+	if strings.TrimSpace(service.lastError) != "" {
+		t.Fatalf("lastError = %q, want no daemon error for archived resume", service.lastError)
+	}
+}
+
 func TestThreadNeedsLiveSyncSkipsTerminalGlobalObserverPanels(t *testing.T) {
 	t.Parallel()
 
@@ -1551,11 +1809,27 @@ func TestThreadNeedsLiveSyncSkipsTerminalGlobalObserverPanels(t *testing.T) {
 		t.Fatal("threadNeedsLiveSync returned true for terminal global_observer panel")
 	}
 
-	if err := service.store.SetBinding(ctx, 123456789, 0, thread.ID, model.BindingModeBound); err != nil {
-		t.Fatalf("SetBinding failed: %v", err)
+	if service.threadNeedsLiveSync(ctx, thread.ID) {
+		t.Fatal("threadNeedsLiveSync returned true for idle explicit panel thread")
+	}
+	thread.Status = "inProgress"
+	thread.ActiveTurnID = "turn-active"
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread(active panel) failed: %v", err)
+	}
+	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:        123456789,
+		TopicID:       0,
+		ProjectName:   "Codex",
+		ThreadID:      thread.ID,
+		SourceMode:    model.PanelSourceExplicit,
+		CurrentTurnID: "turn-active",
+		Status:        "inProgress",
+	}); err != nil {
+		t.Fatalf("CreateThreadPanel(active explicit) failed: %v", err)
 	}
 	if !service.threadNeedsLiveSync(ctx, thread.ID) {
-		t.Fatal("threadNeedsLiveSync returned false for bound thread")
+		t.Fatal("threadNeedsLiveSync returned false for active explicit panel thread")
 	}
 }
 
@@ -2146,7 +2420,7 @@ func TestSnapshotHasPassiveChangeIgnoresIdenticalTerminalReplay(t *testing.T) {
 	}
 }
 
-func TestPollTrackedSyncsFirstSeenRecentTerminalCatchup(t *testing.T) {
+func TestPollTrackedSkipsFirstSeenRecentTerminalAfterObserverRemoval(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -2196,27 +2470,8 @@ func TestPollTrackedSyncsFirstSeenRecentTerminalCatchup(t *testing.T) {
 
 	service.pollTracked(ctx)
 
-	if len(sender.messages) != 2 {
-		t.Fatalf("message count = %d, want live summary plus Final for first-seen terminal catchup; messages=%#v", len(sender.messages), sender.messages)
-	}
-	foundFinal := false
-	for _, message := range sender.messages {
-		if hasHeaderKind(message.text, "Final") && strings.Contains(message.text, "[Catchup terminal]") && strings.Contains(message.text, "CATCHUP_OK") {
-			if !strings.Contains(message.text, "[Codex]") {
-				t.Fatalf("final message = %q, want project segment", message.text)
-			}
-			if message.options.Silent {
-				t.Fatalf("final message = %#v, want audible Final", message)
-			}
-			foundFinal = true
-			break
-		}
-	}
-	if !foundFinal {
-		t.Fatalf("final card message not found: %#v", sender.messages)
-	}
-	if len(sender.deletes) != 1 {
-		t.Fatalf("deletes = %#v, want live summary cleanup after final", sender.deletes)
+	if len(sender.messages) != 0 {
+		t.Fatalf("messages = %#v, want no passive catchup after observer removal", sender.messages)
 	}
 }
 
@@ -2346,7 +2601,8 @@ func TestPollTrackedDeferredInterruptedDoesNotOverwriteFreshLiveToolSnapshot(t *
 		},
 	}
 
-	if !service.applyTelegramOriginTerminalGate(ctx, "poll_tracked", &emptyInterrupted, &stalePrevious) {
+	handled, _ := service.applyTelegramOriginTerminalGate(ctx, "poll_tracked", &emptyInterrupted, &stalePrevious)
+	if !handled {
 		t.Fatal("applyTelegramOriginTerminalGate = false, want deferred interrupted")
 	}
 
@@ -2369,11 +2625,66 @@ func TestPollTrackedDeferredInterruptedDoesNotOverwriteFreshLiveToolSnapshot(t *
 	}
 }
 
+func TestTelegramOriginHotPollContinuesForDeferredInterrupted(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	turnID := "turn-hot-poll-deferred-interrupted"
+	thread := model.Thread{
+		ID:           "thread-hot-poll-deferred-interrupted",
+		Title:        "Hot poll deferred interrupted",
+		ProjectName:  "Codex",
+		CWD:          "/Users/example/project",
+		UpdatedAt:    time.Now().UTC().Unix(),
+		Status:       "active",
+		ActiveTurnID: turnID,
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	previous := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     turnID,
+		LatestTurnStatus: "inProgress",
+	}, time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, previous); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	if err := service.markTelegramOriginTurn(ctx, thread.ID, turnID); err != nil {
+		t.Fatalf("markTelegramOriginTurn failed: %v", err)
+	}
+	service.poll = &stubSession{
+		threadReads: map[string]map[string]any{
+			thread.ID: diagnosticThreadReadPayload(thread, turnID, "interrupted"),
+		},
+	}
+	service.pollConnected = true
+
+	keepGoing := service.telegramOriginHotPollOnce(ctx, thread.ID, turnID)
+
+	if !keepGoing {
+		t.Fatal("telegramOriginHotPollOnce returned false, want continued polling for deferred interrupted")
+	}
+	stored, err := service.store.GetSnapshot(ctx, thread.ID)
+	if err != nil {
+		t.Fatalf("GetSnapshot failed: %v", err)
+	}
+	if stored == nil || stored.LastSeenTurnStatus != "inProgress" {
+		t.Fatalf("snapshot = %#v, want deferred snapshot to keep previous inProgress status", stored)
+	}
+	if stored.NextPollAfter == "" {
+		t.Fatal("NextPollAfter is empty, want continued hot polling")
+	}
+}
+
 func TestPollTrackedDefersTelegramOriginPartialInterruptedAndKeepsActiveState(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
 	logs := captureServiceLogs(service)
+	sender := &recordingSender{}
+	service.SetSender(sender)
 	ctx := context.Background()
 	turnID := "turn-partial-interrupted"
 	thread := model.Thread{
@@ -2402,12 +2713,28 @@ func TestPollTrackedDefersTelegramOriginPartialInterruptedAndKeepsActiveState(t 
 	if err := service.store.UpsertSnapshot(ctx, thread.ID, previous); err != nil {
 		t.Fatalf("UpsertSnapshot failed: %v", err)
 	}
+	summaryMessage, _, summaryHash := service.renderSummaryPanel(ctx, thread, &previousCurrent, nil)
+	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:           123456789,
+		TopicID:          0,
+		ProjectName:      thread.ProjectName,
+		ThreadID:         thread.ID,
+		SourceMode:       model.PanelSourceFeishuInput,
+		SummaryMessageID: 1,
+		CurrentTurnID:    turnID,
+		Status:           previousCurrent.LatestTurnStatus,
+		LastSummaryHash:  summaryHash,
+		ArchiveEnabled:   true,
+	}); err != nil {
+		t.Fatalf("CreateThreadPanel failed: %v", err)
+	}
+	_ = summaryMessage
 	if err := service.markTelegramOriginTurn(ctx, thread.ID, turnID); err != nil {
 		t.Fatalf("markTelegramOriginTurn failed: %v", err)
 	}
 	service.poll = &stubSession{
 		threadReads: map[string]map[string]any{
-			thread.ID: diagnosticThreadReadPayloadWithTool(thread, turnID, "interrupted"),
+			thread.ID: diagnosticThreadReadPayloadWithCommentary(thread, turnID, "interrupted", "First process message."),
 		},
 	}
 	service.pollConnected = true
@@ -2422,13 +2749,29 @@ func TestPollTrackedDefersTelegramOriginPartialInterruptedAndKeepsActiveState(t 
 		t.Fatal("snapshot = nil")
 	}
 	if stored.LastSeenTurnStatus != "inProgress" {
-		t.Fatalf("LastSeenTurnStatus = %q, want inProgress", stored.LastSeenTurnStatus)
+		t.Fatalf("LastSeenTurnStatus = %q, want inProgress while partial interrupted is deferred", stored.LastSeenTurnStatus)
 	}
 	if stored.LastCompletionFP != "" {
 		t.Fatalf("LastCompletionFP = %q, want empty while partial interrupted is deferred", stored.LastCompletionFP)
 	}
+	var compact appserver.ThreadReadSnapshot
+	if err := json.Unmarshal(stored.CompactJSON, &compact); err != nil {
+		t.Fatalf("unmarshal CompactJSON failed: %v", err)
+	}
+	if compact.LatestTurnStatus != "interrupted" {
+		t.Fatalf("compact LatestTurnStatus = %q, want interrupted so display mapping can distinguish deferred progress", compact.LatestTurnStatus)
+	}
+	if len(compact.DetailItems) == 0 {
+		t.Fatal("compact DetailItems is empty, want partial interrupted details preserved")
+	}
 	if stored.NextPollAfter == "" {
 		t.Fatal("NextPollAfter is empty, want hot polling while partial interrupted is deferred")
+	}
+	if len(sender.edits) == 0 {
+		t.Fatalf("sender edits = %#v, want progress panel update for partial interrupted", sender.edits)
+	}
+	if !strings.Contains(sender.edits[len(sender.edits)-1].text, "First process message.") {
+		t.Fatalf("last edit = %q, want partial progress content", sender.edits[len(sender.edits)-1].text)
 	}
 	state := loadTerminalGateState(t, service, ctx, terminalGateDeferKey(thread.ID, turnID))
 	if state.LastReason != "partial_interrupted" || state.LastDecision != string(terminalGateDefer) {
@@ -2442,7 +2785,46 @@ func TestPollTrackedDefersTelegramOriginPartialInterruptedAndKeepsActiveState(t 
 	}
 }
 
-func TestPollTrackedDefersTelegramOriginFinalInterruptedAndKeepsActiveState(t *testing.T) {
+func TestSnapshotHasPassiveChangeDetectsInterruptedVisibleStateChange(t *testing.T) {
+	t.Parallel()
+
+	thread := model.Thread{ID: "thread-interrupted-visible", Title: "Interrupted visible", ProjectName: "Codex", Status: "active"}
+	previousSnapshot := appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-interrupted-visible",
+		LatestTurnStatus: "interrupted",
+		DetailItems: []model.DetailItem{
+			{ID: "agent-1", Kind: model.DetailItemCommentary, Phase: "commentary", Text: "Thinking about the answer.", FP: "agent-1", CommentaryIndex: 1},
+		},
+	}
+	previous := compactDeferredProgressForTest(previousSnapshot)
+	current := &appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-interrupted-visible",
+		LatestTurnStatus: "interrupted",
+		LatestToolID:     "tool-1",
+		LatestToolLabel:  "go test ./...",
+		LatestToolStatus: "running",
+		LatestToolFP:     "tool-1-running",
+		DetailItems: []model.DetailItem{
+			{ID: "agent-1", Kind: model.DetailItemCommentary, Phase: "commentary", Text: "Thinking about the answer.", FP: "agent-1", CommentaryIndex: 1},
+			{ID: "tool-1", Kind: model.DetailItemTool, Label: "go test ./...", Status: "running", FP: "tool-1-running"},
+		},
+	}
+
+	if !snapshotHasPassiveChange(&previous, current) {
+		t.Fatal("snapshotHasPassiveChange = false, want visible interrupted state change to trigger panel update")
+	}
+}
+
+func compactDeferredProgressForTest(snapshot appserver.ThreadReadSnapshot) model.ThreadSnapshotState {
+	state := appserver.CompactSnapshot(nil, snapshot, time.Now().UTC())
+	state.LastCompletionFP = ""
+	state.LastSeenTurnStatus = "inProgress"
+	return state
+}
+
+func TestPollTrackedAcceptsTelegramOriginFinalInterruptedAndStopsHotPolling(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -2494,24 +2876,22 @@ func TestPollTrackedDefersTelegramOriginFinalInterruptedAndKeepsActiveState(t *t
 	if stored == nil {
 		t.Fatal("snapshot = nil")
 	}
-	if stored.LastSeenTurnStatus != "inProgress" {
-		t.Fatalf("LastSeenTurnStatus = %q, want inProgress", stored.LastSeenTurnStatus)
+	if stored.LastSeenTurnStatus != "interrupted" {
+		t.Fatalf("LastSeenTurnStatus = %q, want interrupted final snapshot", stored.LastSeenTurnStatus)
 	}
-	if stored.LastCompletionFP != "" {
-		t.Fatalf("LastCompletionFP = %q, want empty while final interrupted is deferred", stored.LastCompletionFP)
+	if stored.LastCompletionFP == "" {
+		t.Fatal("LastCompletionFP is empty, want final interrupted snapshot accepted")
 	}
 	if stored.NextPollAfter == "" {
-		t.Fatal("NextPollAfter is empty, want hot polling while final interrupted is deferred")
+		t.Fatal("NextPollAfter is empty, want normal follow-up poll timestamp")
 	}
-	state := loadTerminalGateState(t, service, ctx, terminalGateDeferKey(thread.ID, turnID))
-	if state.LastReason != "final_interrupted" || state.LastDecision != string(terminalGateDefer) {
-		t.Fatalf("defer state = %#v, want final_interrupted defer", state)
+	if time.Until(parseTime(stored.NextPollAfter)) < 20*time.Second {
+		t.Fatalf("NextPollAfter = %q, want non-hot polling after final", stored.NextPollAfter)
 	}
 	got := logs.String()
-	requireLogContains(t, got, `"event":"telegram_origin_terminal_deferred"`)
-	requireLogContains(t, got, `"reason":"final_interrupted"`)
-	if strings.Contains(got, `"event":"telegram_origin_turn_terminal"`) {
-		t.Fatalf("terminal log should be deferred, got:\n%s", got)
+	requireLogContains(t, got, `"event":"observer_sync_result"`)
+	if strings.Contains(got, `"event":"telegram_origin_terminal_deferred"`) {
+		t.Fatalf("final interrupted should not be deferred, got:\n%s", got)
 	}
 }
 
@@ -2753,7 +3133,7 @@ func TestPollTrackedSkipsThreadNotLoadedWithoutRepair(t *testing.T) {
 	}
 }
 
-func TestRefreshObserverIndexSyncsRecentThreadsWhenBackgroundObserverEnabled(t *testing.T) {
+func TestRefreshObserverIndexSkipsSyncAfterObserverRemoval(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -2789,15 +3169,15 @@ func TestRefreshObserverIndexSyncsRecentThreadsWhenBackgroundObserverEnabled(t *
 
 	service.refreshObserverIndex(ctx)
 
+	if service.poll.(*stubSession).threadListCalls != 0 {
+		t.Fatalf("thread list calls = %d, want 0 after observer removal", service.poll.(*stubSession).threadListCalls)
+	}
 	stored, err := service.store.GetThread(ctx, thread.ID)
 	if err != nil {
 		t.Fatalf("GetThread failed: %v", err)
 	}
-	if stored == nil {
-		t.Fatal("expected thread from thread/list to be cached by refreshObserverIndex")
-	}
-	if stored.ID != thread.ID || stored.ActiveTurnID != thread.ActiveTurnID {
-		t.Fatalf("stored thread = %#v, want id=%q activeTurn=%q", stored, thread.ID, thread.ActiveTurnID)
+	if stored != nil {
+		t.Fatalf("stored thread = %#v, want no passive observer index sync", stored)
 	}
 }
 
@@ -3388,6 +3768,57 @@ func TestFeishuInputStartsDesktopTurnWhenReplySteerFindsNoActiveTurn(t *testing.
 	}
 }
 
+func TestFeishuInputFallsBackToLiveWhenDesktopCannotBuildDefaultModeTurn(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "01900000-0000-7000-8000-000000000208",
+		Title:       "Feishu desktop default fallback",
+		ProjectName: "Codex",
+		CWD:         "/Users/example/project",
+		Status:      "idle",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if err := service.setThreadCollaborationDefaultOverride(ctx, thread.ID); err != nil {
+		t.Fatalf("setThreadCollaborationDefaultOverride failed: %v", err)
+	}
+	stub := &stubSession{
+		models:       []appserver.ModelOption{{ID: "gpt-test", IsDefault: true}},
+		turnSteerErr: fmt.Errorf("SteerTurnInactiveError: Cannot steer conversation 01900000-0000-7000-8000-000000000208 because its active turn already ended"),
+	}
+	service.live = stub
+	service.liveConnected = true
+	desktop := &stubDesktopInputDispatcher{
+		steerErr: fmt.Errorf("SteerTurnInactiveError: Cannot steer conversation 01900000-0000-7000-8000-000000000208 because its active turn already ended"),
+	}
+	service.desktopInputDispatcher = desktop
+	service.desktopOpener = func(ctx context.Context, threadID string) error {
+		return nil
+	}
+
+	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "old-turn", "Reply after idle", "", model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
+	}
+	if response == nil || response.ThreadID != thread.ID || response.TurnID != "started-turn" {
+		t.Fatalf("response = %#v, want live fallback turn", response)
+	}
+	if len(desktop.steerCalls) != 1 {
+		t.Fatalf("desktop steerCalls = %#v, want one attempted steer", desktop.steerCalls)
+	}
+	if len(stub.turnStartCalls) != 1 {
+		t.Fatalf("live turnStartCalls = %#v, want one fallback start", stub.turnStartCalls)
+	}
+	if got := stub.turnStartCalls[0]; got.collaborationMode != collaborationModeDefault {
+		t.Fatalf("live turn start call = %#v, want default mode fallback", got)
+	}
+}
+
 func TestFeishuInputDoesNotOpenCodexDesktopThreadWhenDisabled(t *testing.T) {
 	t.Parallel()
 
@@ -3544,14 +3975,14 @@ func TestPlanCommandStartsPlanCollaborationMode(t *testing.T) {
 	}
 }
 
-func TestPlanCommandUsesBoundThreadWhenNoExplicitThread(t *testing.T) {
+func TestGoalCommandSetsCurrentThreadGoal(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
 	ctx := context.Background()
 	thread := model.Thread{
-		ID:          "bound-plan-thread",
-		Title:       "Bound plan",
+		ID:          "goal-command-thread",
+		Title:       "Goal command",
 		ProjectName: "Codex",
 		CWD:         "/Users/example/project",
 		Status:      "idle",
@@ -3559,63 +3990,70 @@ func TestPlanCommandUsesBoundThreadWhenNoExplicitThread(t *testing.T) {
 	if err := service.store.UpsertThread(ctx, thread); err != nil {
 		t.Fatalf("UpsertThread failed: %v", err)
 	}
-	if err := service.store.SetBinding(ctx, 123456789, 0, thread.ID, model.BindingModeBound); err != nil {
-		t.Fatalf("SetBinding failed: %v", err)
+	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:           123456789,
+		TopicID:          0,
+		ThreadID:         thread.ID,
+		SourceMode:       model.PanelSourceFeishuInput,
+		SummaryMessageID: 1,
+		CurrentTurnID:    "turn-goal",
+		Status:           "completed",
+		ArchiveEnabled:   true,
+	}); err != nil {
+		t.Fatalf("CreateThreadPanel failed: %v", err)
 	}
 	stub := &stubSession{}
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/plan propose options", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/goal keep working until tests pass", 0, model.PanelSourceFeishuInput)
 	if err != nil {
-		t.Fatalf("handleCommand(/plan text) failed: %v", err)
+		t.Fatalf("handleCommand(/goal) failed: %v", err)
 	}
-	if response == nil || response.ThreadID != thread.ID || response.TurnID != "started-turn" {
-		t.Fatalf("response = %#v, want bound plan turn", response)
+	if response == nil || response.ThreadID != thread.ID || !strings.Contains(response.Text, "Goal set") {
+		t.Fatalf("response = %#v, want goal set response", response)
 	}
-	if len(stub.turnStartCalls) != 1 {
-		t.Fatalf("turnStartCalls = %#v, want one start", stub.turnStartCalls)
+	if len(stub.goalSetCalls) != 1 || stub.goalSetCalls[0].threadID != thread.ID || stub.goalSetCalls[0].goal != "keep working until tests pass" {
+		t.Fatalf("goalSetCalls = %#v, want current thread goal", stub.goalSetCalls)
 	}
-	got := stub.turnStartCalls[0]
-	if got.threadID != thread.ID || got.message != "propose options" || got.collaborationMode != collaborationModePlan {
-		t.Fatalf("turn start call = %#v, want bound plan prompt", got)
+	if len(stub.turnStartCalls) != 0 {
+		t.Fatalf("turnStartCalls = %#v, want no turn start for /goal", stub.turnStartCalls)
 	}
 }
 
-func TestPlanCommandUnknownHeadUsesBoundThreadAsPromptText(t *testing.T) {
+func TestGoalCommandCanUseExplicitThreadAndClear(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
 	ctx := context.Background()
-	thread := model.Thread{
-		ID:          "bound-plan-thread-unknown-head",
-		Title:       "Bound plan unknown head",
-		ProjectName: "Codex",
-		CWD:         "/Users/example/project",
-		Status:      "idle",
-	}
+	thread := model.Thread{ID: "explicit-goal-thread", Title: "Explicit goal", ProjectName: "Codex", Status: "idle"}
 	if err := service.store.UpsertThread(ctx, thread); err != nil {
 		t.Fatalf("UpsertThread failed: %v", err)
-	}
-	if err := service.store.SetBinding(ctx, 123456789, 0, thread.ID, model.BindingModeBound); err != nil {
-		t.Fatalf("SetBinding failed: %v", err)
 	}
 	stub := &stubSession{}
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/plan first second third", 0)
+	setResponse, err := service.handleCommand(ctx, 123456789, 0, "/goal "+thread.ID+" ship this feature", 0)
 	if err != nil {
-		t.Fatalf("handleCommand(/plan first second third) failed: %v", err)
+		t.Fatalf("handleCommand(/goal explicit) failed: %v", err)
 	}
-	if response == nil || response.ThreadID != thread.ID {
-		t.Fatalf("response = %#v, want bound thread", response)
+	if setResponse == nil || setResponse.ThreadID != thread.ID {
+		t.Fatalf("set response = %#v, want explicit thread", setResponse)
 	}
-	if len(stub.turnStartCalls) != 1 {
-		t.Fatalf("turnStartCalls = %#v, want one start", stub.turnStartCalls)
+	if len(stub.goalSetCalls) != 1 || stub.goalSetCalls[0].goal != "ship this feature" {
+		t.Fatalf("goalSetCalls = %#v, want explicit goal", stub.goalSetCalls)
 	}
-	if got := stub.turnStartCalls[0]; got.threadID != thread.ID || got.message != "first second third" {
-		t.Fatalf("turn start call = %#v, want full prompt on bound thread", got)
+
+	clearResponse, err := service.handleCommand(ctx, 123456789, 0, "/goal "+thread.ID+" clear", 0)
+	if err != nil {
+		t.Fatalf("handleCommand(/goal clear) failed: %v", err)
+	}
+	if clearResponse == nil || clearResponse.ThreadID != thread.ID || !strings.Contains(clearResponse.Text, "Goal cleared") {
+		t.Fatalf("clear response = %#v, want clear response", clearResponse)
+	}
+	if len(stub.goalClearCalls) != 1 || stub.goalClearCalls[0].threadID != thread.ID {
+		t.Fatalf("goalClearCalls = %#v, want explicit clear", stub.goalClearCalls)
 	}
 }
 
@@ -3645,19 +4083,6 @@ func TestPlanCommandUUIDLikeHeadStaysExplicit(t *testing.T) {
 
 	service := newTestService(t)
 	ctx := context.Background()
-	bound := model.Thread{
-		ID:          "bound-plan-thread-with-uuid-command",
-		Title:       "Bound plan",
-		ProjectName: "Codex",
-		CWD:         "/Users/example/project",
-		Status:      "idle",
-	}
-	if err := service.store.UpsertThread(ctx, bound); err != nil {
-		t.Fatalf("UpsertThread failed: %v", err)
-	}
-	if err := service.store.SetBinding(ctx, 123456789, 0, bound.ID, model.BindingModeBound); err != nil {
-		t.Fatalf("SetBinding failed: %v", err)
-	}
 	explicitID := "01900000-0000-7000-8000-000000000999"
 
 	response, err := service.handleCommand(ctx, 123456789, 0, "/plan "+explicitID+" propose options", 0)
@@ -3674,13 +4099,6 @@ func TestPlanCommandKnownThreadHeadStaysExplicit(t *testing.T) {
 
 	service := newTestService(t)
 	ctx := context.Background()
-	bound := model.Thread{
-		ID:          "bound-plan-thread-with-known-command",
-		Title:       "Bound plan",
-		ProjectName: "Codex",
-		CWD:         "/Users/example/project",
-		Status:      "idle",
-	}
 	explicit := model.Thread{
 		ID:          "explicit-plan-thread",
 		Title:       "Explicit plan",
@@ -3688,14 +4106,8 @@ func TestPlanCommandKnownThreadHeadStaysExplicit(t *testing.T) {
 		CWD:         "/Users/example/other-project",
 		Status:      "idle",
 	}
-	if err := service.store.UpsertThread(ctx, bound); err != nil {
-		t.Fatalf("UpsertThread(bound) failed: %v", err)
-	}
 	if err := service.store.UpsertThread(ctx, explicit); err != nil {
 		t.Fatalf("UpsertThread(explicit) failed: %v", err)
-	}
-	if err := service.store.SetBinding(ctx, 123456789, 0, bound.ID, model.BindingModeBound); err != nil {
-		t.Fatalf("SetBinding failed: %v", err)
 	}
 	stub := &stubSession{}
 	service.live = stub
@@ -4482,19 +4894,13 @@ func TestContextCardBoundThreadIncludesFullThreadID(t *testing.T) {
 	if err := service.store.UpsertThread(ctx, thread); err != nil {
 		t.Fatalf("UpsertThread failed: %v", err)
 	}
-	if err := service.store.SetBinding(ctx, 123456789, 0, thread.ID, model.BindingModeBound); err != nil {
-		t.Fatalf("SetBinding failed: %v", err)
-	}
-
 	text, err := service.contextCard(ctx, 123456789, 0)
 	if err != nil {
 		t.Fatalf("contextCard failed: %v", err)
 	}
 	for _, want := range []string{
-		"Mode: Bound thread",
-		"Thread: [Codex] Context title",
-		"Thread ID: full-context-thread-id",
-		"CWD: /Users/example/project",
+		"Mode: Unbound",
+		"Use /chats or /projects to choose a thread.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("context card missing %q in:\n%s", want, text)
@@ -4900,9 +5306,17 @@ func TestModelMenuPersistsSelectedModel(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/model", 0)
+	settings, err := service.handleCommand(ctx, 123456789, 0, "/setting", 0)
 	if err != nil {
-		t.Fatalf("handleCommand(/model) failed: %v", err)
+		t.Fatalf("handleCommand(/setting) failed: %v", err)
+	}
+	menuToken := callbackTokenForButton(settings.Buttons, "Model")
+	if menuToken == "" {
+		t.Fatalf("settings buttons = %#v, want model menu", settings.Buttons)
+	}
+	response, err := service.HandleCallback(ctx, 123456789, 0, 899, 123456789, menuToken)
+	if err != nil {
+		t.Fatalf("HandleCallback(model menu) failed: %v", err)
 	}
 	token := callbackTokenForButton(response.Buttons, "gpt-menu")
 	if token == "" {
@@ -4942,9 +5356,17 @@ func TestReasoningMenuUsesSelectedModelEfforts(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/effort", 0)
+	settings, err := service.handleCommand(ctx, 123456789, 0, "/setting", 0)
 	if err != nil {
-		t.Fatalf("handleCommand(/effort) failed: %v", err)
+		t.Fatalf("handleCommand(/setting) failed: %v", err)
+	}
+	menuToken := callbackTokenForButton(settings.Buttons, "Reasoning")
+	if menuToken == "" {
+		t.Fatalf("settings buttons = %#v, want reasoning menu", settings.Buttons)
+	}
+	response, err := service.HandleCallback(ctx, 123456789, 0, 900, 123456789, menuToken)
+	if err != nil {
+		t.Fatalf("HandleCallback(reasoning menu) failed: %v", err)
 	}
 	if callbackTokenForButton(response.Buttons, "minimal") == "" {
 		t.Fatalf("reasoning buttons = %#v, want minimal option", response.Buttons)
@@ -4969,6 +5391,50 @@ func TestReasoningMenuUsesSelectedModelEfforts(t *testing.T) {
 	}
 	if value != "minimal" {
 		t.Fatalf("stored reasoning = %q, want minimal", value)
+	}
+}
+
+func TestLanguageMenuPersistsSelectedLanguage(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	settings, err := service.handleCommand(ctx, 123456789, 0, "/setting", 0)
+	if err != nil {
+		t.Fatalf("handleCommand(/setting) failed: %v", err)
+	}
+	menuToken := callbackTokenForButton(settings.Buttons, "Language")
+	if menuToken == "" {
+		t.Fatalf("settings buttons = %#v, want language menu", settings.Buttons)
+	}
+	response, err := service.HandleCallback(ctx, 123456789, 0, 901, 123456789, menuToken)
+	if err != nil {
+		t.Fatalf("HandleCallback(language menu) failed: %v", err)
+	}
+	token := callbackTokenForButton(response.Buttons, "English")
+	if token == "" {
+		t.Fatalf("language menu buttons = %#v, want English", response.Buttons)
+	}
+	callbackResponse, err := service.HandleCallback(ctx, 123456789, 0, 902, 123456789, token)
+	if err != nil {
+		t.Fatalf("HandleCallback(language select) failed: %v", err)
+	}
+	if callbackResponse == nil || !strings.Contains(callbackResponse.Text, "Language saved.") || !strings.Contains(callbackResponse.Text, "Language: English") {
+		t.Fatalf("callback response = %#v, want saved settings summary", callbackResponse)
+	}
+	value, err := service.store.GetState(ctx, botLanguageStateKey)
+	if err != nil {
+		t.Fatalf("GetState(language) failed: %v", err)
+	}
+	if value != botLanguageEnglish {
+		t.Fatalf("stored language = %q, want en", value)
+	}
+	workspace, err := service.handleCommand(ctx, 123456789, 0, "/start", 0)
+	if err != nil {
+		t.Fatalf("handleCommand(/start) failed: %v", err)
+	}
+	if workspace == nil || !strings.Contains(workspace.Text, "Codex Workspace") {
+		t.Fatalf("workspace = %#v, want English text after language selection", workspace)
 	}
 }
 
@@ -5118,6 +5584,9 @@ func newTestService(t *testing.T) *Service {
 	if err != nil {
 		t.Fatalf("daemon.New failed: %v", err)
 	}
+	if err := service.store.SetState(context.Background(), botLanguageStateKey, botLanguageEnglish); err != nil {
+		t.Fatalf("SetState(language) failed: %v", err)
+	}
 	t.Cleanup(func() {
 		_ = service.Close()
 	})
@@ -5183,6 +5652,21 @@ func diagnosticThreadReadPayloadWithTool(thread model.Thread, turnID, status str
 	return payload
 }
 
+func diagnosticThreadReadPayloadWithCommentary(thread model.Thread, turnID, status, text string) map[string]any {
+	payload := diagnosticThreadReadPayload(thread, turnID, status)
+	threadPayload := payload["thread"].(map[string]any)
+	turns := threadPayload["turns"].([]any)
+	turn := turns[0].(map[string]any)
+	items := turn["items"].([]any)
+	turn["items"] = append(items, map[string]any{
+		"id":    "commentary-item",
+		"type":  "agentMessage",
+		"phase": "commentary",
+		"text":  text,
+	})
+	return payload
+}
+
 func diagnosticThreadReadPayloadWithFinal(thread model.Thread, turnID, status, finalText string) map[string]any {
 	payload := diagnosticThreadReadPayloadWithTool(thread, turnID, status)
 	threadPayload := payload["thread"].(map[string]any)
@@ -5209,6 +5693,39 @@ func callbackTokenForButton(rows [][]model.ButtonSpec, label string) string {
 	return ""
 }
 
+func sectionTitles(sections []model.MessageSection) []string {
+	out := make([]string, 0, len(sections))
+	for _, section := range sections {
+		out = append(out, section.Text)
+	}
+	return out
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func assertSectionRows(t *testing.T, section model.MessageSection, want map[string]string) {
+	t.Helper()
+	got := map[string]string{}
+	for _, row := range section.Rows {
+		got[row.Title] = row.Trailing
+	}
+	for title, trailing := range want {
+		if got[title] != trailing {
+			t.Fatalf("section %q row %q = %q, want %q; rows = %#v", section.Text, title, got[title], trailing, section.Rows)
+		}
+	}
+}
+
 func countButtonsContaining(rows [][]model.ButtonSpec, label string) int {
 	count := 0
 	for _, row := range rows {
@@ -5232,20 +5749,12 @@ func requireTextOrder(t *testing.T, text, before, after string) {
 
 func openOnlyProjectMenu(t *testing.T, service *Service, ctx context.Context) *DirectResponse {
 	t.Helper()
-	projects, err := service.handleCommand(ctx, 123456789, 0, "/projects", 0)
+	menu, err := service.projectMenu(ctx, map[string]any{"cwd": "/Users/example/project"})
 	if err != nil {
-		t.Fatalf("handleCommand(/projects) failed: %v", err)
-	}
-	token := callbackTokenForButton(projects.Buttons, "1. project")
-	if token == "" {
-		t.Fatalf("/projects buttons = %#v, want project button", projects.Buttons)
-	}
-	menu, err := service.HandleCallback(ctx, 123456789, 0, 42, 123456789, token)
-	if err != nil {
-		t.Fatalf("HandleCallback(project_open) failed: %v", err)
+		t.Fatalf("projectMenu failed: %v", err)
 	}
 	if menu == nil {
-		t.Fatal("HandleCallback(project_open) returned nil response")
+		t.Fatal("projectMenu returned nil response")
 	}
 	return menu
 }
@@ -5349,6 +5858,8 @@ type stubSession struct {
 	turnSteerCalls      []turnCall
 	turnStartCalls      []turnCall
 	turnInterruptCalls  []turnCall
+	goalSetCalls        []goalCall
+	goalClearCalls      []goalCall
 	respondRequestCalls []respondRequestCall
 	stderrTail          []string
 }
@@ -5366,6 +5877,11 @@ type turnCall struct {
 	collaborationMode string
 	model             string
 	reasoningEffort   string
+}
+
+type goalCall struct {
+	threadID string
+	goal     string
 }
 
 type respondRequestCall struct {
@@ -5455,6 +5971,14 @@ func (s *stubSession) ThreadStart(ctx context.Context, cwd string) (map[string]a
 		return nil, s.threadStartErr
 	}
 	return s.threadStartResult, nil
+}
+func (s *stubSession) ThreadGoalSet(ctx context.Context, threadID, goal string) (map[string]any, error) {
+	s.goalSetCalls = append(s.goalSetCalls, goalCall{threadID: threadID, goal: goal})
+	return map[string]any{"thread": map[string]any{"id": threadID}}, nil
+}
+func (s *stubSession) ThreadGoalClear(ctx context.Context, threadID string) (map[string]any, error) {
+	s.goalClearCalls = append(s.goalClearCalls, goalCall{threadID: threadID})
+	return map[string]any{"thread": map[string]any{"id": threadID}}, nil
 }
 func (s *stubSession) TurnStart(ctx context.Context, threadID, message, cwd string, options appserver.TurnStartOptions) (map[string]any, error) {
 	if s.turnStartErr != nil {

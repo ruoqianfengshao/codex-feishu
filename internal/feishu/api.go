@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
@@ -17,10 +18,13 @@ type apiClient interface {
 	Reply(ctx context.Context, openMessageID, msgType, content string, replyInThread bool) (sentMessage, error)
 	GetChat(ctx context.Context, openChatID string) (chatInfo, error)
 	CreateThreadRoom(ctx context.Context, name string, userOpenIDs []string, botAppID string, uuid string) (string, error)
+	CreateWorkspaceMenu(ctx context.Context, openChatID string) error
 	UpdateText(ctx context.Context, openMessageID, text string) error
 	PatchCard(ctx context.Context, openMessageID, card string) error
 	Delete(ctx context.Context, openMessageID string) error
 	UploadFile(ctx context.Context, name string, data []byte) (string, error)
+	UploadImage(ctx context.Context, data []byte) (string, error)
+	DownloadImage(ctx context.Context, openMessageID, imageKey string) ([]byte, error)
 }
 
 type sentMessage struct {
@@ -160,6 +164,70 @@ func (c *sdkAPIClient) CreateThreadRoom(ctx context.Context, name string, userOp
 	return value(resp.Data.ChatId), nil
 }
 
+func (c *sdkAPIClient) CreateWorkspaceMenu(ctx context.Context, openChatID string) error {
+	menu := larkim.NewChatMenuTreeBuilder().
+		ChatMenuTopLevels([]*larkim.ChatMenuTopLevel{
+			chatMenuTopLevel("codex_recent", "会话", []chatMenuEntry{
+				{id: "codex_chats", name: "最近会话", url: feishuMenuCommandURL("chats")},
+				{id: "codex_projects", name: "项目", url: feishuMenuCommandURL("projects")},
+			}),
+			chatMenuTopLevel("codex_new", "新建", []chatMenuEntry{
+				{id: "codex_new", name: "新建 Chat", url: feishuMenuCommandURL("new")},
+			}),
+			chatMenuTopLevel("codex_more", "更多", []chatMenuEntry{
+				{id: "codex_status", name: "状态", url: feishuMenuCommandURL("status")},
+				{id: "codex_setting", name: "设置", url: feishuMenuCommandURL("setting")},
+				{id: "codex_repair", name: "修复", url: feishuMenuCommandURL("repair")},
+			}),
+		}).
+		Build()
+	req := larkim.NewCreateChatMenuTreeReqBuilder().
+		ChatId(openChatID).
+		Body(larkim.NewCreateChatMenuTreeReqBodyBuilder().MenuTree(menu).Build()).
+		Build()
+	resp, err := c.client.Im.V1.ChatMenuTree.Create(ctx, req)
+	if err != nil {
+		return err
+	}
+	if !resp.Success() {
+		return sdkError("create chat menu", resp.Code, resp.Msg, resp.RequestId())
+	}
+	return nil
+}
+
+type chatMenuEntry struct {
+	id   string
+	name string
+	url  string
+}
+
+func chatMenuTopLevel(id, name string, children []chatMenuEntry) *larkim.ChatMenuTopLevel {
+	secondLevels := make([]*larkim.ChatMenuSecondLevel, 0, len(children))
+	for _, child := range children {
+		secondLevels = append(secondLevels, larkim.NewChatMenuSecondLevelBuilder().
+			ChatMenuSecondLevelId(child.id).
+			ChatMenuItem(chatMenuItem(child.name, child.url)).
+			Build())
+	}
+	return larkim.NewChatMenuTopLevelBuilder().
+		ChatMenuTopLevelId(id).
+		ChatMenuItem(larkim.NewChatMenuItemBuilder().ActionType("NONE").Name(name).Build()).
+		Children(secondLevels).
+		Build()
+}
+
+func chatMenuItem(name, url string) *larkim.ChatMenuItem {
+	return larkim.NewChatMenuItemBuilder().
+		ActionType("REDIRECT_LINK").
+		Name(name).
+		RedirectLink(larkim.NewChatMenuItemRedirectLinkBuilder().CommonUrl(url).Build()).
+		Build()
+}
+
+func feishuMenuCommandURL(command string) string {
+	return "https://applink.feishu.cn/client/bot/open?app_id=codex-tg&command=" + command
+}
+
 func (c *sdkAPIClient) UpdateText(ctx context.Context, openMessageID, text string) error {
 	content, err := encodeTextContent(text)
 	if err != nil {
@@ -230,6 +298,62 @@ func (c *sdkAPIClient) UploadFile(ctx context.Context, name string, data []byte)
 		return "", nil
 	}
 	return value(resp.Data.FileKey), nil
+}
+
+func (c *sdkAPIClient) UploadImage(ctx context.Context, data []byte) (string, error) {
+	if len(data) == 0 {
+		return "", io.ErrUnexpectedEOF
+	}
+	req := larkim.NewCreateImageReqBuilder().
+		Body(larkim.NewCreateImageReqBodyBuilder().
+			ImageType(larkim.CreateImageImageTypeMessage).
+			Image(bytes.NewReader(data)).
+			Build()).
+		Build()
+	resp, err := c.client.Im.V1.Image.Create(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	if !resp.Success() {
+		return "", sdkError("upload image", resp.Code, resp.Msg, resp.RequestId())
+	}
+	if resp.Data == nil {
+		return "", nil
+	}
+	return value(resp.Data.ImageKey), nil
+}
+
+func (c *sdkAPIClient) DownloadImage(ctx context.Context, openMessageID, imageKey string) ([]byte, error) {
+	openMessageID = strings.TrimSpace(openMessageID)
+	imageKey = strings.TrimSpace(imageKey)
+	if openMessageID == "" {
+		return nil, fmt.Errorf("feishu message id is empty")
+	}
+	if imageKey == "" {
+		return nil, fmt.Errorf("feishu image key is empty")
+	}
+	resp, err := c.client.Im.V1.MessageResource.Get(ctx, larkim.NewGetMessageResourceReqBuilder().
+		MessageId(openMessageID).
+		FileKey(imageKey).
+		Type("image").
+		Build())
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Success() {
+		return nil, sdkError("download message image", resp.Code, resp.Msg, resp.RequestId())
+	}
+	if resp.File == nil {
+		return nil, io.ErrUnexpectedEOF
+	}
+	data, err := io.ReadAll(resp.File)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return data, nil
 }
 
 func sdkError(action string, code int, message, requestID string) error {

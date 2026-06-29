@@ -15,14 +15,14 @@ import (
 const (
 	detailsPageSize     = 4
 	detailsToolMaxBytes = 2800
-	staleDetailsText    = "Details panel is stale. Use /show <thread>."
 )
 
 func (s *Service) maybeRenderFinalCard(ctx context.Context, sender Sender, target model.ObserverTarget, panel *model.ThreadPanel, thread model.Thread, snapshot *appserver.ThreadReadSnapshot) error {
-	if !isTerminalStatus(snapshot.LatestTurnStatus) || strings.TrimSpace(snapshot.LatestFinalText) == "" {
+	finalText, finalFP := terminalCardTextAndFP(snapshot)
+	if !isTerminalStatus(snapshot.LatestTurnStatus) || strings.TrimSpace(finalText) == "" {
 		return nil
 	}
-	if panel == nil || snapshot.LatestFinalFP == "" || snapshot.LatestFinalFP == panel.LastFinalNoticeFP {
+	if panel == nil || finalFP == "" || finalFP == panel.LastFinalNoticeFP {
 		return nil
 	}
 
@@ -41,22 +41,19 @@ func (s *Service) maybeRenderFinalCard(ctx context.Context, sender Sender, targe
 		MessageID: finalMessageID,
 		ThreadID:  thread.ID,
 		TurnID:    snapshot.LatestTurnID,
-		EventID:   snapshot.LatestFinalFP,
+		EventID:   finalFP,
 		CreatedAt: model.NowString(),
 	})
-	oldSummaryMessageID := panel.SummaryMessageID
-	panel.SummaryMessageID = finalMessageID
 	panel.CurrentTurnID = snapshot.LatestTurnID
 	panel.Status = snapshot.LatestTurnStatus
-	panel.LastSummaryHash = cardHash
 	panel.LastFinalCardHash = cardHash
-	panel.LastFinalNoticeFP = snapshot.LatestFinalFP
+	panel.LastFinalNoticeFP = finalFP
 	panel.DetailsViewJSON = model.MustJSON(model.DetailsViewState{})
-	if err := s.store.UpdateThreadPanelFinalCard(ctx, panel.ID, panel.SummaryMessageID, panel.CurrentTurnID, panel.Status, panel.LastSummaryHash, panel.LastToolHash, panel.LastOutputHash, panel.LastFinalNoticeFP, panel.DetailsViewJSON, panel.LastFinalCardHash); err != nil {
+	if err := s.store.UpdateThreadPanelState(ctx, panel.ID, panel.CurrentTurnID, panel.Status, panel.LastSummaryHash, panel.LastToolHash, panel.LastOutputHash, panel.LastFinalNoticeFP); err != nil {
 		return err
 	}
-	if oldSummaryMessageID != 0 && oldSummaryMessageID != finalMessageID {
-		_ = sender.DeleteMessage(ctx, target.ChatID, target.TopicID, oldSummaryMessageID)
+	if err := s.store.UpdateThreadPanelDetails(ctx, panel.ID, panel.DetailsViewJSON, panel.LastFinalCardHash); err != nil {
+		return err
 	}
 	if panel.RunNoticeMessageID != 0 {
 		_ = sender.DeleteMessage(ctx, target.ChatID, target.TopicID, panel.RunNoticeMessageID)
@@ -71,33 +68,38 @@ func (s *Service) maybeRenderFinalCard(ctx context.Context, sender Sender, targe
 }
 
 func (s *Service) renderFinalCard(ctx context.Context, panelID int64, thread model.Thread, snapshot *appserver.ThreadReadSnapshot) (model.RenderedMessage, [][]model.ButtonSpec, string) {
-	buttons := [][]model.ButtonSpec{
-		{
-			s.callbackButton(ctx, "Details", "details_open", thread.ID, snapshot.LatestTurnID, "", map[string]any{
+	buttons := [][]model.ButtonSpec{}
+	if !compactFeishuTopicCard(ctx) {
+		buttons = append(buttons, []model.ButtonSpec{
+			s.callbackButton(ctx, s.t(ctx, "详情", "Details"), "details_open", thread.ID, snapshot.LatestTurnID, "", map[string]any{
 				"panel_id": panelID,
 				"page":     0,
 			}),
-			s.callbackButton(ctx, "Get full log", "get_full_log", thread.ID, snapshot.LatestTurnID, "", nil),
-		},
-		{
-			s.callbackButton(ctx, "Show", "show_thread", thread.ID, snapshot.LatestTurnID, "", nil),
-		},
+		})
+	}
+	if !compactFeishuTopicCard(ctx) {
+		buttons = append(buttons, []model.ButtonSpec{
+			s.callbackButton(ctx, s.t(ctx, "查看", "Show"), "show_thread", thread.ID, snapshot.LatestTurnID, "", nil),
+		})
 	}
 	if s.finalCardShouldShowTurnOffPlan(ctx, thread.ID, snapshot) {
 		buttons = append(buttons, []model.ButtonSpec{
-			s.callbackButton(ctx, "Turn off Plan", "turn_off_plan", thread.ID, snapshot.LatestTurnID, "", map[string]any{
+			s.callbackButton(ctx, s.t(ctx, "关闭 Plan", "Turn off Plan"), "turn_off_plan", thread.ID, snapshot.LatestTurnID, "", map[string]any{
 				"panel_id": panelID,
 			}),
 		})
 	}
-	buttons = append(buttons, []model.ButtonSpec{
-		s.callbackButton(ctx, "Get thread id", "get_thread_id", thread.ID, snapshot.LatestTurnID, "", nil),
-	})
+	if !compactFeishuTopicCard(ctx) {
+		buttons = append(buttons, []model.ButtonSpec{
+			s.callbackButton(ctx, s.t(ctx, "获取线程 ID", "Get thread id"), "get_thread_id", thread.ID, snapshot.LatestTurnID, "", nil),
+		})
+	}
 	header := strings.Join([]string{
-		s.visualHeader(ctx, "Final", thread, snapshot.LatestTurnID),
-		fmt.Sprintf("Status: %s", readableStatus(snapshot.LatestTurnStatus, thread.Status)),
+		s.visualHeader(ctx, s.t(ctx, "最终回复", "Final"), thread, snapshot.LatestTurnID),
+		fmt.Sprintf("%s: %s", s.t(ctx, "状态", "Status"), readableProgressStatusLang(s.botLanguage(ctx), cardDisplayStatus(snapshot, thread))),
 	}, "\n")
-	body := strings.TrimSpace(snapshot.LatestFinalText)
+	body, _ := terminalCardTextAndFP(snapshot)
+	body = strings.TrimSpace(body)
 	if line := runTimingFooter(snapshot, time.Now().UTC()); line != "" {
 		if body != "" {
 			body += "\n\n"
@@ -108,13 +110,46 @@ func (s *Service) renderFinalCard(ctx context.Context, panelID int64, thread mod
 	return message, buttons, hashStrings(tgformat.HashRendered(message), flattenButtonSpecs(buttons))
 }
 
+func terminalCardTextAndFP(snapshot *appserver.ThreadReadSnapshot) (string, string) {
+	if snapshot == nil {
+		return "", ""
+	}
+	if text := strings.TrimSpace(snapshot.LatestFinalText); text != "" {
+		return text, strings.TrimSpace(snapshot.LatestFinalFP)
+	}
+	if !isTerminalStatus(snapshot.LatestTurnStatus) {
+		return "", ""
+	}
+	if text, fp := latestTerminalDetailText(snapshot.DetailItems); text != "" {
+		return text, firstNonEmpty(fp, hashStrings(snapshot.LatestTurnID, snapshot.LatestTurnStatus, text))
+	}
+	if text := strings.TrimSpace(snapshot.LatestProgressText); text != "" {
+		return text, hashStrings(snapshot.LatestTurnID, snapshot.LatestTurnStatus, snapshot.LatestProgressFP, text)
+	}
+	return "", ""
+}
+
+func latestTerminalDetailText(items []model.DetailItem) (string, string) {
+	for index := len(items) - 1; index >= 0; index-- {
+		item := items[index]
+		if item.Kind != model.DetailItemFinal {
+			continue
+		}
+		text := strings.TrimSpace(item.Text)
+		if text != "" {
+			return text, strings.TrimSpace(item.FP)
+		}
+	}
+	return "", ""
+}
+
 func renderSingleMarkdownCard(header, markdown string) model.RenderedMessage {
 	body := strings.TrimSpace(cleanTelegramNilLiteral(markdown))
 	truncated := false
 	for attempts := 0; attempts < 12; attempts++ {
 		candidate := body
 		if truncated {
-			candidate = strings.TrimSpace(candidate) + "\n\n[Trimmed for Telegram. Use Get full log.]"
+			candidate = strings.TrimSpace(candidate) + "\n\n[Trimmed.]"
 		}
 		messages := tgformat.RenderMarkdownWithHeader(header, candidate)
 		if len(messages) <= 1 {
@@ -131,12 +166,12 @@ func renderSingleMarkdownCard(header, markdown string) model.RenderedMessage {
 		body = string(runes[:next])
 		truncated = true
 	}
-	text := trimOutputTail(strings.TrimSpace(header+"\n\n"+body+"\n\n[Trimmed for Telegram. Use Get full log.]"), tgformat.TelegramMessageLimit-32)
+	text := trimOutputTail(strings.TrimSpace(header+"\n\n"+body+"\n\n[Trimmed.]"), tgformat.TelegramMessageLimit-32)
 	return model.RenderedMessage{Text: text}
 }
 
 func (s *Service) handleDetailsCallback(ctx context.Context, chatID, topicID, callbackMessageID int64, route *model.CallbackRoute, payload map[string]any) (*DirectResponse, error) {
-	panel, response, err := s.detailsPanelForCallback(ctx, chatID, topicID, callbackMessageID, route, payload, true)
+	panel, response, err := s.detailsPanelForCallback(ctx, chatID, topicID, callbackMessageID, route, payload, false)
 	if err != nil {
 		return nil, err
 	}
@@ -145,11 +180,11 @@ func (s *Service) handleDetailsCallback(ctx context.Context, chatID, topicID, ca
 	}
 	thread, snapshot, err := s.loadThreadPanelSnapshot(ctx, panel.ThreadID)
 	if err != nil || thread == nil || snapshot == nil {
-		return &DirectResponse{Text: "Could not load thread details. Try /repair or /show <thread>."}, nil
+		return &DirectResponse{Text: s.t(ctx, "无法加载线程详情。请尝试 /repair 或 /show <thread>。", "Could not load thread details. Try /repair or /show <thread>.")}, nil
 	}
 	snapshot, ok := snapshotForPanelTurn(*thread, snapshot, panel)
 	if !ok {
-		return staleDetailsResponse(), nil
+		return s.staleDetailsResponse(ctx), nil
 	}
 	state := detailsStateFromPayload(payload)
 	sectionCount := len(detailSections(snapshot))
@@ -183,7 +218,7 @@ func (s *Service) handleDetailsCallback(ctx context.Context, chatID, topicID, ca
 			if err := s.editPanelCard(ctx, chatID, topicID, targetMessageID, message, buttons, panel, snapshot, cardHash, model.DetailsViewState{}); err != nil {
 				return nil, err
 			}
-			return &DirectResponse{CallbackText: "Final card."}, nil
+			return &DirectResponse{CallbackText: s.t(ctx, "最终回复卡片", "Final card.")}, nil
 		}
 	}
 	state.Page = clampInt(state.Page, 0, maxInt(0, detailsPageCount(sectionCount)-1))
@@ -198,11 +233,11 @@ func (s *Service) handleDetailsCallback(ctx context.Context, chatID, topicID, ca
 	if err := s.editPanelCard(ctx, chatID, topicID, targetMessageID, message, buttons, panel, snapshot, cardHash, state); err != nil {
 		return nil, err
 	}
-	return &DirectResponse{CallbackText: "Details updated."}, nil
+	return &DirectResponse{CallbackText: s.t(ctx, "详情已更新", "Details updated.")}, nil
 }
 
 func (s *Service) handleTurnOffPlanCallback(ctx context.Context, chatID, topicID, callbackMessageID int64, route *model.CallbackRoute, payload map[string]any) (*DirectResponse, error) {
-	panel, response, err := s.detailsPanelForCallback(ctx, chatID, topicID, callbackMessageID, route, payload, true)
+	panel, response, err := s.detailsPanelForCallback(ctx, chatID, topicID, callbackMessageID, route, payload, false)
 	if err != nil {
 		return nil, err
 	}
@@ -211,11 +246,11 @@ func (s *Service) handleTurnOffPlanCallback(ctx context.Context, chatID, topicID
 	}
 	thread, snapshot, err := s.loadThreadPanelSnapshot(ctx, panel.ThreadID)
 	if err != nil || thread == nil || snapshot == nil {
-		return &DirectResponse{Text: "Could not load thread details. Try /repair or /show <thread>."}, nil
+		return &DirectResponse{Text: s.t(ctx, "无法加载线程详情。请尝试 /repair 或 /show <thread>。", "Could not load thread details. Try /repair or /show <thread>.")}, nil
 	}
 	snapshot, ok := snapshotForPanelTurn(*thread, snapshot, panel)
 	if !ok {
-		return staleDetailsResponse(), nil
+		return s.staleDetailsResponse(ctx), nil
 	}
 	if err := s.setThreadCollaborationDefaultOverride(ctx, panel.ThreadID); err != nil {
 		return nil, err
@@ -228,7 +263,7 @@ func (s *Service) handleTurnOffPlanCallback(ctx context.Context, chatID, topicID
 	if err := s.editPanelCard(ctx, chatID, topicID, targetMessageID, message, buttons, panel, snapshot, cardHash, model.DetailsViewState{}); err != nil {
 		return nil, err
 	}
-	return &DirectResponse{CallbackText: "Plan Mode will be off for the next turn."}, nil
+	return &DirectResponse{CallbackText: s.t(ctx, "下一轮将关闭 Plan 模式。", "Plan Mode will be off for the next turn.")}, nil
 }
 
 func (s *Service) editPanelCard(ctx context.Context, chatID, topicID, messageID int64, message model.RenderedMessage, buttons [][]model.ButtonSpec, panel *model.ThreadPanel, snapshot *appserver.ThreadReadSnapshot, cardHash string, state model.DetailsViewState) error {
@@ -256,14 +291,14 @@ func (s *Service) renderDetailsCard(ctx context.Context, panelID int64, thread m
 	}
 	state.Page = clampInt(state.Page, 0, totalPages-1)
 	segments := []tgformat.Segment{tgformat.Plain(strings.Join([]string{
-		s.visualHeader(ctx, "Details", thread, snapshot.LatestTurnID),
-		fmt.Sprintf("Status: %s", readableStatus(snapshot.LatestTurnStatus, thread.Status)),
+		s.visualHeader(ctx, s.t(ctx, "详情", "Details"), thread, snapshot.LatestTurnID),
+		fmt.Sprintf("%s: %s", s.t(ctx, "状态", "Status"), readableProgressStatusLang(s.botLanguage(ctx), cardDisplayStatus(snapshot, thread))),
 	}, "\n"))}
 
 	if state.ToolMode {
 		index := clampInt(state.CommentaryIndex, 1, maxInt(1, len(sections)))
 		if len(sections) == 0 {
-			segments = append(segments, tgformat.Plain("\n\nNo detail entries for this turn."))
+			segments = append(segments, tgformat.Plain(s.t(ctx, "\n\n这一轮没有详情条目。", "\n\nNo detail entries for this turn.")))
 		} else {
 			section := sections[index-1]
 			segments = appendDetailSectionHeaderSegments(segments, section)
@@ -271,14 +306,14 @@ func (s *Service) renderDetailsCard(ctx context.Context, panelID int64, thread m
 		}
 	} else {
 		if len(sections) == 0 {
-			segments = append(segments, tgformat.Plain("\n\nNo detail entries for this turn."))
+			segments = append(segments, tgformat.Plain(s.t(ctx, "\n\n这一轮没有详情条目。", "\n\nNo detail entries for this turn.")))
 		} else {
 			start := state.Page * detailsPageSize
 			end := minInt(start+detailsPageSize, len(sections))
 			for index := start; index < end; index++ {
 				segments = appendDetailSectionSummarySegments(segments, sections[index], detailsItemsForSection(snapshot, sections[index]))
 			}
-			segments = append(segments, tgformat.Plain(fmt.Sprintf("\n\nPage %d/%d", state.Page+1, totalPages)))
+			segments = append(segments, tgformat.Plain(fmt.Sprintf(s.t(ctx, "\n\n第 %d/%d 页", "\n\nPage %d/%d"), state.Page+1, totalPages)))
 		}
 	}
 	message := firstRenderedMessage(tgformat.RenderSegments(segments, tgformat.TelegramMessageLimit))
@@ -342,23 +377,23 @@ func (s *Service) detailsButtons(ctx context.Context, panelID int64, threadID, t
 	nextPayload := map[string]any{"panel_id": panelID, "page": state.Page, "tool_mode": state.ToolMode, "commentary_index": state.CommentaryIndex}
 	rows := [][]model.ButtonSpec{{
 		s.callbackButton(ctx, "<", "details_prev", threadID, turnID, "", prevPayload),
-		s.callbackButton(ctx, "Back", "details_back", threadID, turnID, "", map[string]any{"panel_id": panelID}),
+		s.callbackButton(ctx, s.t(ctx, "返回", "Back"), "details_back", threadID, turnID, "", map[string]any{"panel_id": panelID}),
 		s.callbackButton(ctx, ">", "details_next", threadID, turnID, "", nextPayload),
 	}}
 	togglePayload := map[string]any{"panel_id": panelID, "page": state.Page, "tool_mode": state.ToolMode, "commentary_index": state.CommentaryIndex}
 	if state.ToolMode {
 		rows = append(rows, []model.ButtonSpec{
-			s.callbackButton(ctx, "Tool off", "details_tool_toggle", threadID, turnID, "", togglePayload),
-			s.callbackButton(ctx, "Tools file", "details_tools_file", threadID, turnID, "", togglePayload),
+			s.callbackButton(ctx, s.t(ctx, "关闭工具", "Tool off"), "details_tool_toggle", threadID, turnID, "", togglePayload),
+			s.callbackButton(ctx, s.t(ctx, "工具文件", "Tools file"), "details_tools_file", threadID, turnID, "", togglePayload),
 		})
 	} else {
-		rows = append(rows, []model.ButtonSpec{s.callbackButton(ctx, "Tool on", "details_tool_toggle", threadID, turnID, "", togglePayload)})
+		rows = append(rows, []model.ButtonSpec{s.callbackButton(ctx, s.t(ctx, "查看工具", "Tool on"), "details_tool_toggle", threadID, turnID, "", togglePayload)})
 	}
 	return rows
 }
 
 func (s *Service) sendDetailsToolsFile(ctx context.Context, chatID, topicID, callbackMessageID int64, route *model.CallbackRoute, payload map[string]any) (*DirectResponse, error) {
-	panel, response, err := s.detailsPanelForCallback(ctx, chatID, topicID, callbackMessageID, route, payload, true)
+	panel, response, err := s.detailsPanelForCallback(ctx, chatID, topicID, callbackMessageID, route, payload, false)
 	if err != nil {
 		return nil, err
 	}
@@ -367,11 +402,11 @@ func (s *Service) sendDetailsToolsFile(ctx context.Context, chatID, topicID, cal
 	}
 	thread, snapshot, err := s.loadThreadPanelSnapshot(ctx, panel.ThreadID)
 	if err != nil || thread == nil || snapshot == nil {
-		return &DirectResponse{Text: "Could not load thread details for export."}, nil
+		return &DirectResponse{Text: s.t(ctx, "无法加载要导出的线程详情。", "Could not load thread details for export.")}, nil
 	}
 	snapshot, ok := snapshotForPanelTurn(*thread, snapshot, panel)
 	if !ok {
-		return staleDetailsResponse(), nil
+		return s.staleDetailsResponse(ctx), nil
 	}
 	index := payloadInt(payload, "commentary_index")
 	if index == 0 {
@@ -379,54 +414,75 @@ func (s *Service) sendDetailsToolsFile(ctx context.Context, chatID, topicID, cal
 	}
 	body := s.buildDetailsToolsText(*thread, snapshot, index)
 	if strings.TrimSpace(body) == "" {
-		return &DirectResponse{CallbackText: "No related tool/output entries."}, nil
+		return &DirectResponse{CallbackText: s.t(ctx, "没有相关工具或输出条目。", "No related tool/output entries.")}, nil
 	}
 	s.mu.RLock()
 	sender := s.sender
 	s.mu.RUnlock()
 	if sender == nil {
-		return &DirectResponse{Text: "Telegram sender is not ready yet."}, nil
+		return &DirectResponse{Text: s.t(ctx, "消息发送器尚未就绪。", "Telegram sender is not ready yet.")}, nil
 	}
 	fileName := fmt.Sprintf("%s-%s-details-%d.txt", sanitizeFileName(thread.ProjectName), sanitizeFileName(thread.ShortID()), index)
-	caption := s.visualHeader(ctx, "Details tools", *thread, snapshot.LatestTurnID)
+	caption := s.visualHeader(ctx, s.t(ctx, "详情工具", "Details tools"), *thread, snapshot.LatestTurnID)
 	if _, err := sender.SendDocumentData(ctx, chatID, topicID, fileName, []byte(body), caption, silentSendOptions()); err != nil {
-		return &DirectResponse{Text: fmt.Sprintf("Could not send details tools file: %v", err)}, nil
+		return &DirectResponse{Text: fmt.Sprintf(s.t(ctx, "无法发送详情工具文件：%v", "Could not send details tools file: %v"), err)}, nil
 	}
 	_ = route
-	return &DirectResponse{CallbackText: "Tools file sent."}, nil
+	return &DirectResponse{CallbackText: s.t(ctx, "工具文件已发送。", "Tools file sent.")}, nil
 }
 
 func (s *Service) detailsPanelForCallback(ctx context.Context, chatID, topicID, callbackMessageID int64, route *model.CallbackRoute, payload map[string]any, requireMessageMatch bool) (*model.ThreadPanel, *DirectResponse, error) {
 	panelID := payloadInt64(payload, "panel_id")
 	if panelID == 0 {
-		return nil, staleDetailsResponse(), nil
+		return nil, s.staleDetailsResponse(ctx), nil
 	}
 	panel, err := s.store.GetThreadPanelByID(ctx, panelID)
 	if err != nil {
 		return nil, nil, err
 	}
 	if panel == nil {
-		return nil, staleDetailsResponse(), nil
+		return nil, s.staleDetailsResponse(ctx), nil
 	}
 	if panel.ChatID != chatID || panel.TopicID != topicID {
-		return nil, staleDetailsResponse(), nil
+		return nil, s.staleDetailsResponse(ctx), nil
 	}
 	if route != nil {
 		if threadID := strings.TrimSpace(route.ThreadID); threadID != "" && strings.TrimSpace(panel.ThreadID) != threadID {
-			return nil, staleDetailsResponse(), nil
+			return nil, s.staleDetailsResponse(ctx), nil
 		}
 		if turnID := strings.TrimSpace(route.TurnID); turnID != "" && strings.TrimSpace(panel.CurrentTurnID) != turnID {
-			return nil, staleDetailsResponse(), nil
+			return nil, s.staleDetailsResponse(ctx), nil
 		}
 	}
 	if requireMessageMatch && callbackMessageID != panel.SummaryMessageID {
-		return nil, staleDetailsResponse(), nil
+		return nil, s.staleDetailsResponse(ctx), nil
+	}
+	if !requireMessageMatch && callbackMessageID != 0 && callbackMessageID != panel.SummaryMessageID {
+		if !s.callbackMessageMatchesPanel(ctx, chatID, topicID, callbackMessageID, panel) {
+			return nil, s.staleDetailsResponse(ctx), nil
+		}
 	}
 	return panel, nil, nil
 }
 
-func staleDetailsResponse() *DirectResponse {
-	return &DirectResponse{Text: staleDetailsText}
+func (s *Service) staleDetailsResponse(ctx context.Context) *DirectResponse {
+	return &DirectResponse{Text: s.t(ctx, "详情面板已过期。请使用 /show <thread>。", "Details panel is stale. Use /show <thread>.")}
+}
+
+func (s *Service) callbackMessageMatchesPanel(ctx context.Context, chatID, topicID, messageID int64, panel *model.ThreadPanel) bool {
+	if panel == nil || messageID == 0 {
+		return false
+	}
+	route, err := s.store.ResolveMessageRoute(ctx, chatID, topicID, messageID)
+	if err != nil || route == nil {
+		return false
+	}
+	if strings.TrimSpace(route.ThreadID) != strings.TrimSpace(panel.ThreadID) {
+		return false
+	}
+	routeTurnID := strings.TrimSpace(route.TurnID)
+	panelTurnID := strings.TrimSpace(panel.CurrentTurnID)
+	return routeTurnID == "" || panelTurnID == "" || routeTurnID == panelTurnID
 }
 
 type detailSection struct {

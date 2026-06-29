@@ -52,9 +52,8 @@ opens and binds that single thread.
 
 New Chat starts use `/newchat <prompt>`. The bridge creates a dated Chat folder
 under the configured Chats root, passes that cwd to App Server `thread/start`,
-and starts the first turn in that cwd. `/newthread <prompt>` is the separate
-escape hatch for starting without project selection or Chat folder creation;
-App Server may still report the daemon default cwd for that thread.
+and starts the first turn in that cwd. Project-scoped new threads are created
+only through a project's `New thread` action.
 
 The Telegram bot does not accept arbitrary filesystem paths for this flow.
 Creating or editing project work directories is a separate future feature.

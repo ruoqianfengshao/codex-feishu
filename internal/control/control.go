@@ -66,6 +66,11 @@ type ThreadAdmin interface {
 	ThreadRollback(ctx context.Context, threadID string, numTurns int) (map[string]any, error)
 }
 
+type ThreadGoals interface {
+	ThreadGoalSet(ctx context.Context, threadID, goal string) (map[string]any, error)
+	ThreadGoalClear(ctx context.Context, threadID string) (map[string]any, error)
+}
+
 type Turns interface {
 	TurnStart(ctx context.Context, threadID, message, cwd string, options TurnStartOptions) (map[string]any, error)
 	TurnSteer(ctx context.Context, threadID, turnID, message string) (map[string]any, error)
@@ -98,6 +103,7 @@ type RuntimeSession interface {
 	Lifecycle
 	EventSource
 	Threads
+	ThreadGoals
 	Turns
 	ServerRequests
 	Models

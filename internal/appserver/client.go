@@ -736,7 +736,7 @@ func (c *Client) resolveTurnStartOptions(ctx context.Context, options TurnStartO
 	if options.Model == "" {
 		model, err := c.defaultModel(ctx)
 		if err != nil {
-			return options, fmt.Errorf("codex model is required for collaboration mode %q; choose one with /model or fix model/list: %w", options.CollaborationMode, err)
+			return options, fmt.Errorf("codex model is required for collaboration mode %q; choose one with /setting or fix model/list: %w", options.CollaborationMode, err)
 		}
 		options.Model = model
 	}
@@ -1011,6 +1011,27 @@ func (c *Client) ThreadStart(ctx context.Context, cwd string) (map[string]any, e
 		params["cwd"] = cwd
 	}
 	result, err := c.Request(ctx, "thread/start", params)
+	if err != nil {
+		return nil, err
+	}
+	return asMap(result), nil
+}
+
+func (c *Client) ThreadGoalSet(ctx context.Context, threadID, goal string) (map[string]any, error) {
+	result, err := c.Request(ctx, "thread/goal/set", map[string]any{
+		"threadId": threadID,
+		"goal":     goal,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return asMap(result), nil
+}
+
+func (c *Client) ThreadGoalClear(ctx context.Context, threadID string) (map[string]any, error) {
+	result, err := c.Request(ctx, "thread/goal/clear", map[string]any{
+		"threadId": threadID,
+	})
 	if err != nil {
 		return nil, err
 	}

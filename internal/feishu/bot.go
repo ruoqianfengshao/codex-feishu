@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -30,7 +31,8 @@ const (
 	namespaceMessage = "feishu.message"
 	namespaceUser    = "feishu.user"
 
-	feishuControlRoomName = "Codex 控制室"
+	feishuWorkspaceRoomName = "Codex 工作台"
+	feishuBotLanguageKey    = "bot.language"
 )
 
 type Bot struct {
@@ -226,11 +228,42 @@ func (b *Bot) EnsureThreadTopic(ctx context.Context, chatID int64, thread model.
 		if existing.RootMessageID == 0 {
 			return existing, nil
 		}
+		valid, err := b.threadTopicRootMatchesChat(ctx, existing, chatID)
+		if err != nil {
+			return nil, err
+		}
+		if !valid {
+			return b.createThreadTopicRoot(ctx, sourceChatID, chatID, thread, snapshot, sourceMode)
+		}
 		if err := b.activateThreadTopic(ctx, sourceChatID, chatID, threadID, existing, sourceMode); err != nil {
 			return nil, err
 		}
 		return b.store.GetFeishuThreadTopicByCodexThread(ctx, chatID, threadID)
 	}
+	if existing, err := b.reusableThreadTopic(ctx, threadID); err != nil || existing != nil {
+		if err != nil || existing == nil {
+			return existing, err
+		}
+		if existing.RootMessageID == 0 {
+			return existing, nil
+		}
+		valid, err := b.threadTopicRootMatchesChat(ctx, existing, existing.ChatID)
+		if err != nil {
+			return nil, err
+		}
+		if !valid {
+			return b.createThreadTopicRoot(ctx, sourceChatID, chatID, thread, snapshot, sourceMode)
+		}
+		if err := b.activateThreadTopic(ctx, sourceChatID, existing.ChatID, threadID, existing, sourceMode); err != nil {
+			return nil, err
+		}
+		return b.store.GetFeishuThreadTopicByCodexThread(ctx, existing.ChatID, threadID)
+	}
+	return b.createThreadTopicRoot(ctx, sourceChatID, chatID, thread, snapshot, sourceMode)
+}
+
+func (b *Bot) createThreadTopicRoot(ctx context.Context, sourceChatID, chatID int64, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) (*model.FeishuThreadTopic, error) {
+	threadID := strings.TrimSpace(thread.ID)
 	openChatID, err := b.store.ExternalIDForNumeric(ctx, namespaceChat, chatID)
 	if err != nil {
 		return nil, err
@@ -274,6 +307,46 @@ func (b *Bot) EnsureThreadTopic(ctx context.Context, chatID int64, thread model.
 	return b.store.GetFeishuThreadTopicByCodexThread(ctx, chatID, threadID)
 }
 
+func (b *Bot) threadTopicRootMatchesChat(ctx context.Context, topic *model.FeishuThreadTopic, chatID int64) (bool, error) {
+	if topic == nil || topic.RootMessageID == 0 {
+		return false, nil
+	}
+	mapped, err := b.store.GetFeishuMessageByNumericID(ctx, topic.RootMessageID)
+	if err != nil || mapped == nil {
+		return mapped != nil, err
+	}
+	return mapped.ChatID == chatID, nil
+}
+
+func (b *Bot) reusableThreadTopic(ctx context.Context, threadID string) (*model.FeishuThreadTopic, error) {
+	existing, err := b.store.GetAnyFeishuThreadTopicByCodexThread(ctx, threadID)
+	if err != nil || existing == nil {
+		return existing, err
+	}
+	if b.isControlRoomTopic(ctx, existing) {
+		return nil, nil
+	}
+	return existing, nil
+}
+
+func (b *Bot) isControlRoomTopic(ctx context.Context, topic *model.FeishuThreadTopic) bool {
+	if topic == nil {
+		return false
+	}
+	if strings.TrimSpace(topic.OpenChatID) != "" {
+		sourceChatID, _, err := b.controlRoomSource(ctx, topic.OpenChatID)
+		if err == nil && sourceChatID != 0 {
+			return true
+		}
+	}
+	openChatID, err := b.store.ExternalIDForNumeric(ctx, namespaceChat, topic.ChatID)
+	if err != nil || strings.TrimSpace(openChatID) == "" {
+		return false
+	}
+	sourceChatID, _, err := b.controlRoomSource(ctx, openChatID)
+	return err == nil && sourceChatID != 0
+}
+
 func (b *Bot) ResolveThreadTopicTarget(ctx context.Context, chatID int64) (int64, error) {
 	return b.threadTopicChatID(ctx, chatID)
 }
@@ -282,12 +355,14 @@ func (b *Bot) activateThreadTopic(ctx context.Context, sourceChatID, topicChatID
 	if sourceMode != model.PanelSourceFeishuInput || topic == nil || topic.RootMessageID == 0 {
 		return nil
 	}
-	activated, err := b.store.GetState(ctx, feishuThreadTopicActivatedKey(topicChatID, threadID))
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(activated) != "" {
-		return nil
+	if !model.ForceThreadTopicActivation(ctx) {
+		activated, err := b.store.GetState(ctx, feishuThreadTopicActivatedKey(topicChatID, threadID))
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(activated) != "" {
+			return nil
+		}
 	}
 	content, err := encodeTextContent(b.threadTopicActivationText(ctx, sourceChatID, topicChatID))
 	if err != nil {
@@ -305,14 +380,15 @@ func (b *Bot) activateThreadTopic(ctx context.Context, sourceChatID, topicChatID
 }
 
 func (b *Bot) threadTopicActivationText(ctx context.Context, sourceChatID, topicChatID int64) string {
+	lang := b.botLanguage(ctx)
 	openUserID, _ := b.store.GetState(ctx, feishuControlUserKey(sourceChatID))
 	if strings.TrimSpace(openUserID) == "" && sourceChatID != topicChatID {
 		openUserID, _ = b.store.GetState(ctx, feishuControlUserKey(topicChatID))
 	}
 	if strings.TrimSpace(openUserID) == "" {
-		return "已打开会话"
+		return botText(lang, "已打开 Codex 会话话题", "Codex thread topic opened")
 	}
-	return fmt.Sprintf(`<at user_id="%s">你</at> 已打开会话`, strings.TrimSpace(openUserID))
+	return fmt.Sprintf(botText(lang, `<at user_id="%s">你</at> 已打开 Codex 会话话题`, `<at user_id="%s">You</at> opened the Codex thread topic`), strings.TrimSpace(openUserID))
 }
 
 func (b *Bot) threadTopicChatID(ctx context.Context, chatID int64) (int64, error) {
@@ -343,14 +419,7 @@ func (b *Bot) threadTopicChatID(ctx context.Context, chatID int64) (int64, error
 		}
 		isP2P = chatMode == "p2p"
 	}
-	if !isP2P {
-		return chatID, nil
-	}
-	openUserID, err := b.controlRoomUserOpenID(ctx, chatID, openChatID)
-	if err != nil {
-		return 0, err
-	}
-	return b.ensureControlRoom(ctx, chatID, openUserID)
+	return chatID, nil
 }
 
 func (b *Bot) controlRoomUserOpenID(ctx context.Context, chatID int64, openChatID string) (string, error) {
@@ -377,17 +446,19 @@ func (b *Bot) ensureControlRoom(ctx context.Context, p2pChatID int64, openUserID
 	if existing, err := b.store.GetState(ctx, key); err != nil {
 		return 0, err
 	} else if strings.TrimSpace(existing) != "" {
-		roomChatID, resolveErr := b.store.ResolveExternalID(ctx, namespaceChat, strings.TrimSpace(existing))
+		openChatID := strings.TrimSpace(existing)
+		roomChatID, resolveErr := b.store.ResolveExternalID(ctx, namespaceChat, openChatID)
 		if resolveErr != nil {
 			return 0, resolveErr
 		}
-		if err := b.rememberControlRoomSource(ctx, strings.TrimSpace(existing), p2pChatID); err != nil {
+		if err := b.rememberControlRoomSource(ctx, openChatID, p2pChatID); err != nil {
 			return 0, err
 		}
+		b.ensureWorkspaceMenu(ctx, openChatID)
 		return roomChatID, nil
 	}
 	createCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	openChatID, err := b.api.CreateThreadRoom(createCtx, feishuControlRoomName, []string{openUserID}, b.cfg.FeishuAppID, feishuControlRoomUUID(openUserID))
+	openChatID, err := b.api.CreateThreadRoom(createCtx, feishuWorkspaceRoomName, []string{openUserID}, b.cfg.FeishuAppID, feishuControlRoomUUID(openUserID))
 	cancel()
 	if err != nil {
 		return 0, err
@@ -406,7 +477,29 @@ func (b *Bot) ensureControlRoom(ctx context.Context, p2pChatID int64, openUserID
 	if err := b.rememberControlRoomSource(ctx, openChatID, p2pChatID); err != nil {
 		return 0, err
 	}
+	b.ensureWorkspaceMenu(ctx, openChatID)
 	return roomChatID, nil
+}
+
+func (b *Bot) ensureWorkspaceMenu(ctx context.Context, openChatID string) {
+	openChatID = strings.TrimSpace(openChatID)
+	if openChatID == "" || b.api == nil {
+		return
+	}
+	key := feishuWorkspaceMenuKey(openChatID)
+	if installed, err := b.store.GetState(ctx, key); err == nil && strings.TrimSpace(installed) != "" {
+		return
+	}
+	menuCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	err := b.api.CreateWorkspaceMenu(menuCtx, openChatID)
+	cancel()
+	if err != nil {
+		if b.logger != nil {
+			b.logger.Printf("feishu workspace menu setup skipped: chat=%s err=%v", shortHashForLog(openChatID), err)
+		}
+		return
+	}
+	_ = b.store.SetState(ctx, key, "1")
 }
 
 func (b *Bot) rememberChatMode(ctx context.Context, chatID int64, mode string) error {
@@ -474,6 +567,7 @@ func (b *Bot) sendRenderedCard(ctx context.Context, chatID int64, message model.
 }
 
 func (b *Bot) sendRenderedCardWithOptions(ctx context.Context, chatID int64, message model.RenderedMessage, buttons [][]model.ButtonSpec, options model.SendOptions) (int64, error) {
+	message = b.withUploadedRenderedImage(ctx, message)
 	card, err := buildRenderedCard(message, buttons)
 	if err != nil {
 		text := renderPlainText(message)
@@ -489,12 +583,45 @@ func (b *Bot) sendRenderedCardWithOptions(ctx context.Context, chatID int64, mes
 	return b.sendWithOptions(ctx, chatID, "interactive", card, options)
 }
 
+func (b *Bot) withUploadedRenderedImage(ctx context.Context, message model.RenderedMessage) model.RenderedMessage {
+	if strings.TrimSpace(message.ImageKey) != "" || strings.TrimSpace(message.ImagePath) == "" || b == nil || b.api == nil {
+		return message
+	}
+	data, err := os.ReadFile(strings.TrimSpace(message.ImagePath))
+	if err != nil {
+		if b.logger != nil {
+			b.logger.Printf("feishu read rendered image failed: %v", err)
+		}
+		return message
+	}
+	uploadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	imageKey, err := b.api.UploadImage(uploadCtx, data)
+	cancel()
+	if err != nil {
+		if b.logger != nil {
+			b.logger.Printf("feishu upload rendered image failed: %v", err)
+		}
+		return message
+	}
+	message.ImageKey = strings.TrimSpace(imageKey)
+	return message
+}
+
 func (b *Bot) sendSectionedCard(ctx context.Context, chatID int64, sections []model.MessageSection) (int64, error) {
 	card, err := buildSectionedCard(sections)
 	if err != nil {
 		return 0, err
 	}
-	return b.send(ctx, chatID, "interactive", card)
+	messageID, err := b.send(ctx, chatID, "interactive", card)
+	if err == nil || !sectionedCardHasRows(sections) {
+		return messageID, err
+	}
+	b.logger.Printf("feishu json 2.0 card send failed, falling back to legacy card: %v", err)
+	fallbackCard, fallbackErr := buildSectionedCardV1(sections)
+	if fallbackErr != nil {
+		return 0, errors.Join(err, fallbackErr)
+	}
+	return b.send(ctx, chatID, "interactive", fallbackCard)
 }
 
 func (b *Bot) send(ctx context.Context, chatID int64, msgType, content string) (int64, error) {
@@ -580,6 +707,13 @@ func (b *Bot) handleMessageEvent(ctx context.Context, event *larkim.P2MessageRec
 	openMessageID := value(message.MessageId)
 	openUserID := senderOpenID(event.Event.Sender)
 	text := parseTextContent(value(message.MessageType), value(message.Content))
+	if text == "" {
+		var err error
+		text, err = b.imageMessageText(ctx, message)
+		if err != nil {
+			return err
+		}
+	}
 	if openChatID == "" || openMessageID == "" || openUserID == "" || text == "" {
 		return nil
 	}
@@ -616,7 +750,7 @@ func (b *Bot) handleMessageEvent(ctx context.Context, event *larkim.P2MessageRec
 		return nil
 	}
 	if !b.isAllowed(openUserID, openChatID, userID, chatID) {
-		return b.sendFailureMessage(ctx, chatID, "This Feishu user or chat is not allowed to control codex-tg.")
+		return b.sendFailureMessage(ctx, chatID, b.t(ctx, "当前飞书用户或聊天无权控制 codex-tg。", "This Feishu user or chat is not allowed to control codex-tg."))
 	}
 	if replyTo == 0 && isFeishuGroupMessage(message) && !isFeishuCommand(text) {
 		return nil
@@ -624,9 +758,52 @@ func (b *Bot) handleMessageEvent(ctx context.Context, event *larkim.P2MessageRec
 	response, err := b.service.HandleMessageFromSource(ctx, chatID, 0, userID, text, replyTo, model.PanelSourceFeishuInput)
 	if err != nil {
 		_ = b.store.DeleteState(ctx, claimKey)
-		return b.sendFailureMessage(ctx, chatID, "Request failed inside the local Go bridge. Try /repair or /status.")
+		return b.sendFailureMessage(ctx, chatID, b.t(ctx, "本地 Go bridge 处理请求失败。请试试 /repair 或 /status。", "Request failed inside the local Go bridge. Try /repair or /status."))
 	}
 	return b.deliverDirectResponse(ctx, chatID, response)
+}
+
+func (b *Bot) imageMessageText(ctx context.Context, message *larkim.EventMessage) (string, error) {
+	if b == nil || message == nil || b.api == nil {
+		return "", nil
+	}
+	imageKey := parseImageKeyContent(value(message.MessageType), value(message.Content))
+	if imageKey == "" {
+		return "", nil
+	}
+	downloadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	data, err := b.api.DownloadImage(downloadCtx, value(message.MessageId), imageKey)
+	cancel()
+	if err != nil {
+		return "", err
+	}
+	path, err := b.saveInboundImage(value(message.MessageId), imageKey, data)
+	if err != nil {
+		return "", err
+	}
+	return b.t(ctx,
+		fmt.Sprintf("用户发送了一张图片，已保存到：%s\n请读取并分析这张图片。", path),
+		fmt.Sprintf("The user sent an image saved at: %s\nPlease read and analyze this image.", path),
+	), nil
+}
+
+func (b *Bot) saveInboundImage(openMessageID, imageKey string, data []byte) (string, error) {
+	if b == nil {
+		return "", errors.New("feishu bot is nil")
+	}
+	root := filepath.Join(b.cfg.Paths.DataDir, "feishu-attachments")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	name := shortHashForLog(firstNonEmptyString(openMessageID, imageKey))
+	if name == "" {
+		name = fmt.Sprintf("%d", time.Now().UTC().UnixNano())
+	}
+	path := filepath.Join(root, name+".jpg")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func (b *Bot) handleBotMenu(ctx context.Context, event *larkapplication.P2BotMenuV6) error {
@@ -653,11 +830,11 @@ func (b *Bot) handleBotMenu(ctx context.Context, event *larkapplication.P2BotMen
 		return err
 	}
 	if !b.isBotMenuAllowed(openUserID, userID) {
-		return b.sendOpenIDFailureMessage(ctx, openUserID, "This Feishu user is not allowed to control codex-tg.")
+		return b.sendOpenIDFailureMessage(ctx, openUserID, b.t(ctx, "当前飞书用户无权控制 codex-tg。", "This Feishu user is not allowed to control codex-tg."))
 	}
 	response, err := b.service.HandleMessageFromSource(ctx, chatID, 0, userID, command, 0, model.PanelSourceFeishuInput)
 	if err != nil {
-		return b.sendOpenIDFailureMessage(ctx, openUserID, "Request failed inside the local Go bridge. Try /repair or /status.")
+		return b.sendOpenIDFailureMessage(ctx, openUserID, b.t(ctx, "本地 Go bridge 处理请求失败。请试试 /repair 或 /status。", "Request failed inside the local Go bridge. Try /repair or /status."))
 	}
 	return b.deliverOpenIDDirectResponse(ctx, openUserID, chatID, response)
 }
@@ -696,7 +873,7 @@ func (b *Bot) handleCardAction(ctx context.Context, event *callback.CardActionTr
 		}
 	}
 	if !b.isAllowed(openUserID, openChatID, userID, chatID) {
-		return toast("Not allowed."), nil
+		return toast(b.t(ctx, "无权操作。", "Not allowed.")), nil
 	}
 	data := ""
 	if event.Event.Action != nil {
@@ -704,8 +881,8 @@ func (b *Bot) handleCardAction(ctx context.Context, event *callback.CardActionTr
 	}
 	response, err := b.service.HandleCallbackFromSource(ctx, chatID, 0, messageID, userID, data, model.PanelSourceFeishuInput)
 	if err != nil {
-		_ = b.sendFailureMessage(ctx, chatID, "Request failed inside the local Go bridge. Try /repair or /status.")
-		return toast("Request failed."), nil
+		_ = b.sendFailureMessage(ctx, chatID, b.t(ctx, "本地 Go bridge 处理请求失败。请试试 /repair 或 /status。", "Request failed inside the local Go bridge. Try /repair or /status."))
+		return toast(b.t(ctx, "请求失败。", "Request failed.")), nil
 	}
 	if err := b.deliverDirectResponse(ctx, chatID, response); err != nil {
 		return nil, err
@@ -713,7 +890,7 @@ func (b *Bot) handleCardAction(ctx context.Context, event *callback.CardActionTr
 	if response != nil && strings.TrimSpace(response.CallbackText) != "" {
 		return toast(response.CallbackText), nil
 	}
-	return toast("Done."), nil
+	return toast(b.t(ctx, "完成。", "Done.")), nil
 }
 
 func (b *Bot) replyToMessageID(ctx context.Context, message *larkim.EventMessage) (int64, error) {
@@ -897,6 +1074,10 @@ func feishuControlRoomKey(chatID int64) string {
 
 func feishuControlRoomSourceKey(openChatID string) string {
 	return "feishu.control_room_source." + shortHashForLog(openChatID)
+}
+
+func feishuWorkspaceMenuKey(openChatID string) string {
+	return "feishu.workspace_menu." + shortHashForLog(openChatID)
 }
 
 func feishuThreadTopicActivatedKey(chatID int64, threadID string) string {
@@ -1117,28 +1298,14 @@ func botMenuCommand(eventKey string) (string, bool) {
 		return "/help", true
 	case "status":
 		return "/status", true
-	case "threads":
-		return "/threads", true
+	case "chats":
+		return "/chats", true
 	case "projects":
 		return "/projects", true
-	case "newchat":
-		return "/newchat", true
-	case "newthread":
-		return "/newthread", true
-	case "settings":
-		return "/settings", true
-	case "model":
-		return "/model", true
-	case "effort":
-		return "/effort", true
-	case "context":
-		return "/context", true
-	case "observe_all":
-		return "/observe all", true
-	case "observe_off":
-		return "/observe off", true
-	case "panelmode":
-		return "/panelmode", true
+	case "new":
+		return "/new", true
+	case "setting", "settings":
+		return "/setting", true
 	case "repair":
 		return "/repair", true
 	default:
@@ -1160,6 +1327,34 @@ func toast(text string) *callback.CardActionTriggerResponse {
 	}
 	return &callback.CardActionTriggerResponse{
 		Toast: &callback.Toast{Type: "info", Content: text},
+	}
+}
+
+func (b *Bot) t(ctx context.Context, zh, en string) string {
+	return botText(b.botLanguage(ctx), zh, en)
+}
+
+func (b *Bot) botLanguage(ctx context.Context) string {
+	if b == nil || b.store == nil {
+		return "zh"
+	}
+	value, _ := b.store.GetState(ctx, feishuBotLanguageKey)
+	return normalizeBotLanguageForText(value)
+}
+
+func botText(lang, zh, en string) string {
+	if normalizeBotLanguageForText(lang) == "en" {
+		return en
+	}
+	return zh
+}
+
+func normalizeBotLanguageForText(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "en", "english", "en-us", "en_us":
+		return "en"
+	default:
+		return "zh"
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -49,6 +50,38 @@ func TestBuildCardIncludesButtonCallbackData(t *testing.T) {
 	}
 }
 
+func TestImageMessageTextDownloadsImageAndReturnsLocalPath(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	api := &fakeAPIClient{downloadedImages: map[string][]byte{"img_test": []byte("fake image bytes")}}
+	bot := &Bot{
+		cfg: config.Config{Paths: config.Paths{DataDir: dataDir}},
+		api: api,
+	}
+	event := newImageMessageEvent("oc_chat", "om_image", "ou_user", "img_test")
+
+	text, err := bot.imageMessageText(ctx, event.Event.Message)
+	if err != nil {
+		t.Fatalf("imageMessageText failed: %v", err)
+	}
+	if !strings.Contains(text, "feishu-attachments") || !strings.Contains(text, "请读取并分析这张图片") {
+		t.Fatalf("text = %q, want local image path prompt", text)
+	}
+	path := strings.TrimSpace(strings.Split(strings.Split(text, "：")[1], "\n")[0])
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) failed: %v", path, err)
+	}
+	if string(data) != "fake image bytes" {
+		t.Fatalf("saved image = %q, want fake image bytes", string(data))
+	}
+	if api.downloadImageMessageIDs[0] != "om_image" || api.downloadImageKeys[0] != "img_test" {
+		t.Fatalf("download image calls = messages %#v keys %#v, want om_image/img_test", api.downloadImageMessageIDs, api.downloadImageKeys)
+	}
+}
+
 func TestBuildCardGroupsButtonsThreePerRow(t *testing.T) {
 	t.Parallel()
 
@@ -81,7 +114,7 @@ func TestBuildCardGroupsButtonsThreePerRow(t *testing.T) {
 	}
 }
 
-func TestBuildCardTranslatesCommonButtonLabels(t *testing.T) {
+func TestBuildCardKeepsProvidedButtonLabels(t *testing.T) {
 	t.Parallel()
 
 	card, err := buildCard("Status", [][]model.ButtonSpec{{
@@ -91,14 +124,9 @@ func TestBuildCardTranslatesCommonButtonLabels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildCard failed: %v", err)
 	}
-	for _, label := range []string{"停止", "追加"} {
-		if !strings.Contains(card, label) {
-			t.Fatalf("card = %s, want translated label %q", card, label)
-		}
-	}
 	for _, label := range []string{"Stop", "Steer"} {
-		if strings.Contains(card, label) {
-			t.Fatalf("card = %s, want no English label %q", card, label)
+		if !strings.Contains(card, label) {
+			t.Fatalf("card = %s, want provided label %q", card, label)
 		}
 	}
 }
@@ -135,6 +163,261 @@ func TestBuildSectionedCardKeepsButtonsAfterEachSection(t *testing.T) {
 	}
 }
 
+func TestBuildSectionedCardRendersThreadRowsAsInteractiveContainersV2(t *testing.T) {
+	t.Parallel()
+
+	card, err := buildSectionedCard([]model.MessageSection{
+		{Text: "All chats"},
+		{
+			Text:    "codex-tg",
+			Heading: true,
+			Rows: []model.MessageSectionRow{
+				{
+					Title:    "Fix topic binding",
+					Trailing: "2 小时前",
+					Button:   model.ButtonSpec{Text: "Open", CallbackData: "cb_open"},
+				},
+				{
+					Title:    "Second thread",
+					Trailing: "昨天",
+					Button:   model.ButtonSpec{Text: "Open", CallbackData: "cb_second"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildSectionedCard failed: %v", err)
+	}
+	var decoded struct {
+		Schema string `json:"schema"`
+		Config struct {
+			Style struct {
+				Color map[string]struct {
+					LightMode string `json:"light_mode"`
+				} `json:"color"`
+			} `json:"style"`
+		} `json:"config"`
+		Body struct {
+			Elements []struct {
+				Tag             string `json:"tag"`
+				Content         string `json:"content"`
+				TextSize        string `json:"text_size"`
+				BackgroundStyle string `json:"background_style"`
+				BorderColor     string `json:"border_color"`
+				Behaviors       []struct {
+					Type  string            `json:"type"`
+					Value map[string]string `json:"value"`
+				} `json:"behaviors"`
+				Elements []struct {
+					Tag     string `json:"tag"`
+					Columns []struct {
+						Elements []struct {
+							Tag      string `json:"tag"`
+							Content  string `json:"content"`
+							TextSize string `json:"text_size"`
+						} `json:"elements"`
+					} `json:"columns"`
+				} `json:"elements"`
+			} `json:"elements"`
+		} `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(card), &decoded); err != nil {
+		t.Fatalf("card JSON invalid: %v", err)
+	}
+	if decoded.Schema != "2.0" {
+		t.Fatalf("schema = %q, want 2.0", decoded.Schema)
+	}
+	if decoded.Config.Style.Color["cus-0"].LightMode != "rgba(230,241,251,1.000000)" {
+		t.Fatalf("custom colors = %#v, want #E6F1FB equivalent", decoded.Config.Style.Color)
+	}
+	elements := decoded.Body.Elements
+	if len(elements) != 4 {
+		t.Fatalf("elements = %#v, want header, project title, two interactive rows", elements)
+	}
+	if elements[1].Content != "codex-tg" || elements[1].TextSize != "xx-large" {
+		t.Fatalf("project title = %#v, want styled project heading", elements[1])
+	}
+	first := elements[2]
+	if first.Tag != "interactive_container" || len(first.Behaviors) != 1 || first.Behaviors[0].Type != "callback" || first.Behaviors[0].Value["callback_data"] != "cb_open" {
+		t.Fatalf("first row = %#v, want callback interactive container", first)
+	}
+	if first.BackgroundStyle != "cus-0" || first.BorderColor != "cus-1" {
+		t.Fatalf("first row style = %#v, want custom light container", first)
+	}
+	if len(first.Elements) != 1 || len(first.Elements[0].Columns) != 2 {
+		t.Fatalf("first row elements = %#v, want two-column content", first.Elements)
+	}
+	left := first.Elements[0].Columns[0]
+	if len(left.Elements) < 2 || left.Elements[0].Content != "Fix topic binding" || left.Elements[0].TextSize != "heading" || left.Elements[1].Content != "<font color='grey'>2 小时前</font>" {
+		t.Fatalf("left column = %#v, want title and grey time", left)
+	}
+	second := elements[3]
+	if second.Tag != "interactive_container" || second.Behaviors[0].Value["callback_data"] != "cb_second" {
+		t.Fatalf("second row = %#v, want second callback interactive container", second)
+	}
+}
+
+func TestBuildSectionedCardRendersMetricRowsAsDashboardV2(t *testing.T) {
+	t.Parallel()
+
+	card, err := buildSectionedCard([]model.MessageSection{
+		{
+			Text:    "系统",
+			Heading: true,
+			Rows: []model.MessageSectionRow{
+				{Title: "Core", Trailing: "Ready"},
+				{Title: "Uptime", Trailing: "1h 02m"},
+				{Title: "Started", Trailing: "2026-06-28 09:00:00"},
+			},
+		},
+		{
+			Text:    "Codex",
+			Heading: true,
+			Rows: []model.MessageSectionRow{
+				{Title: "Live session", Trailing: "Online"},
+			},
+			Buttons: [][]model.ButtonSpec{
+				{{Text: "中文", CallbackData: "zh"}, {Text: "English", CallbackData: "en"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildSectionedCard failed: %v", err)
+	}
+	var decoded struct {
+		Schema string `json:"schema"`
+		Body   struct {
+			Elements []struct {
+				Tag      string `json:"tag"`
+				Content  string `json:"content"`
+				TextSize string `json:"text_size"`
+				Columns  []struct {
+					Width    string `json:"width"`
+					Elements []struct {
+						Tag             string `json:"tag"`
+						BackgroundStyle string `json:"background_style"`
+						Behaviors       []any  `json:"behaviors"`
+						Elements        []struct {
+							Tag      string `json:"tag"`
+							Content  string `json:"content"`
+							TextSize string `json:"text_size"`
+						} `json:"elements"`
+					} `json:"elements"`
+				} `json:"columns"`
+			} `json:"elements"`
+		} `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(card), &decoded); err != nil {
+		t.Fatalf("card JSON invalid: %v", err)
+	}
+	if decoded.Schema != "2.0" {
+		t.Fatalf("schema = %q, want JSON 2.0 dashboard card", decoded.Schema)
+	}
+	if len(decoded.Body.Elements) != 6 {
+		t.Fatalf("elements = %#v, want title, two section headings, KPI rows, and button row", decoded.Body.Elements)
+	}
+	if decoded.Body.Elements[0].Tag != "markdown" || decoded.Body.Elements[0].Content != "**Codex Status**" || decoded.Body.Elements[0].TextSize != "heading" {
+		t.Fatalf("dashboard title = %#v, want card title", decoded.Body.Elements[0])
+	}
+	for _, element := range decoded.Body.Elements {
+		if element.Tag == "action" {
+			t.Fatalf("dashboard JSON 2.0 card contains unsupported action element: %#v", decoded.Body.Elements)
+		}
+	}
+	if decoded.Body.Elements[1].Tag != "markdown" || decoded.Body.Elements[1].Content != "**系统**" {
+		t.Fatalf("first section heading = %#v, want system heading", decoded.Body.Elements[1])
+	}
+	firstRow := decoded.Body.Elements[2]
+	if firstRow.Tag != "column_set" || len(firstRow.Columns) != 3 {
+		t.Fatalf("first KPI row = %#v, want three KPI columns", firstRow)
+	}
+	firstMetric := firstRow.Columns[0]
+	if firstMetric.Width != "weighted" || len(firstMetric.Elements) != 1 || firstMetric.Elements[0].Tag != "interactive_container" || firstMetric.Elements[0].BackgroundStyle != "cus-2" || len(firstMetric.Elements[0].Behaviors) != 0 {
+		t.Fatalf("first metric column = %#v, want independent non-clickable KPI container", firstMetric)
+	}
+	if len(firstMetric.Elements[0].Elements) < 2 || firstMetric.Elements[0].Elements[0].Content != "<font color='grey'>Core</font>" || firstMetric.Elements[0].Elements[1].Content != "Ready" || firstMetric.Elements[0].Elements[1].TextSize != "xx-large" {
+		t.Fatalf("first metric content = %#v, want label and large value", firstMetric.Elements[0].Elements)
+	}
+	if decoded.Body.Elements[3].Tag != "markdown" || decoded.Body.Elements[3].Content != "**Codex**" {
+		t.Fatalf("second section heading = %#v, want Codex heading", decoded.Body.Elements[3])
+	}
+	secondRow := decoded.Body.Elements[4]
+	if secondRow.Tag != "column_set" || len(secondRow.Columns) != 1 || len(secondRow.Columns[0].Elements) != 1 || secondRow.Columns[0].Elements[0].BackgroundStyle != "cus-2" {
+		t.Fatalf("second KPI row = %#v, want KPI card for lower section", secondRow)
+	}
+}
+
+func TestBuildSectionedCardAddsDividerBeforeLaterHeadingSections(t *testing.T) {
+	t.Parallel()
+
+	card, err := buildSectionedCard([]model.MessageSection{
+		{Text: "All chats"},
+		{Text: "project-a", Heading: true},
+		{Text: "project-b", Heading: true, Divider: true},
+	})
+	if err != nil {
+		t.Fatalf("buildSectionedCard failed: %v", err)
+	}
+	var decoded struct {
+		Elements []struct {
+			Tag     string `json:"tag"`
+			Content string `json:"content"`
+		} `json:"elements"`
+	}
+	if err := json.Unmarshal([]byte(card), &decoded); err != nil {
+		t.Fatalf("card JSON invalid: %v", err)
+	}
+	if len(decoded.Elements) != 4 {
+		t.Fatalf("elements = %#v, want header, project-a, divider, project-b", decoded.Elements)
+	}
+	if decoded.Elements[2].Tag != "hr" {
+		t.Fatalf("divider element = %#v, want hr", decoded.Elements[2])
+	}
+	if decoded.Elements[3].Content != "**<font size=\"x-large\">project-b</font>**" {
+		t.Fatalf("project-b title = %q, want x-large bold markdown", decoded.Elements[3].Content)
+	}
+}
+
+func TestWorkspaceMenuShape(t *testing.T) {
+	t.Parallel()
+
+	menu := larkim.NewChatMenuTreeBuilder().
+		ChatMenuTopLevels([]*larkim.ChatMenuTopLevel{
+			chatMenuTopLevel("codex_recent", "会话", []chatMenuEntry{
+				{id: "codex_chats", name: "最近会话", url: feishuMenuCommandURL("chats")},
+				{id: "codex_projects", name: "项目", url: feishuMenuCommandURL("projects")},
+			}),
+			chatMenuTopLevel("codex_new", "新建", []chatMenuEntry{
+				{id: "codex_new", name: "新建 Chat", url: feishuMenuCommandURL("new")},
+			}),
+			chatMenuTopLevel("codex_more", "更多", []chatMenuEntry{
+				{id: "codex_status", name: "状态", url: feishuMenuCommandURL("status")},
+				{id: "codex_setting", name: "设置", url: feishuMenuCommandURL("setting")},
+				{id: "codex_repair", name: "修复", url: feishuMenuCommandURL("repair")},
+			}),
+		}).
+		Build()
+
+	if len(menu.ChatMenuTopLevels) != 3 {
+		t.Fatalf("top level menu count = %d, want 3", len(menu.ChatMenuTopLevels))
+	}
+	if got := value(menu.ChatMenuTopLevels[0].ChatMenuItem.Name); got != "会话" {
+		t.Fatalf("first menu name = %q, want 会话", got)
+	}
+	if got := value(menu.ChatMenuTopLevels[0].Children[0].ChatMenuItem.Name); got != "最近会话" {
+		t.Fatalf("first child name = %q, want 最近会话", got)
+	}
+	if got := value(menu.ChatMenuTopLevels[0].Children[0].ChatMenuItem.RedirectLink.CommonUrl); !strings.Contains(got, "command=chats") {
+		t.Fatalf("first child URL = %q, want chats command", got)
+	}
+	if got := value(menu.ChatMenuTopLevels[1].Children[0].ChatMenuItem.RedirectLink.CommonUrl); !strings.Contains(got, "command=new") {
+		t.Fatalf("new child URL = %q, want new command", got)
+	}
+	if got := value(menu.ChatMenuTopLevels[2].Children[1].ChatMenuItem.RedirectLink.CommonUrl); !strings.Contains(got, "command=setting") {
+		t.Fatalf("settings child URL = %q, want setting command", got)
+	}
+}
+
 func TestCallbackDataFromValue(t *testing.T) {
 	t.Parallel()
 
@@ -148,10 +431,12 @@ func TestBotMenuCommandMapsStableEventKeys(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]string{
-		"help":        "/help",
-		"STATUS":      "/status",
-		"observe_all": "/observe all",
-		"observe_off": "/observe off",
+		"chats":    "/chats",
+		"help":     "/help",
+		"new":      "/new",
+		"projects": "/projects",
+		"setting":  "/setting",
+		"STATUS":   "/status",
 	}
 	for key, want := range tests {
 		got, ok := botMenuCommand(key)
@@ -164,6 +449,17 @@ func TestBotMenuCommandMapsStableEventKeys(t *testing.T) {
 	}
 	if got, ok := botMenuCommand("default"); ok || got != "" {
 		t.Fatalf("botMenuCommand(default) = %q, %v; hidden fallback must not be exposed", got, ok)
+	}
+	if got, ok := botMenuCommand("observe_all"); ok || got != "" {
+		t.Fatalf("botMenuCommand(observe_all) = %q, %t; want removed", got, ok)
+	}
+	if got, ok := botMenuCommand("newthread"); ok || got != "" {
+		t.Fatalf("botMenuCommand(newthread) = %q, %t; want removed", got, ok)
+	}
+	for _, removed := range []string{"workspace", "home", "threads", "newchat", "language", "lang", "model", "effort"} {
+		if got, ok := botMenuCommand(removed); ok || got != "" {
+			t.Fatalf("botMenuCommand(%s) = %q, %t; want removed", removed, got, ok)
+		}
 	}
 }
 
@@ -259,7 +555,44 @@ func TestSendRenderedMessagesUsesDesktopUserHeader(t *testing.T) {
 	if api.lastMsgType != "interactive" {
 		t.Fatalf("msgType = %q, want interactive", api.lastMsgType)
 	}
-	for _, want := range []string{`"header"`, `"template":"blue"`, "来自 Codex 桌面端", "Desktop prompt"} {
+	for _, want := range []string{`"header"`, `"template":"blue"`, "来自 Codex 桌面端用户输入", "Desktop prompt"} {
+		if !strings.Contains(api.lastContent, want) {
+			t.Fatalf("content missing %q:\n%s", want, api.lastContent)
+		}
+	}
+}
+
+func TestSendRenderedMessagesUploadsAndRendersImage(t *testing.T) {
+	t.Parallel()
+
+	store, err := storage.Open(t.TempDir() + "/state.sqlite")
+	if err != nil {
+		t.Fatalf("storage.Open failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	chatID, err := store.ResolveExternalID(context.Background(), namespaceChat, "oc_chat")
+	if err != nil {
+		t.Fatalf("ResolveExternalID failed: %v", err)
+	}
+	imagePath := t.TempDir() + "/prompt.jpg"
+	if err := os.WriteFile(imagePath, []byte("fake image bytes"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	api := &fakeAPIClient{uploadedImageKey: "img_uploaded"}
+	bot := &Bot{store: store, api: api}
+
+	_, err = bot.SendRenderedMessages(context.Background(), chatID, 0, []model.RenderedMessage{{
+		Text:      "Desktop image prompt",
+		Style:     model.MessageStyleDesktopUser,
+		ImagePath: imagePath,
+	}}, nil, model.SendOptions{})
+	if err != nil {
+		t.Fatalf("SendRenderedMessages failed: %v", err)
+	}
+	if got, want := string(api.uploadedImageData), "fake image bytes"; got != want {
+		t.Fatalf("uploaded image data = %q, want %q", got, want)
+	}
+	for _, want := range []string{`"tag":"img"`, `"img_key":"img_uploaded"`, "Desktop image prompt"} {
 		if !strings.Contains(api.lastContent, want) {
 			t.Fatalf("content missing %q:\n%s", want, api.lastContent)
 		}
@@ -362,7 +695,68 @@ func TestEnsureThreadTopicMaterializesExistingRootWithoutThreadID(t *testing.T) 
 	}
 }
 
-func TestEnsureThreadTopicCreatesControlRoomForP2PChat(t *testing.T) {
+func TestEnsureThreadTopicRecreatesRootWhenStoredRootBelongsToAnotherChat(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := storage.Open(t.TempDir() + "/state.sqlite")
+	if err != nil {
+		t.Fatalf("storage.Open failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	p2pChatID, err := store.ResolveExternalID(ctx, namespaceChat, "oc_p2p")
+	if err != nil {
+		t.Fatalf("ResolveExternalID(p2p chat) failed: %v", err)
+	}
+	otherChatID, err := store.ResolveExternalID(ctx, namespaceChat, "oc_other")
+	if err != nil {
+		t.Fatalf("ResolveExternalID(other chat) failed: %v", err)
+	}
+	rootMessageID, err := store.ResolveExternalID(ctx, namespaceMessage, "om_other_root")
+	if err != nil {
+		t.Fatalf("ResolveExternalID(root message) failed: %v", err)
+	}
+	if err := store.PutFeishuMessageMap(ctx, rootMessageID, "om_other_root", otherChatID, "oc_other"); err != nil {
+		t.Fatalf("PutFeishuMessageMap(root) failed: %v", err)
+	}
+	if err := store.UpsertFeishuThreadTopic(ctx, model.FeishuThreadTopic{
+		ChatID:            p2pChatID,
+		OpenChatID:        "oc_p2p",
+		ThreadID:          "thread-mismatched-root",
+		RootMessageID:     rootMessageID,
+		RootOpenMessageID: "om_other_root",
+	}); err != nil {
+		t.Fatalf("UpsertFeishuThreadTopic failed: %v", err)
+	}
+	if err := store.SetState(ctx, feishuChatModeKey(p2pChatID), "p2p"); err != nil {
+		t.Fatalf("SetState(chat mode) failed: %v", err)
+	}
+	api := &fakeAPIClient{}
+	bot := &Bot{store: store, api: api}
+
+	topic, err := bot.EnsureThreadTopic(ctx, p2pChatID, model.Thread{ID: "thread-mismatched-root", Title: "Mismatched"}, nil, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("EnsureThreadTopic failed: %v", err)
+	}
+	if api.sendCalls != 1 {
+		t.Fatalf("sendCalls = %d, want new root message in p2p chat", api.sendCalls)
+	}
+	if api.lastReceiveID != "oc_p2p" {
+		t.Fatalf("send receive id = %q, want oc_p2p", api.lastReceiveID)
+	}
+	if topic == nil || topic.ChatID != p2pChatID || topic.RootMessageID == rootMessageID {
+		t.Fatalf("topic = %#v, want recreated p2p root", topic)
+	}
+	mapped, err := store.GetFeishuMessageByNumericID(ctx, topic.RootMessageID)
+	if err != nil {
+		t.Fatalf("GetFeishuMessageByNumericID failed: %v", err)
+	}
+	if mapped == nil || mapped.ChatID != p2pChatID {
+		t.Fatalf("mapped root = %#v, want p2p chat root", mapped)
+	}
+}
+
+func TestEnsureThreadTopicCreatesP2PThreadReply(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -392,24 +786,17 @@ func TestEnsureThreadTopicCreatesControlRoomForP2PChat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureThreadTopic failed: %v", err)
 	}
-	if api.createThreadRoomCalls != 1 {
-		t.Fatalf("CreateThreadRoom calls = %d, want 1", api.createThreadRoomCalls)
+	if api.createThreadRoomCalls != 0 {
+		t.Fatalf("CreateThreadRoom calls = %d, want 0", api.createThreadRoomCalls)
 	}
-	if api.lastRoomName != feishuControlRoomName {
-		t.Fatalf("room name = %q, want %q", api.lastRoomName, feishuControlRoomName)
+	if api.createWorkspaceMenuCalls != 0 {
+		t.Fatalf("CreateWorkspaceMenu calls = %d, want 0", api.createWorkspaceMenuCalls)
 	}
-	if got := fmt.Sprint(api.lastRoomUserOpenIDs); got != "[ou_user]" {
-		t.Fatalf("room users = %s, want [ou_user]", got)
+	if topic == nil || topic.ChatID != p2pChatID || topic.OpenChatID != "oc_p2p" {
+		t.Fatalf("topic = %#v, want p2p chat", topic)
 	}
-	roomChatID, err := store.ResolveExternalID(ctx, namespaceChat, "oc_control_room")
-	if err != nil {
-		t.Fatalf("ResolveExternalID(control room) failed: %v", err)
-	}
-	if topic == nil || topic.ChatID != roomChatID || topic.OpenChatID != "oc_control_room" {
-		t.Fatalf("topic = %#v, want control room chat", topic)
-	}
-	if api.lastReceiveID != "oc_control_room" {
-		t.Fatalf("send receive id = %q, want oc_control_room", api.lastReceiveID)
+	if api.lastReceiveID != "oc_p2p" {
+		t.Fatalf("send receive id = %q, want oc_p2p", api.lastReceiveID)
 	}
 	if api.replyCalls != 1 {
 		t.Fatalf("replyCalls = %d, want activation reply", api.replyCalls)
@@ -417,26 +804,166 @@ func TestEnsureThreadTopicCreatesControlRoomForP2PChat(t *testing.T) {
 	if api.lastOpenMessageID != "om_fake" || api.lastMsgType != "text" || !api.lastReplyInThread {
 		t.Fatalf("activation reply target=%q type=%q inThread=%v, want om_fake text true", api.lastOpenMessageID, api.lastMsgType, api.lastReplyInThread)
 	}
-	if got := parseTextContent("text", api.lastContent); got != `<at user_id="ou_user">你</at> 已打开会话` {
+	if got := parseTextContent("text", api.lastContent); got != `<at user_id="ou_user">你</at> 已打开 Codex 会话话题` {
 		t.Fatalf("activation content = %q, want mention", got)
 	}
 	topic, err = bot.EnsureThreadTopic(ctx, p2pChatID, model.Thread{ID: "thread-from-dm", Title: "From DM"}, nil, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("EnsureThreadTopic second call failed: %v", err)
 	}
-	if topic == nil || topic.ChatID != roomChatID {
-		t.Fatalf("second topic = %#v, want control room chat", topic)
+	if topic == nil || topic.ChatID != p2pChatID {
+		t.Fatalf("second topic = %#v, want p2p chat", topic)
 	}
 	if api.replyCalls != 1 {
 		t.Fatalf("replyCalls after second call = %d, want no duplicate activation", api.replyCalls)
+	}
+	topic, err = bot.EnsureThreadTopic(model.WithForcedThreadTopicActivation(ctx), p2pChatID, model.Thread{ID: "thread-from-dm", Title: "From DM"}, nil, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("EnsureThreadTopic forced activation failed: %v", err)
+	}
+	if topic == nil || topic.ChatID != p2pChatID {
+		t.Fatalf("forced topic = %#v, want p2p chat", topic)
+	}
+	if api.replyCalls != 2 {
+		t.Fatalf("replyCalls after forced activation = %d, want duplicate activation for user open", api.replyCalls)
+	}
+	if api.createWorkspaceMenuCalls != 0 {
+		t.Fatalf("CreateWorkspaceMenu calls after second call = %d, want no menu setup", api.createWorkspaceMenuCalls)
 	}
 	storedRoom, err := store.GetState(ctx, feishuControlRoomKey(p2pChatID))
 	if err != nil {
 		t.Fatalf("GetState(control room) failed: %v", err)
 	}
-	if storedRoom != "oc_control_room" {
-		t.Fatalf("control room state = %q, want oc_control_room", storedRoom)
+	if storedRoom != "" {
+		t.Fatalf("control room state = %q, want empty", storedRoom)
 	}
+}
+
+func TestEnsureThreadTopicReusesExistingTopicAcrossChats(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := storage.Open(t.TempDir() + "/state.sqlite")
+	if err != nil {
+		t.Fatalf("storage.Open failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	existingChatID, err := store.ResolveExternalID(ctx, namespaceChat, "oc_existing")
+	if err != nil {
+		t.Fatalf("ResolveExternalID(existing chat) failed: %v", err)
+	}
+	sourceChatID, err := store.ResolveExternalID(ctx, namespaceChat, "oc_source")
+	if err != nil {
+		t.Fatalf("ResolveExternalID(source chat) failed: %v", err)
+	}
+	rootMessageID, err := store.ResolveExternalID(ctx, namespaceMessage, "om_existing_root")
+	if err != nil {
+		t.Fatalf("ResolveExternalID(root message) failed: %v", err)
+	}
+	if err := store.PutFeishuMessageMap(ctx, rootMessageID, "om_existing_root", existingChatID, "oc_existing"); err != nil {
+		t.Fatalf("PutFeishuMessageMap(root) failed: %v", err)
+	}
+	if err := store.SetState(ctx, feishuChatModeKey(sourceChatID), "group"); err != nil {
+		t.Fatalf("SetState(source chat mode) failed: %v", err)
+	}
+	if err := store.SetState(ctx, feishuControlUserKey(sourceChatID), "ou_user"); err != nil {
+		t.Fatalf("SetState(control user) failed: %v", err)
+	}
+	if err := store.UpsertFeishuThreadTopic(ctx, model.FeishuThreadTopic{
+		ChatID:            existingChatID,
+		OpenChatID:        "oc_existing",
+		ThreadID:          "thread-cross-chat",
+		RootMessageID:     rootMessageID,
+		RootOpenMessageID: "om_existing_root",
+		FeishuThreadID:    "othread_existing",
+	}); err != nil {
+		t.Fatalf("UpsertFeishuThreadTopic failed: %v", err)
+	}
+	api := &fakeAPIClient{}
+	bot := &Bot{store: store, api: api}
+
+	topic, err := bot.EnsureThreadTopic(ctx, sourceChatID, model.Thread{ID: "thread-cross-chat", Title: "Cross Chat"}, nil, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("EnsureThreadTopic failed: %v", err)
+	}
+	if topic == nil || topic.ChatID != existingChatID || topic.RootMessageID != rootMessageID {
+		t.Fatalf("topic = %#v, want existing cross-chat topic", topic)
+	}
+	if api.sendCalls != 0 {
+		t.Fatalf("sendCalls = %d, want no duplicate root card", api.sendCalls)
+	}
+	if api.replyCalls != 1 || api.lastOpenMessageID != "om_existing_root" || !api.lastReplyInThread {
+		t.Fatalf("activation reply calls=%d target=%q inThread=%v, want existing topic activation", api.replyCalls, api.lastOpenMessageID, api.lastReplyInThread)
+	}
+}
+
+func TestEnsureThreadTopicDoesNotReuseControlRoomTopicAcrossChats(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := storage.Open(t.TempDir() + "/state.sqlite")
+	if err != nil {
+		t.Fatalf("storage.Open failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	controlRoomChatID, err := store.ResolveExternalID(ctx, namespaceChat, "oc_control_room")
+	if err != nil {
+		t.Fatalf("ResolveExternalID(control room) failed: %v", err)
+	}
+	p2pChatID, err := store.ResolveExternalID(ctx, namespaceChat, "oc_p2p")
+	if err != nil {
+		t.Fatalf("ResolveExternalID(p2p chat) failed: %v", err)
+	}
+	rootMessageID, err := store.ResolveExternalID(ctx, namespaceMessage, "om_control_room_root")
+	if err != nil {
+		t.Fatalf("ResolveExternalID(root message) failed: %v", err)
+	}
+	if err := store.PutFeishuMessageMap(ctx, rootMessageID, "om_control_room_root", controlRoomChatID, "oc_control_room"); err != nil {
+		t.Fatalf("PutFeishuMessageMap(root) failed: %v", err)
+	}
+	if err := store.SetState(ctx, feishuChatModeKey(p2pChatID), "p2p"); err != nil {
+		t.Fatalf("SetState(p2p chat mode) failed: %v", err)
+	}
+	if err := store.SetState(ctx, feishuControlUserKey(p2pChatID), "ou_user"); err != nil {
+		t.Fatalf("SetState(control user) failed: %v", err)
+	}
+	if err := botRememberControlRoomSourceForTest(ctx, store, "oc_control_room", p2pChatID); err != nil {
+		t.Fatalf("remember control room source failed: %v", err)
+	}
+	if err := store.UpsertFeishuThreadTopic(ctx, model.FeishuThreadTopic{
+		ChatID:            controlRoomChatID,
+		OpenChatID:        "oc_control_room",
+		ThreadID:          "thread-control-room",
+		RootMessageID:     rootMessageID,
+		RootOpenMessageID: "om_control_room_root",
+		FeishuThreadID:    "othread_control_room",
+	}); err != nil {
+		t.Fatalf("UpsertFeishuThreadTopic failed: %v", err)
+	}
+	api := &fakeAPIClient{}
+	bot := &Bot{cfg: config.Config{FeishuAppID: "cli_app"}, store: store, api: api}
+
+	topic, err := bot.EnsureThreadTopic(ctx, p2pChatID, model.Thread{ID: "thread-control-room", Title: "Control Room"}, nil, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("EnsureThreadTopic failed: %v", err)
+	}
+	if topic == nil || topic.ChatID != p2pChatID || topic.RootMessageID == rootMessageID {
+		t.Fatalf("topic = %#v, want new p2p topic instead of control room topic", topic)
+	}
+	if api.sendCalls != 1 {
+		t.Fatalf("sendCalls = %d, want new p2p root card", api.sendCalls)
+	}
+	if api.replyCalls != 1 || api.lastOpenMessageID != "om_fake" {
+		t.Fatalf("activation reply calls=%d target=%q, want activation on new p2p root", api.replyCalls, api.lastOpenMessageID)
+	}
+}
+
+func botRememberControlRoomSourceForTest(ctx context.Context, store *storage.Store, roomOpenChatID string, p2pChatID int64) error {
+	sourceOpenChatID, err := store.ExternalIDForNumeric(ctx, namespaceChat, p2pChatID)
+	if err != nil {
+		return err
+	}
+	return store.SetState(ctx, feishuControlRoomSourceKey(roomOpenChatID), fmt.Sprintf("%d|%s", p2pChatID, sourceOpenChatID))
 }
 
 func TestRenderThreadTopicRootTextUsesCompactTitleAndProject(t *testing.T) {
@@ -699,7 +1226,7 @@ func TestUnknownFeishuTopicGroupPlainMessageShouldBeIgnored(t *testing.T) {
 	if isFeishuCommand("hello") {
 		t.Fatal("plain text should not be treated as command")
 	}
-	if !isFeishuCommand(" /threads") {
+	if !isFeishuCommand(" /chats") {
 		t.Fatal("slash command should be treated as command")
 	}
 }
@@ -725,27 +1252,55 @@ func newTextMessageEvent(openChatID, openMessageID, openUserID, text string) *la
 	}
 }
 
+func newImageMessageEvent(openChatID, openMessageID, openUserID, imageKey string) *larkim.P2MessageReceiveV1 {
+	messageType := "image"
+	content, err := json.Marshal(imageContent{ImageKey: imageKey})
+	if err != nil {
+		panic(err)
+	}
+	contentText := string(content)
+	return &larkim.P2MessageReceiveV1{
+		Event: &larkim.P2MessageReceiveV1Data{
+			Sender: &larkim.EventSender{
+				SenderId: &larkim.UserId{OpenId: &openUserID},
+			},
+			Message: &larkim.EventMessage{
+				ChatId:      &openChatID,
+				MessageId:   &openMessageID,
+				MessageType: &messageType,
+				Content:     &contentText,
+			},
+		},
+	}
+}
+
 func ptrString(value string) *string {
 	return &value
 }
 
 type fakeAPIClient struct {
-	lastMsgType           string
-	lastContent           string
-	lastReceiveID         string
-	lastOpenMessageID     string
-	lastText              string
-	lastCard              string
-	lastReplyInThread     bool
-	lastRoomName          string
-	lastRoomUserOpenIDs   []string
-	updateTextCalls       int
-	patchCardCalls        int
-	sendCalls             int
-	replyCalls            int
-	deleteCalls           int
-	createThreadRoomCalls int
-	chatModes             map[string]string
+	lastMsgType              string
+	lastContent              string
+	lastReceiveID            string
+	lastOpenMessageID        string
+	lastText                 string
+	lastCard                 string
+	lastReplyInThread        bool
+	lastRoomName             string
+	lastRoomUserOpenIDs      []string
+	updateTextCalls          int
+	patchCardCalls           int
+	createWorkspaceMenuCalls int
+	sendCalls                int
+	replyCalls               int
+	deleteCalls              int
+	createThreadRoomCalls    int
+	chatModes                map[string]string
+	downloadedImages         map[string][]byte
+	downloadImageMessageIDs  []string
+	downloadImageKeys        []string
+	uploadedImageData        []byte
+	uploadedImageKey         string
 }
 
 func (f *fakeAPIClient) Send(_ context.Context, receiveID, msgType, content string) (sentMessage, error) {
@@ -787,6 +1342,11 @@ func (f *fakeAPIClient) CreateThreadRoom(_ context.Context, name string, userOpe
 	return "oc_control_room", nil
 }
 
+func (f *fakeAPIClient) CreateWorkspaceMenu(context.Context, string) error {
+	f.createWorkspaceMenuCalls++
+	return nil
+}
+
 func (f *fakeAPIClient) UpdateText(_ context.Context, openMessageID, text string) error {
 	f.lastOpenMessageID = openMessageID
 	f.lastText = text
@@ -808,4 +1368,23 @@ func (f *fakeAPIClient) Delete(context.Context, string) error {
 
 func (f *fakeAPIClient) UploadFile(context.Context, string, []byte) (string, error) {
 	return "", nil
+}
+
+func (f *fakeAPIClient) UploadImage(_ context.Context, data []byte) (string, error) {
+	f.uploadedImageData = append([]byte(nil), data...)
+	if f.uploadedImageKey != "" {
+		return f.uploadedImageKey, nil
+	}
+	return "img_fake", nil
+}
+
+func (f *fakeAPIClient) DownloadImage(_ context.Context, openMessageID, imageKey string) ([]byte, error) {
+	f.downloadImageMessageIDs = append(f.downloadImageMessageIDs, openMessageID)
+	f.downloadImageKeys = append(f.downloadImageKeys, imageKey)
+	if f.downloadedImages != nil {
+		if data, ok := f.downloadedImages[imageKey]; ok {
+			return data, nil
+		}
+	}
+	return nil, fmt.Errorf("image %s not found", imageKey)
 }

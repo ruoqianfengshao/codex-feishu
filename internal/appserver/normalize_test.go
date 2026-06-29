@@ -54,6 +54,25 @@ func TestThreadsFromListSkipsInternalSubAgentThreads(t *testing.T) {
 	}
 }
 
+func TestThreadFromPayloadPreservesArchivedAndMissingTitle(t *testing.T) {
+	t.Parallel()
+
+	thread := ThreadFromPayload(map[string]any{
+		"id":        "thread-1",
+		"name":      nil,
+		"title":     "",
+		"cwd":       "/Users/example/work",
+		"archived":  true,
+		"updatedAt": float64(100),
+	})
+	if !thread.Archived {
+		t.Fatalf("Archived = false, want true")
+	}
+	if thread.Title != "" {
+		t.Fatalf("Title = %q, want empty title instead of id fallback", thread.Title)
+	}
+}
+
 func TestSnapshotFromThreadReadUsesLatestUserMessageForStaleThreadPreview(t *testing.T) {
 	t.Parallel()
 
@@ -500,6 +519,47 @@ func TestSnapshotFromThreadReadKeepsAgentMessagePhasesAndFinalAnswerOnly(t *test
 	}
 	if got, want := snapshot.DetailItems[2].Kind, model.DetailItemFinal; got != want {
 		t.Fatalf("DetailItems[2].Kind = %q, want %q", got, want)
+	}
+}
+
+func TestSnapshotFromThreadReadUsesLocalImageUserMessage(t *testing.T) {
+	t.Parallel()
+
+	snapshot := SnapshotFromThreadRead(map[string]any{
+		"id":     "thread-image",
+		"title":  "Image thread",
+		"status": "inProgress",
+		"turns": []any{
+			map[string]any{
+				"id":     "turn-image",
+				"status": "inProgress",
+				"items": []any{
+					map[string]any{
+						"id":   "user-image",
+						"type": "userMessage",
+						"content": []any{
+							map[string]any{"type": "input_text", "text": "\n# Files mentioned by the user:\n\n## IMG.JPG: /tmp/IMG.JPG\n\n"},
+							map[string]any{"type": "input_text", "text": `<image name=[Image #1] path="/tmp/IMG.JPG">`},
+							map[string]any{"type": "input_image", "image_url": "data:image/jpeg;base64,abc"},
+							map[string]any{"type": "input_text", "text": "</image>"},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	if got, want := snapshot.LatestUserMessageID, "user-image"; got != want {
+		t.Fatalf("LatestUserMessageID = %q, want %q", got, want)
+	}
+	if got, want := snapshot.LatestUserMessageImagePath, "/tmp/IMG.JPG"; got != want {
+		t.Fatalf("LatestUserMessageImagePath = %q, want %q", got, want)
+	}
+	if !strings.Contains(snapshot.LatestUserMessageText, "[Image: /tmp/IMG.JPG]") {
+		t.Fatalf("LatestUserMessageText = %q, want image placeholder", snapshot.LatestUserMessageText)
+	}
+	if snapshot.LatestUserMessageFP == "" {
+		t.Fatal("LatestUserMessageFP is empty")
 	}
 }
 

@@ -58,6 +58,9 @@ func (s *Service) projectCatalog(ctx context.Context) (projectCatalog, error) {
 	grouped := map[string]*projectWorkspace{}
 	chats := []model.Thread{}
 	for _, thread := range threads {
+		if !threadVisibleInProjectCatalog(thread) {
+			continue
+		}
 		if s.isCodexChatThread(thread) {
 			chats = append(chats, thread)
 			continue
@@ -231,12 +234,13 @@ func (s *Service) projectsOverview(ctx context.Context) (*DirectResponse, error)
 }
 
 func (s *Service) projectsOverviewPage(ctx context.Context, page int) (*DirectResponse, error) {
+	lang := s.botLanguage(ctx)
 	catalog, err := s.projectCatalog(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if len(catalog.Workspaces) == 0 && len(catalog.Chats) == 0 {
-		return &DirectResponse{Text: "No cached projects yet. Try /status or wait for sync."}, nil
+		return &DirectResponse{Text: localized(lang, "还没有缓存项目。请试试 /status，或等待同步。", "No cached projects yet. Try /status or wait for sync.")}, nil
 	}
 	projectLimit := s.projectsProjectPreviewLimit()
 	chatLimit := s.projectsChatPreviewLimit()
@@ -247,47 +251,73 @@ func (s *Service) projectsOverviewPage(ctx context.Context, page int) (*DirectRe
 	chatEnd := min(chatLimit, len(catalog.Chats))
 
 	lines := []string{
-		"Projects",
-		fmt.Sprintf("Project page %d/%d (showing %d of %d)", page+1, projectPages, maxInt(0, projectEnd-projectStart), len(catalog.Workspaces)),
-		fmt.Sprintf("Latest Chats: showing %d of %d", chatEnd, len(catalog.Chats)),
-		"Open Chats to view all Chat threads.",
+		fmt.Sprintf("%s %d/%d", localized(lang, "项目", "Projects"), page+1, projectPages),
+		fmt.Sprintf("%s %d/%d · %s %d/%d", localized(lang, "项目", "Projects"), maxInt(0, projectEnd-projectStart), len(catalog.Workspaces), localized(lang, "临时对话", "Chats"), chatEnd, len(catalog.Chats)),
 	}
 	buttons := [][]model.ButtonSpec{
 		{
 			s.callbackButton(ctx, "<", "projects_page", "", "", "", map[string]any{"page": page - 1}),
-			s.callbackButton(ctx, "Close", "projects_close", "", "", "", nil),
+			s.callbackButton(ctx, localized(lang, "关闭", "Close"), "projects_close", "", "", "", nil),
 			s.callbackButton(ctx, ">", "projects_page", "", "", "", map[string]any{"page": page + 1}),
 		},
-		{s.callbackButton(ctx, "Open Chats", "chats_open", "", "", "", map[string]any{"page": 0})},
+		{s.callbackButton(ctx, localized(lang, "打开临时对话", "Open Chats"), "chats_open", "", "", "", map[string]any{"page": 0})},
 	}
+	sections := []model.MessageSection{}
 	if len(catalog.Workspaces) == 0 {
-		lines = append(lines, "", "No cached projects outside Chats.")
-	}
-	for index, workspace := range catalog.Workspaces[projectStart:projectEnd] {
-		displayIndex := projectStart + index + 1
-		lines = append(lines,
-			fmt.Sprintf("%d. %s (%d thread(s))", displayIndex, workspace.ProjectName, workspace.ThreadCount),
-			fmt.Sprintf("   last thread: %s", firstNonEmpty(workspace.LatestThreadLabel, workspace.LatestThread)),
-			fmt.Sprintf("   cwd: %s", settingValueLabel(workspace.CWD, "unknown")),
-		)
-		buttons = append(buttons, []model.ButtonSpec{
-			s.callbackButton(ctx, projectWorkspaceButtonLabel(displayIndex, workspace), "project_open", "", "", "", projectWorkspacePayload(workspace)),
-		})
-	}
-	if chatEnd > 0 {
-		lines = append(lines, "", "Latest Chats")
-		for index, thread := range catalog.Chats[:chatEnd] {
-			displayIndex := index + 1
-			lines = append(lines, fmt.Sprintf("%d. %s | %s", displayIndex, threadDisplayLabel(thread), thread.ShortID()))
-			buttons = append(buttons, []model.ButtonSpec{
-				s.callbackButton(ctx, chatThreadButtonLabel(displayIndex, thread), "chat_open", thread.ID, "", "", nil),
+		lines = append(lines, "", localized(lang, "临时对话之外还没有缓存项目。", "No cached projects outside Chats."))
+	} else {
+		projectSection := model.MessageSection{Text: localized(lang, "项目", "Projects"), Heading: true}
+		for index, workspace := range catalog.Workspaces[projectStart:projectEnd] {
+			displayIndex := projectStart + index + 1
+			label := firstNonEmpty(workspace.ProjectName, workspace.DirectoryName, workspace.Key, "Project")
+			latest := firstNonEmpty(workspace.LatestThreadLabel, workspace.LatestThread)
+			trailing := fmt.Sprintf("%d chats · %s", workspace.ThreadCount, threadUpdatedAtLabel(workspace.UpdatedAt, s.now))
+			lines = append(lines,
+				fmt.Sprintf("%d. %s", displayIndex, label),
+				fmt.Sprintf("   %s · %s", trailing, latest),
+			)
+			button := s.callbackButton(ctx, projectWorkspaceButtonLabel(displayIndex, workspace), "project_open", "", "", "", projectWorkspacePayload(workspace))
+			buttons = append(buttons, []model.ButtonSpec{button})
+			projectSection.Rows = append(projectSection.Rows, model.MessageSectionRow{
+				Title:    label,
+				Trailing: fmt.Sprintf("%s · %s", trailing, latest),
+				Button:   button,
 			})
 		}
+		sections = append(sections, projectSection)
 	}
-	return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons}, nil
+	if chatEnd > 0 {
+		lines = append(lines, "", localized(lang, "临时对话", "Chats"))
+		chatSection := model.MessageSection{Text: localized(lang, "临时对话", "Chats"), Heading: true, Divider: len(sections) > 0}
+		for index, thread := range catalog.Chats[:chatEnd] {
+			displayIndex := index + 1
+			label := threadOverviewLabel(thread, lang)
+			lines = append(lines, fmt.Sprintf("%d. %s    %s", displayIndex, label, threadUpdatedAtLabel(thread.UpdatedAt, s.now)))
+			button := s.callbackButton(ctx, chatThreadButtonLabel(displayIndex, thread), "chat_open", thread.ID, "", "", nil)
+			buttons = append(buttons, []model.ButtonSpec{button})
+			chatSection.Rows = append(chatSection.Rows, model.MessageSectionRow{
+				Title:    label,
+				Trailing: threadUpdatedAtLabel(thread.UpdatedAt, s.now),
+				Button:   button,
+			})
+		}
+		sections = append(sections, chatSection)
+	}
+	return &DirectResponse{Text: strings.Join(lines, "\n"), Sections: sections, Buttons: buttons}, nil
+}
+
+func threadVisibleInProjectCatalog(thread model.Thread) bool {
+	if thread.Archived {
+		return false
+	}
+	if threadLooksUnavailableForOverview(thread) {
+		return false
+	}
+	return true
 }
 
 func (s *Service) chatsOverviewPage(ctx context.Context, page int) (*DirectResponse, error) {
+	lang := s.botLanguage(ctx)
 	catalog, err := s.projectCatalog(ctx)
 	if err != nil {
 		return nil, err
@@ -298,19 +328,19 @@ func (s *Service) chatsOverviewPage(ctx context.Context, page int) (*DirectRespo
 	start := page * pageSize
 	end := min(start+pageSize, len(catalog.Chats))
 	lines := []string{
-		"Chats",
-		fmt.Sprintf("Page %d/%d (showing %d of %d)", page+1, pageCount, maxInt(0, end-start), len(catalog.Chats)),
-		"Use /newchat <prompt> to create a new Codex UI Chat.",
+		localized(lang, "临时对话", "Chats"),
+		fmt.Sprintf(localized(lang, "第 %d/%d 页（显示 %d/%d）", "Page %d/%d (showing %d of %d)"), page+1, pageCount, maxInt(0, end-start), len(catalog.Chats)),
+		localized(lang, "使用 /new <提示词> 创建新的 Codex UI Chat。", "Use /new <prompt> to create a new Codex UI Chat."),
 	}
 	buttons := [][]model.ButtonSpec{
 		{
 			s.callbackButton(ctx, "<", "chats_page", "", "", "", map[string]any{"page": page - 1}),
-			s.callbackButton(ctx, "Close", "projects_close", "", "", "", nil),
+			s.callbackButton(ctx, localized(lang, "关闭", "Close"), "projects_close", "", "", "", nil),
 			s.callbackButton(ctx, ">", "chats_page", "", "", "", map[string]any{"page": page + 1}),
 		},
 	}
 	if len(catalog.Chats) == 0 {
-		lines = append(lines, "", "No cached Chats yet.")
+		lines = append(lines, "", localized(lang, "还没有缓存临时对话。", "No cached Chats yet."))
 		return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons}, nil
 	}
 	for index, thread := range catalog.Chats[start:end] {
@@ -387,13 +417,15 @@ func (s *Service) closeProjectsMenu(ctx context.Context, chatID, topicID, messag
 	s.mu.RUnlock()
 	if sender != nil && messageID != 0 {
 		if err := sender.DeleteMessage(ctx, chatID, topicID, messageID); err == nil {
-			return &DirectResponse{CallbackText: "Closed."}, nil
+			return &DirectResponse{CallbackText: s.t(ctx, "已关闭。", "Closed.")}, nil
 		}
-		if err := sender.EditMessage(ctx, chatID, topicID, messageID, "Closed.", nil); err == nil {
-			return &DirectResponse{CallbackText: "Closed."}, nil
+		closed := s.t(ctx, "已关闭。", "Closed.")
+		if err := sender.EditMessage(ctx, chatID, topicID, messageID, closed, nil); err == nil {
+			return &DirectResponse{CallbackText: closed}, nil
 		}
 	}
-	return &DirectResponse{Text: "Closed.", CallbackText: "Closed."}, nil
+	closed := s.t(ctx, "已关闭。", "Closed.")
+	return &DirectResponse{Text: closed, CallbackText: closed}, nil
 }
 
 func (s *Service) editOrSendProjectsResponse(ctx context.Context, chatID, topicID, messageID int64, callbackText string, renderer func(context.Context) (*DirectResponse, error)) (*DirectResponse, error) {
@@ -437,19 +469,15 @@ func (s *Service) projectWorkspaceFromCallback(ctx context.Context, payload map[
 func (s *Service) openChatThread(ctx context.Context, chatID, topicID int64, threadID string, sourceMode string) (*DirectResponse, error) {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
-		return &DirectResponse{Text: "This Chat button is stale. Use Open Chats to refresh."}, nil
+		return &DirectResponse{Text: s.t(ctx, "这个对话按钮已过期。请用“打开临时对话”刷新。", "This Chat button is stale. Use Open Chats to refresh.")}, nil
 	}
 	thread, err := s.store.GetThread(ctx, threadID)
 	if err != nil {
 		return nil, err
 	}
 	if thread == nil || !s.isCodexChatThread(*thread) {
-		return &DirectResponse{Text: "This Chat button is stale. Use Open Chats to refresh."}, nil
+		return &DirectResponse{Text: s.t(ctx, "这个对话按钮已过期。请用“打开临时对话”刷新。", "This Chat button is stale. Use Open Chats to refresh.")}, nil
 	}
-	if err := s.store.SetBinding(ctx, chatID, topicID, threadID, model.BindingModeBound); err != nil {
-		return nil, err
-	}
-	s.kickBootstrap()
 	response, err := s.showThread(ctx, chatID, topicID, threadID, true, sourceMode)
 	if err != nil {
 		return nil, err
@@ -462,72 +490,70 @@ func (s *Service) openChatThread(ctx context.Context, chatID, topicID int64, thr
 }
 
 func (s *Service) projectMenu(ctx context.Context, payload map[string]any) (*DirectResponse, error) {
+	lang := s.botLanguage(ctx)
 	workspace, ok := s.projectWorkspaceFromCallback(ctx, payload)
 	if !ok {
-		return &DirectResponse{Text: "This project button is stale. Use /projects to refresh."}, nil
+		return &DirectResponse{Text: localized(lang, "这个项目按钮已过期。请使用 /projects 刷新。", "This project button is stale. Use /projects to refresh.")}, nil
 	}
 	lines := []string{
-		"Project",
-		fmt.Sprintf("Name: %s", workspace.ProjectName),
-		fmt.Sprintf("Directory: %s", settingValueLabel(workspace.DirectoryName, "unknown")),
+		workspace.ProjectName,
+		fmt.Sprintf("%s: %s", localized(lang, "目录", "Directory"), settingValueLabel(workspace.DirectoryName, localized(lang, "未知", "unknown"))),
 		fmt.Sprintf("CWD: %s", settingValueLabel(workspace.CWD, "unknown")),
-		fmt.Sprintf("Cached threads: %d", workspace.ThreadCount),
+		fmt.Sprintf("%s: %d", localized(lang, "缓存会话", "Cached threads"), workspace.ThreadCount),
 	}
 	buttons := [][]model.ButtonSpec{
-		{s.callbackButton(ctx, "New thread", "project_new_thread", "", "", "", projectWorkspacePayload(workspace))},
-		{
-			s.callbackButton(ctx, "Threads", "project_threads", "", "", "", projectWorkspacePayload(workspace)),
-			s.callbackButton(ctx, "Bind latest", "project_bind_latest", workspace.LatestThread, "", "", projectWorkspacePayload(workspace)),
-		},
+		{s.callbackButton(ctx, localized(lang, "新线程", "New thread"), "project_new_thread", "", "", "", projectWorkspacePayload(workspace))},
+		{s.callbackButton(ctx, localized(lang, "会话", "Threads"), "project_threads", "", "", "", projectWorkspacePayload(workspace))},
 	}
 	return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons}, nil
 }
 
 func (s *Service) projectThreads(ctx context.Context, payload map[string]any) (*DirectResponse, error) {
+	lang := s.botLanguage(ctx)
 	workspace, ok := s.projectWorkspaceFromCallback(ctx, payload)
 	if !ok {
-		return &DirectResponse{Text: "This project button is stale. Use /projects to refresh."}, nil
+		return &DirectResponse{Text: localized(lang, "这个项目按钮已过期。请使用 /projects 刷新。", "This project button is stale. Use /projects to refresh.")}, nil
 	}
 	threads, err := s.store.ListThreads(ctx, 500, "")
 	if err != nil {
 		return nil, err
 	}
-	lines := []string{fmt.Sprintf("Threads for %s", workspace.ProjectName)}
+	lines := []string{fmt.Sprintf(localized(lang, "%s 的会话", "Threads for %s"), workspace.ProjectName)}
 	buttons := [][]model.ButtonSpec{}
+	section := model.MessageSection{Text: workspace.ProjectName, Heading: true}
 	for _, thread := range threads {
+		if !threadVisibleInProjectCatalog(thread) {
+			continue
+		}
 		if model.NormalizePath(thread.CWD) != model.NormalizePath(workspace.CWD) {
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("- %s | %s", firstNonEmpty(thread.Title, thread.ShortID()), thread.ShortID()))
-		buttons = append(buttons, []model.ButtonSpec{
-			s.callbackButton(ctx, shortButtonLabel(firstNonEmpty(thread.Title, thread.ShortID())), "show_thread", thread.ID, "", "", nil),
+		label := threadOverviewLabel(thread, lang)
+		updatedAt := threadUpdatedAtLabel(thread.UpdatedAt, s.now)
+		button := s.callbackButton(ctx, localized(lang, "打开", "Open"), "show_thread", thread.ID, "", "", nil)
+		lines = append(lines, fmt.Sprintf("- %s    %s", label, updatedAt))
+		buttons = append(buttons, []model.ButtonSpec{button})
+		section.Rows = append(section.Rows, model.MessageSectionRow{
+			Title:    label,
+			Trailing: updatedAt,
+			Button:   button,
 		})
 	}
 	if len(buttons) == 0 {
-		lines = append(lines, "No cached threads for this project.")
+		lines = append(lines, localized(lang, "这个项目还没有缓存会话。", "No cached threads for this project."))
+		return &DirectResponse{Text: strings.Join(lines, "\n")}, nil
 	}
-	return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons}, nil
-}
-
-func (s *Service) bindLatestProjectThread(ctx context.Context, chatID, topicID int64, payload map[string]any) (*DirectResponse, error) {
-	workspace, ok := s.projectWorkspaceFromCallback(ctx, payload)
-	if !ok || strings.TrimSpace(workspace.LatestThread) == "" {
-		return &DirectResponse{Text: "This project button is stale. Use /projects to refresh."}, nil
-	}
-	if err := s.store.SetBinding(ctx, chatID, topicID, workspace.LatestThread, model.BindingModeBound); err != nil {
-		return nil, err
-	}
-	s.kickBootstrap()
-	return &DirectResponse{CallbackText: fmt.Sprintf("Bound this chat to %s.", workspace.LatestThread)}, nil
+	return &DirectResponse{Text: strings.Join(lines, "\n"), Sections: []model.MessageSection{section}, Buttons: buttons}, nil
 }
 
 func (s *Service) armProjectNewThread(ctx context.Context, chatID, topicID int64, payload map[string]any) (*DirectResponse, error) {
+	lang := s.botLanguage(ctx)
 	workspace, ok := s.projectWorkspaceFromCallback(ctx, payload)
 	if !ok {
-		return &DirectResponse{Text: "This project button is stale. Use /projects to refresh."}, nil
+		return &DirectResponse{Text: localized(lang, "这个项目按钮已过期。请使用 /projects 刷新。", "This project button is stale. Use /projects to refresh.")}, nil
 	}
 	if strings.TrimSpace(workspace.CWD) == "" {
-		return &DirectResponse{Text: "Project cwd is not available. Use /projects after Codex has seen this workspace."}, nil
+		return &DirectResponse{Text: localized(lang, "项目 CWD 不可用。请在 Codex 识别到这个工作区后再使用 /projects。", "Project cwd is not available. Use /projects after Codex has seen this workspace.")}, nil
 	}
 	state := pendingNewThreadState{
 		ProjectName:   workspace.ProjectName,
@@ -539,27 +565,56 @@ func (s *Service) armProjectNewThread(ctx context.Context, chatID, topicID int64
 	if err := s.store.SetState(ctx, newThreadStateKey(chatID, topicID), string(payloadBytes)); err != nil {
 		return nil, err
 	}
-	return &DirectResponse{Text: fmt.Sprintf("New thread for %s.\nSend the first prompt as your next message.", workspace.ProjectName)}, nil
+	return &DirectResponse{Text: fmt.Sprintf(localized(lang, "%s 的新线程。\n请在当前聊天中发送第一条提示词；我会用这条消息创建 Codex 会话和话题。", "New thread for %s.\nSend the first prompt in this chat. I will create the Codex session and topic from that message."), workspace.ProjectName)}, nil
 }
 
-func (s *Service) newThreadCommand(ctx context.Context, chatID, topicID int64, rest string) (*DirectResponse, error) {
-	return s.newThreadCommandFromSource(ctx, chatID, topicID, rest, model.PanelSourceTelegramInput)
-}
-
-func (s *Service) newThreadCommandFromSource(ctx context.Context, chatID, topicID int64, rest, sourceMode string) (*DirectResponse, error) {
-	selector, prompt := splitCommandHead(rest)
-	if selector == "" || strings.TrimSpace(prompt) == "" {
-		return s.newThreadUsage(ctx)
-	}
-	workspace, ok := s.resolveProjectWorkspaceSelector(ctx, selector)
+func (s *Service) createProjectThread(ctx context.Context, chatID, topicID int64, payload map[string]any, sourceMode string) (*DirectResponse, error) {
+	lang := s.botLanguage(ctx)
+	sourceMode = normalizeInputSourceMode(sourceMode)
+	workspace, ok := s.projectWorkspaceFromCallback(ctx, payload)
 	if !ok {
-		return s.newThreadUsage(ctx)
+		return &DirectResponse{Text: localized(lang, "这个项目按钮已过期。请使用 /projects 刷新。", "This project button is stale. Use /projects to refresh.")}, nil
 	}
-	return s.createThreadFromProjectPrompt(ctx, chatID, topicID, pendingNewThreadState{
+	if strings.TrimSpace(workspace.CWD) == "" {
+		return &DirectResponse{Text: localized(lang, "项目 CWD 不可用。请在 Codex 识别到这个工作区后再使用 /projects。", "Project cwd is not available. Use /projects after Codex has seen this workspace.")}, nil
+	}
+	s.mu.RLock()
+	live := s.live
+	connected := s.liveConnected
+	s.mu.RUnlock()
+	if !connected || live == nil {
+		return &DirectResponse{Text: localized(lang, "Live app-server 会话尚未就绪。请试试 /status 或 /repair。", "Live app-server session is not ready yet. Try /status or /repair.")}, nil
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
+	defer cancel()
+	started := time.Now()
+	threadPayload, err := live.ThreadStart(requestCtx, workspace.CWD)
+	s.logAppServerCall("ThreadStart", started, err, live, lifecycleFields{
+		"cwd":          workspace.CWD,
+		"project_name": workspace.ProjectName,
+	})
+	if err != nil {
+		return nil, err
+	}
+	thread := threadFromStartPayload(threadPayload, pendingNewThreadState{
 		ProjectName:   workspace.ProjectName,
 		DirectoryName: workspace.DirectoryName,
 		CWD:           workspace.CWD,
-	}, strings.TrimSpace(prompt), sourceMode)
+	})
+	if strings.TrimSpace(thread.ID) == "" {
+		return &DirectResponse{Text: localized(lang, "App Server 未能创建 thread：响应中没有 thread id。", "App Server could not create thread: response did not include thread id.")}, nil
+	}
+	if err := s.store.UpsertThread(ctx, thread); err != nil {
+		return nil, err
+	}
+	response, err := s.showThread(ctx, chatID, topicID, thread.ID, true, sourceMode)
+	if err != nil {
+		return nil, err
+	}
+	if sourceMode == model.PanelSourceFeishuInput {
+		return s.feishuVisibleOpenResponse(ctx, response, thread.ID), nil
+	}
+	return response, nil
 }
 
 func (s *Service) newChatCommand(ctx context.Context, chatID, topicID int64, rest string) (*DirectResponse, error) {
@@ -567,31 +622,20 @@ func (s *Service) newChatCommand(ctx context.Context, chatID, topicID int64, res
 }
 
 func (s *Service) newChatCommandFromSource(ctx context.Context, chatID, topicID int64, rest, sourceMode string) (*DirectResponse, error) {
+	lang := s.botLanguage(ctx)
 	prompt := strings.TrimSpace(rest)
 	if prompt == "" {
-		return &DirectResponse{Text: "Usage: /newchat <prompt>"}, nil
+		return &DirectResponse{Text: localized(lang, "用法：/new <提示词>", "Usage: /new <prompt>")}, nil
 	}
 	cwd, directoryName, err := createCodexChatCWD(s.codexChatsRoot(), prompt, s.now())
 	if err != nil {
-		return &DirectResponse{Text: fmt.Sprintf("Could not create Codex Chat folder: %v", err)}, nil
+		return &DirectResponse{Text: fmt.Sprintf(localized(lang, "无法创建 Codex Chat 文件夹：%v", "Could not create Codex Chat folder: %v"), err)}, nil
 	}
 	return s.createThreadFromProjectPrompt(ctx, chatID, topicID, pendingNewThreadState{
 		ProjectName:   chatsProjectName,
 		DirectoryName: directoryName,
 		CWD:           cwd,
 	}, prompt, sourceMode)
-}
-
-func (s *Service) newThreadWithoutCWDCommand(ctx context.Context, chatID, topicID int64, rest string) (*DirectResponse, error) {
-	return s.newThreadWithoutCWDCommandFromSource(ctx, chatID, topicID, rest, model.PanelSourceTelegramInput)
-}
-
-func (s *Service) newThreadWithoutCWDCommandFromSource(ctx context.Context, chatID, topicID int64, rest, sourceMode string) (*DirectResponse, error) {
-	prompt := strings.TrimSpace(rest)
-	if prompt == "" {
-		return &DirectResponse{Text: "Usage: /newthread <prompt>"}, nil
-	}
-	return s.createThreadFromProjectPrompt(ctx, chatID, topicID, pendingNewThreadState{}, prompt, sourceMode)
 }
 
 func (s *Service) codexChatsRoot() string {
@@ -655,50 +699,12 @@ func codexChatSlugFromPrompt(prompt string, now time.Time) string {
 	return slug
 }
 
-func (s *Service) newThreadUsage(ctx context.Context) (*DirectResponse, error) {
-	workspaces, err := s.projectWorkspaces(ctx)
-	if err != nil {
-		return nil, err
-	}
-	lines := []string{"Usage: /new <project-key-or-number> <prompt>"}
-	if len(workspaces) == 0 {
-		lines = append(lines, "No cached projects yet. Try /projects after Codex has seen a workspace.")
-		return &DirectResponse{Text: strings.Join(lines, "\n")}, nil
-	}
-	lines = append(lines, "", "Projects:")
-	for index, workspace := range workspaces {
-		lines = append(lines, fmt.Sprintf("%d. %s (%s)", index+1, workspace.Key, workspace.ProjectName))
-	}
-	return &DirectResponse{Text: strings.Join(lines, "\n")}, nil
-}
-
-func (s *Service) resolveProjectWorkspaceSelector(ctx context.Context, selector string) (projectWorkspace, bool) {
-	workspaces, err := s.projectWorkspaces(ctx)
-	if err != nil {
-		return projectWorkspace{}, false
-	}
-	selector = strings.TrimSpace(strings.ToLower(selector))
-	if selector == "" {
-		return projectWorkspace{}, false
-	}
-	if index, err := strconv.Atoi(selector); err == nil && index >= 1 && index <= len(workspaces) {
-		return workspaces[index-1], true
-	}
-	for _, workspace := range workspaces {
-		if strings.EqualFold(workspace.Key, selector) ||
-			strings.EqualFold(workspace.ProjectName, selector) ||
-			strings.EqualFold(workspace.DirectoryName, selector) {
-			return workspace, true
-		}
-	}
-	return projectWorkspace{}, false
-}
-
 func (s *Service) maybeConsumeNewThreadPrompt(ctx context.Context, chatID, topicID int64, text string) (*DirectResponse, bool, error) {
 	return s.maybeConsumeNewThreadPromptFromSource(ctx, chatID, topicID, text, model.PanelSourceTelegramInput)
 }
 
 func (s *Service) maybeConsumeNewThreadPromptFromSource(ctx context.Context, chatID, topicID int64, text, sourceMode string) (*DirectResponse, bool, error) {
+	lang := s.botLanguage(ctx)
 	state, ok, expired, err := s.pendingNewThreadState(ctx, chatID, topicID)
 	if err != nil {
 		return nil, true, err
@@ -708,7 +714,7 @@ func (s *Service) maybeConsumeNewThreadPromptFromSource(ctx context.Context, cha
 	}
 	if expired {
 		_ = s.store.DeleteState(ctx, newThreadStateKey(chatID, topicID))
-		return &DirectResponse{Text: "New thread request expired. Use /projects and New thread again."}, true, nil
+		return &DirectResponse{Text: localized(lang, "新线程请求已过期。请重新进入 /projects 并点击新线程。", "New thread request expired. Use /projects and New thread again.")}, true, nil
 	}
 	_ = s.store.DeleteState(ctx, newThreadStateKey(chatID, topicID))
 	response, err := s.createThreadFromProjectPrompt(ctx, chatID, topicID, state, strings.TrimSpace(text), sourceMode)
@@ -735,16 +741,17 @@ func (s *Service) pendingNewThreadState(ctx context.Context, chatID, topicID int
 }
 
 func (s *Service) createThreadFromProjectPrompt(ctx context.Context, chatID, topicID int64, state pendingNewThreadState, prompt, sourceMode string) (*DirectResponse, error) {
+	lang := s.botLanguage(ctx)
 	sourceMode = normalizeInputSourceMode(sourceMode)
 	if strings.TrimSpace(prompt) == "" {
-		return &DirectResponse{Text: "First prompt is empty. Use New thread again and send a non-empty prompt."}, nil
+		return &DirectResponse{Text: localized(lang, "第一条提示词为空。请重新点击新线程，并发送非空提示词。", "First prompt is empty. Use New thread again and send a non-empty prompt.")}, nil
 	}
 	s.mu.RLock()
 	live := s.live
 	connected := s.liveConnected
 	s.mu.RUnlock()
 	if !connected || live == nil {
-		return &DirectResponse{Text: "Live app-server session is not ready yet. Try /status or /repair."}, nil
+		return &DirectResponse{Text: localized(lang, "Live app-server 会话尚未就绪。请试试 /status 或 /repair。", "Live app-server session is not ready yet. Try /status or /repair.")}, nil
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
 	defer cancel()
@@ -759,7 +766,7 @@ func (s *Service) createThreadFromProjectPrompt(ctx context.Context, chatID, top
 	}
 	thread := threadFromStartPayload(threadPayload, state)
 	if strings.TrimSpace(thread.ID) == "" {
-		return &DirectResponse{Text: "App Server could not create thread: response did not include thread id."}, nil
+		return &DirectResponse{Text: localized(lang, "App Server 未能创建 thread：响应中没有 thread id。", "App Server could not create thread: response did not include thread id.")}, nil
 	}
 	if err := s.store.UpsertThread(ctx, thread); err != nil {
 		return nil, err
@@ -775,9 +782,8 @@ func (s *Service) createThreadFromProjectPrompt(ctx context.Context, chatID, top
 		"reasoning_effort": options.ReasoningEffort,
 	})
 	if err != nil {
-		_ = s.store.SetBinding(ctx, chatID, topicID, thread.ID, model.BindingModeBound)
 		return &DirectResponse{
-			Text:     fmt.Sprintf("Created thread %s, but could not start first turn: %v\nUse /reply %s <text> to retry.", thread.ID, err, thread.ID),
+			Text:     fmt.Sprintf(localized(lang, "已创建 thread %s，但无法启动第一轮：%v\n请使用 /reply %s <文本> 重试。", "Created thread %s, but could not start first turn: %v\nUse /reply %s <text> to retry."), thread.ID, err, thread.ID),
 			ThreadID: thread.ID,
 		}, nil
 	}
@@ -799,15 +805,16 @@ func (s *Service) createThreadFromProjectPrompt(ctx context.Context, chatID, top
 		})
 	}
 	s.ensureNewChatThreadFallback(ctx, thread.ID, state)
-	if err := s.store.SetBinding(ctx, chatID, topicID, thread.ID, model.BindingModeBound); err != nil {
-		return nil, err
-	}
 	target := model.ObserverTarget{ChatKey: model.ChatKey(chatID, topicID), ChatID: chatID, TopicID: topicID, Enabled: true}
 	s.syncThreadPanelToTarget(ctx, target, thread.ID, true, sourceMode)
 	if strings.TrimSpace(turnID) != "" {
 		s.startTelegramOriginHotPoll(ctx, thread.ID, turnID)
 	}
-	return &DirectResponse{ThreadID: thread.ID, TurnID: turnID}, nil
+	response := &DirectResponse{ThreadID: thread.ID, TurnID: turnID}
+	if sourceMode == model.PanelSourceFeishuInput {
+		return s.feishuVisibleOpenResponse(ctx, response, thread.ID), nil
+	}
+	return response, nil
 }
 
 func (s *Service) ensureNewChatThreadFallback(ctx context.Context, threadID string, state pendingNewThreadState) {
