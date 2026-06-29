@@ -59,7 +59,7 @@ func (s *Service) maybeSendFeishuInputViaDesktop(ctx context.Context, chatID, to
 		return nil, true, false, "", err
 	}
 	s.logLifecycle("codex_desktop_input_history_loaded", desktopInputHistoryFields(thread.ID, historyResult))
-	input := desktopTextInput(text)
+	input := desktopInputParts(text)
 	restoreMessage := desktopRestoreMessage(thread)
 	steerState, _ := s.resolveArmedSteer(ctx, chatID, topicID)
 	var result map[string]any
@@ -123,6 +123,7 @@ func (s *Service) maybeSendFeishuInputViaDesktop(ctx context.Context, chatID, to
 		}
 		return nil, true, false, "", err
 	}
+	params["input"] = input
 	result, err = dispatcher.StartTurn(requestCtx, thread.ID, params)
 	if err != nil {
 		if desktopInputShouldFallback(err) {
@@ -211,9 +212,80 @@ func (s *Service) loadDesktopCompleteHistoryForInput(ctx context.Context, dispat
 }
 
 func desktopTextInput(text string) []map[string]any {
-	return []map[string]any{
-		{"type": "text", "text": text, "text_elements": []any{}},
+	return desktopInputParts(text)
+}
+
+func desktopInputParts(text string) []map[string]any {
+	imagePath := desktopImagePathFromText(text)
+	if imagePath == "" {
+		return []map[string]any{
+			{"type": "text", "text": text, "text_elements": []any{}},
+		}
 	}
+	caption := desktopImageCaptionFromText(text)
+	if caption == "" {
+		return []map[string]any{
+			{"type": "localImage", "path": imagePath},
+		}
+	}
+	return []map[string]any{
+		{"type": "text", "text": caption, "text_elements": []any{}},
+		{"type": "localImage", "path": imagePath},
+	}
+}
+
+func desktopImagePathFromText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	if path := imagePathBetween(text, `path="`, `"`); path != "" {
+		return path
+	}
+	for _, marker := range []string{"已保存到：", "saved at:"} {
+		index := strings.Index(text, marker)
+		if index < 0 {
+			continue
+		}
+		path := strings.TrimSpace(text[index+len(marker):])
+		if lineEnd := strings.IndexByte(path, '\n'); lineEnd >= 0 {
+			path = path[:lineEnd]
+		}
+		path = strings.TrimSpace(path)
+		if path != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+func desktopImageCaptionFromText(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	for _, marker := range []string{"用户发送了一张图片，已保存到：", "The user sent an image saved at:"} {
+		if strings.HasPrefix(trimmed, marker) {
+			return ""
+		}
+	}
+	if strings.Contains(trimmed, `<image `) && strings.Contains(trimmed, `path="`) {
+		return ""
+	}
+	return trimmed
+}
+
+func imagePathBetween(text, startMarker, endMarker string) string {
+	start := strings.Index(text, startMarker)
+	if start < 0 {
+		return ""
+	}
+	start += len(startMarker)
+	end := strings.Index(text[start:], endMarker)
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(text[start : start+end])
 }
 
 func desktopRestoreMessage(thread *model.Thread) map[string]any {

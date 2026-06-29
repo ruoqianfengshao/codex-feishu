@@ -3478,6 +3478,108 @@ func TestFeishuInputUsesDesktopDispatcherWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestFeishuImageInputUsesDesktopLocalImagePart(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "01900000-0000-7000-8000-000000000214",
+		Title:       "Feishu desktop image",
+		ProjectName: "Codex",
+		CWD:         "/Users/example/project",
+		Status:      "idle",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	service.live = &stubSession{}
+	service.liveConnected = true
+	desktop := &stubDesktopInputDispatcher{
+		startResult: map[string]any{
+			"result": map[string]any{"turn": map[string]any{"id": "desktop-image-turn"}},
+		},
+	}
+	service.desktopInputDispatcher = desktop
+	service.desktopOpener = func(ctx context.Context, threadID string) error { return nil }
+
+	text := "用户发送了一张图片，已保存到：/Users/vico/.codex-tg/data/feishu-attachments/7893bfdbd95a.jpg\n请读取并分析这张图片。"
+	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", text, "", model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
+	}
+	if response == nil || response.TurnID != "desktop-image-turn" {
+		t.Fatalf("response = %#v, want desktop image turn", response)
+	}
+	if len(desktop.startCalls) != 1 {
+		t.Fatalf("desktop startCalls = %#v, want one", desktop.startCalls)
+	}
+	input, ok := desktop.startCalls[0]["input"].([]map[string]any)
+	if !ok {
+		t.Fatalf("desktop start input = %#v, want []map[string]any", desktop.startCalls[0]["input"])
+	}
+	if len(input) != 1 {
+		t.Fatalf("desktop start input = %#v, want only localImage part", input)
+	}
+	if got, want := input[0]["type"], "localImage"; got != want {
+		t.Fatalf("image part type = %v, want %q", got, want)
+	}
+	if got, want := input[0]["path"], "/Users/vico/.codex-tg/data/feishu-attachments/7893bfdbd95a.jpg"; got != want {
+		t.Fatalf("image part path = %v, want %q", got, want)
+	}
+}
+
+func TestFeishuImageReplyUsesDesktopLocalImagePart(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:           "01900000-0000-7000-8000-000000000215",
+		Title:        "Feishu desktop image reply",
+		ProjectName:  "Codex",
+		CWD:          "/Users/example/project",
+		Status:       "inProgress",
+		ActiveTurnID: "turn-active",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	service.live = &stubSession{}
+	service.liveConnected = true
+	desktop := &stubDesktopInputDispatcher{
+		steerResult: map[string]any{
+			"result": map[string]any{"turn": map[string]any{"id": "desktop-image-steer"}},
+		},
+	}
+	service.desktopInputDispatcher = desktop
+	service.desktopOpener = func(ctx context.Context, threadID string) error { return nil }
+
+	text := "The user sent an image saved at: /Users/vico/.codex-tg/data/feishu-attachments/reply.jpg\nPlease read and analyze this image."
+	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, thread.ActiveTurnID, text, "", model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
+	}
+	if response == nil || response.TurnID != "desktop-image-steer" {
+		t.Fatalf("response = %#v, want desktop image steer", response)
+	}
+	if len(desktop.steerInputs) != 1 {
+		t.Fatalf("desktop steerInputs = %#v, want one", desktop.steerInputs)
+	}
+	input := desktop.steerInputs[0]
+	if len(input) != 1 {
+		t.Fatalf("desktop steer input = %#v, want only localImage part", input)
+	}
+	if got, want := input[0]["type"], "localImage"; got != want {
+		t.Fatalf("image part type = %v, want %q", got, want)
+	}
+	if got, want := input[0]["path"], "/Users/vico/.codex-tg/data/feishu-attachments/reply.jpg"; got != want {
+		t.Fatalf("image part path = %v, want %q", got, want)
+	}
+}
+
 func TestFeishuInputUsesDesktopDispatcherWhenLiveSessionUnavailable(t *testing.T) {
 	t.Parallel()
 
@@ -5804,6 +5906,7 @@ type stubDesktopInputDispatcher struct {
 	loadCalls            []string
 	startCalls           []map[string]any
 	steerCalls           []string
+	steerInputs          [][]map[string]any
 	steerRestoreMessages []map[string]any
 	loadErr              error
 	loadErrs             []error
@@ -5841,6 +5944,7 @@ func (s *stubDesktopInputDispatcher) StartTurn(ctx context.Context, threadID str
 
 func (s *stubDesktopInputDispatcher) SteerTurn(ctx context.Context, threadID string, input []map[string]any, restoreMessage map[string]any) (map[string]any, error) {
 	s.steerCalls = append(s.steerCalls, threadID)
+	s.steerInputs = append(s.steerInputs, input)
 	s.steerRestoreMessages = append(s.steerRestoreMessages, restoreMessage)
 	if s.steerErr != nil {
 		return nil, s.steerErr
