@@ -297,7 +297,7 @@ func isLegacyTerminalReplay(panel *model.ThreadPanel, snapshot *appserver.Thread
 	if panel == nil || snapshot == nil {
 		return false
 	}
-	if panel.RunNoticeMessageID != 0 || panel.UserMessageID != 0 {
+	if panel.UserMessageID != 0 {
 		return false
 	}
 	if strings.TrimSpace(panel.LastFinalNoticeFP) != "" || strings.TrimSpace(snapshot.LatestFinalFP) == "" {

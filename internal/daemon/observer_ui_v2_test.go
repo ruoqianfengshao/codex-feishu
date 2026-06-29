@@ -792,7 +792,7 @@ func TestFeishuInputSyncShowsFeishuSourceAndDoesNotDuplicateUserRequestNotice(t 
 	if err != nil {
 		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
 	}
-	if panel == nil || panel.SourceMode != model.PanelSourceFeishuInput || panel.RunNoticeMessageID != 0 || panel.LastUserNoticeFP != "" {
+	if panel == nil || panel.SourceMode != model.PanelSourceFeishuInput || panel.LastUserNoticeFP != "" {
 		t.Fatalf("panel = %#v, want feishu_input with empty user notice fp", panel)
 	}
 }
@@ -916,9 +916,6 @@ func TestFeishuThreadTopicSyncUsesCanonicalTargetOnce(t *testing.T) {
 	}
 	service.SetSender(sender)
 	ctx := context.Background()
-	if err := service.store.SetGlobalObserverTarget(ctx, 123456789, 0, false); err != nil {
-		t.Fatalf("SetGlobalObserverTarget(disabled) failed: %v", err)
-	}
 
 	thread := model.Thread{
 		ID:          "thread-feishu-canonical",

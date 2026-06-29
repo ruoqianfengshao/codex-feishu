@@ -365,9 +365,7 @@ type ObserverEvent struct {
 }
 
 type ChatContext struct {
-	Mode            string
-	ObserverEnabled bool
-	ObserverTarget  *ObserverTarget
+	Mode string
 }
 
 type ThreadPanel struct {
@@ -387,8 +385,6 @@ type ThreadPanel struct {
 	LastToolHash        string
 	LastOutputHash      string
 	LastFinalNoticeFP   string
-	RunNoticeMessageID  int64
-	LastRunNoticeFP     string
 	UserMessageID       int64
 	LastUserNoticeFP    string
 	PlanPromptMessageID int64

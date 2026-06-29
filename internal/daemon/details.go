@@ -55,9 +55,6 @@ func (s *Service) maybeRenderFinalCard(ctx context.Context, sender Sender, targe
 	if err := s.store.UpdateThreadPanelDetails(ctx, panel.ID, panel.DetailsViewJSON, panel.LastFinalCardHash); err != nil {
 		return err
 	}
-	if panel.RunNoticeMessageID != 0 {
-		_ = sender.DeleteMessage(ctx, target.ChatID, target.TopicID, panel.RunNoticeMessageID)
-	}
 	if panel.ToolMessageID != 0 {
 		_ = sender.DeleteMessage(ctx, target.ChatID, target.TopicID, panel.ToolMessageID)
 	}

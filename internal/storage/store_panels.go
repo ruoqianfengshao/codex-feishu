@@ -4,81 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/mideco-tech/codex-tg/internal/model"
 )
-
-func (s *Store) SetGlobalObserverTarget(ctx context.Context, chatID, topicID int64, enabled bool) error {
-	if err := s.SetState(ctx, "observer.global_enabled", strconv.FormatBool(enabled)); err != nil {
-		return err
-	}
-	if enabled {
-		if err := s.SetState(ctx, "observer.global_chat_id", strconv.FormatInt(chatID, 10)); err != nil {
-			return err
-		}
-		if err := s.SetState(ctx, "observer.global_topic_id", strconv.FormatInt(topicID, 10)); err != nil {
-			return err
-		}
-		if err := s.SetState(ctx, "observer.global_since_unix", strconv.FormatInt(time.Now().UTC().Unix(), 10)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Store) GetGlobalObserverTarget(ctx context.Context) (*model.ObserverTarget, bool, error) {
-	enabledRaw, err := s.GetState(ctx, "observer.global_enabled")
-	if err != nil {
-		return nil, false, err
-	}
-	if strings.TrimSpace(enabledRaw) == "" {
-		return nil, false, nil
-	}
-	enabled := strings.EqualFold(strings.TrimSpace(enabledRaw), "true")
-	if !enabled {
-		return nil, true, nil
-	}
-	chatIDRaw, err := s.GetState(ctx, "observer.global_chat_id")
-	if err != nil {
-		return nil, false, err
-	}
-	topicIDRaw, err := s.GetState(ctx, "observer.global_topic_id")
-	if err != nil {
-		return nil, false, err
-	}
-	chatID, _ := strconv.ParseInt(strings.TrimSpace(chatIDRaw), 10, 64)
-	topicID, _ := strconv.ParseInt(strings.TrimSpace(topicIDRaw), 10, 64)
-	if chatID == 0 {
-		return nil, true, nil
-	}
-	return &model.ObserverTarget{
-		ChatKey:   model.ChatKey(chatID, topicID),
-		ChatID:    chatID,
-		TopicID:   topicID,
-		Enabled:   true,
-		CreatedAt: model.NowString(),
-		UpdatedAt: model.NowString(),
-	}, true, nil
-}
-
-func (s *Store) GetGlobalObserverSinceUnix(ctx context.Context) (int64, bool, error) {
-	raw, err := s.GetState(ctx, "observer.global_since_unix")
-	if err != nil {
-		return 0, false, err
-	}
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, false, nil
-	}
-	value, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return 0, false, nil
-	}
-	return value, true, nil
-}
 
 func (s *Store) CreateThreadPanel(ctx context.Context, panel model.ThreadPanel) (*model.ThreadPanel, error) {
 	now := string(model.NowString())
@@ -104,15 +33,13 @@ func (s *Store) CreateThreadPanel(ctx context.Context, panel model.ThreadPanel) 
 		summary_message_id, tool_message_id, output_message_id,
 		current_turn_id, status, archive_enabled,
 		last_summary_hash, last_tool_hash, last_output_hash, last_final_notice_fp,
-		run_notice_message_id, last_run_notice_fp,
 		user_message_id, last_user_notice_fp, plan_prompt_message_id, last_plan_prompt_fp,
 		details_view_json, last_final_card_hash, is_current, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
 		panel.ChatID, panel.TopicID, panel.ProjectName, panel.ThreadID, nullable(panel.SourceMode),
 		panel.SummaryMessageID, panel.ToolMessageID, panel.OutputMessageID,
 		nullable(panel.CurrentTurnID), nullable(panel.Status), boolToInt(panel.ArchiveEnabled),
 		nullable(panel.LastSummaryHash), nullable(panel.LastToolHash), nullable(panel.LastOutputHash), nullable(panel.LastFinalNoticeFP),
-		panel.RunNoticeMessageID, nullable(panel.LastRunNoticeFP),
 		panel.UserMessageID, nullable(panel.LastUserNoticeFP),
 		panel.PlanPromptMessageID, nullable(panel.LastPlanPromptFP),
 		nullable(panel.DetailsViewJSON), nullable(panel.LastFinalCardHash),
@@ -141,7 +68,6 @@ func (s *Store) GetCurrentThreadPanel(ctx context.Context, chatID, topicID int64
 		summary_message_id, tool_message_id, output_message_id,
 		coalesce(current_turn_id,''), coalesce(status,''), archive_enabled,
 		coalesce(last_summary_hash,''), coalesce(last_tool_hash,''), coalesce(last_output_hash,''), coalesce(last_final_notice_fp,''),
-		coalesce(run_notice_message_id,0), coalesce(last_run_notice_fp,''),
 		coalesce(user_message_id,0), coalesce(last_user_notice_fp,''),
 		coalesce(plan_prompt_message_id,0), coalesce(last_plan_prompt_fp,''),
 		coalesce(details_view_json,''), coalesce(last_final_card_hash,''),
@@ -161,7 +87,6 @@ func (s *Store) GetLatestCurrentPanelForChat(ctx context.Context, chatID, topicI
 		panel.summary_message_id, panel.tool_message_id, panel.output_message_id,
 		coalesce(panel.current_turn_id,''), coalesce(panel.status,''), panel.archive_enabled,
 		coalesce(panel.last_summary_hash,''), coalesce(panel.last_tool_hash,''), coalesce(panel.last_output_hash,''), coalesce(panel.last_final_notice_fp,''),
-		coalesce(panel.run_notice_message_id,0), coalesce(panel.last_run_notice_fp,''),
 		coalesce(panel.user_message_id,0), coalesce(panel.last_user_notice_fp,''),
 		coalesce(panel.plan_prompt_message_id,0), coalesce(panel.last_plan_prompt_fp,''),
 		coalesce(panel.details_view_json,''), coalesce(panel.last_final_card_hash,''),
@@ -190,7 +115,6 @@ func (s *Store) ListCurrentPanelsForThread(ctx context.Context, threadID string)
 		summary_message_id, tool_message_id, output_message_id,
 		coalesce(current_turn_id,''), coalesce(status,''), archive_enabled,
 		coalesce(last_summary_hash,''), coalesce(last_tool_hash,''), coalesce(last_output_hash,''), coalesce(last_final_notice_fp,''),
-		coalesce(run_notice_message_id,0), coalesce(last_run_notice_fp,''),
 		coalesce(user_message_id,0), coalesce(last_user_notice_fp,''),
 		coalesce(plan_prompt_message_id,0), coalesce(last_plan_prompt_fp,''),
 		coalesce(details_view_json,''), coalesce(last_final_card_hash,''),
@@ -287,16 +211,6 @@ func (s *Store) UpdateThreadPanelUserNotice(ctx context.Context, panelID, userMe
 	return err
 }
 
-func (s *Store) UpdateThreadPanelRunNotice(ctx context.Context, panelID, runNoticeMessageID int64, lastRunNoticeFP string) error {
-	_, err := s.db.ExecContext(ctx, `
-	UPDATE thread_panels
-	SET run_notice_message_id = ?, last_run_notice_fp = ?, updated_at = ?
-	WHERE id = ?`,
-		runNoticeMessageID, nullable(lastRunNoticeFP), string(model.NowString()), panelID,
-	)
-	return err
-}
-
 func (s *Store) UpdateThreadPanelPlanPrompt(ctx context.Context, panelID, planPromptMessageID int64, lastPlanPromptFP string) error {
 	_, err := s.db.ExecContext(ctx, `
 	UPDATE thread_panels
@@ -323,7 +237,6 @@ func (s *Store) GetThreadPanelByID(ctx context.Context, panelID int64) (*model.T
 		summary_message_id, tool_message_id, output_message_id,
 		coalesce(current_turn_id,''), coalesce(status,''), archive_enabled,
 		coalesce(last_summary_hash,''), coalesce(last_tool_hash,''), coalesce(last_output_hash,''), coalesce(last_final_notice_fp,''),
-		coalesce(run_notice_message_id,0), coalesce(last_run_notice_fp,''),
 		coalesce(user_message_id,0), coalesce(last_user_notice_fp,''),
 		coalesce(plan_prompt_message_id,0), coalesce(last_plan_prompt_fp,''),
 		coalesce(details_view_json,''), coalesce(last_final_card_hash,''),
@@ -382,7 +295,7 @@ func (s *Store) ClearSteerState(ctx context.Context, chatID, topicID int64) erro
 
 func (s *Store) GetLatestPendingApprovalForThread(ctx context.Context, threadID string) (*model.PendingApproval, error) {
 	row := s.db.QueryRowContext(ctx, `
-	SELECT request_id, thread_id, coalesce(turn_id,''), coalesce(item_id,''), prompt_kind, coalesce(question,''), status, coalesce(telegram_message_id,0), payload_json, updated_at
+	SELECT request_id, thread_id, coalesce(turn_id,''), coalesce(item_id,''), prompt_kind, coalesce(question,''), status, coalesce(chat_message_id,0), payload_json, updated_at
 	FROM pending_approvals
 	WHERE thread_id = ? AND status = 'pending'
 	ORDER BY updated_at DESC
@@ -402,7 +315,7 @@ func (s *Store) GetLatestPendingApprovalForThread(ctx context.Context, threadID 
 
 func scanThreadPanel(scanner interface{ Scan(...any) error }) (*model.ThreadPanel, error) {
 	var panel model.ThreadPanel
-	var currentTurnID, status, lastSummaryHash, lastToolHash, lastOutputHash, lastFinalNoticeFP, lastRunNoticeFP, lastUserNoticeFP, lastPlanPromptFP, detailsViewJSON, lastFinalCardHash sql.NullString
+	var currentTurnID, status, lastSummaryHash, lastToolHash, lastOutputHash, lastFinalNoticeFP, lastUserNoticeFP, lastPlanPromptFP, detailsViewJSON, lastFinalCardHash sql.NullString
 	var archiveEnabled, isCurrent int
 	if err := scanner.Scan(
 		&panel.ID,
@@ -421,8 +334,6 @@ func scanThreadPanel(scanner interface{ Scan(...any) error }) (*model.ThreadPane
 		&lastToolHash,
 		&lastOutputHash,
 		&lastFinalNoticeFP,
-		&panel.RunNoticeMessageID,
-		&lastRunNoticeFP,
 		&panel.UserMessageID,
 		&lastUserNoticeFP,
 		&panel.PlanPromptMessageID,
@@ -448,7 +359,6 @@ func scanThreadPanel(scanner interface{ Scan(...any) error }) (*model.ThreadPane
 	panel.LastToolHash = lastToolHash.String
 	panel.LastOutputHash = lastOutputHash.String
 	panel.LastFinalNoticeFP = lastFinalNoticeFP.String
-	panel.LastRunNoticeFP = lastRunNoticeFP.String
 	panel.LastUserNoticeFP = lastUserNoticeFP.String
 	panel.LastPlanPromptFP = lastPlanPromptFP.String
 	panel.DetailsViewJSON = detailsViewJSON.String

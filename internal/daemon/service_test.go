@@ -192,32 +192,6 @@ func TestResolveRouteExtractsPlanRequestIDOnlyFromPlanRequestEvent(t *testing.T)
 	}
 }
 
-func TestObserveCommandIsRemoved(t *testing.T) {
-	t.Parallel()
-
-	service := newTestService(t)
-	ctx := context.Background()
-
-	response, err := service.handleCommandFromSource(ctx, 42, 9, "/observe all", 0, model.PanelSourceFeishuInput)
-	if err != nil {
-		t.Fatalf("handleCommand(/observe all) failed: %v", err)
-	}
-	if response == nil {
-		t.Fatal("handleCommand(/observe all) returned nil response")
-	}
-	if !strings.Contains(response.Text, "Global observer has been removed") {
-		t.Fatalf("response = %#v, want removed message", response)
-	}
-
-	target, configured, err := service.store.GetGlobalObserverTarget(ctx)
-	if err != nil {
-		t.Fatalf("GetGlobalObserverTarget(after /observe all) failed: %v", err)
-	}
-	if configured || target != nil {
-		t.Fatalf("global target after removed /observe all = %#v configured=%t, want none", target, configured)
-	}
-}
-
 func TestResolveArmedSteerReturnsActiveStateAndExpires(t *testing.T) {
 	t.Parallel()
 
@@ -1506,14 +1480,10 @@ func TestTrackedThreadsSkipsRecentTerminalChangeThatPredatesObserveEnable(t *tes
 	}); err != nil {
 		t.Fatalf("UpsertThread failed: %v", err)
 	}
-	if err := service.store.SetGlobalObserverTarget(ctx, 123456789, 0, true); err != nil {
-		t.Fatalf("SetGlobalObserverTarget failed: %v", err)
-	}
-
 	tracked := service.trackedThreads(ctx, 10)
 	for _, thread := range tracked {
 		if thread.ID == "recent-before-enable" {
-			t.Fatalf("tracked threads unexpectedly include completion from before /observe all: %#v", tracked)
+			t.Fatalf("tracked threads unexpectedly include passive terminal change: %#v", tracked)
 		}
 	}
 }
@@ -1543,7 +1513,7 @@ func TestTrackedThreadsSkipsNotLoadedThreadWithStaleActiveTurn(t *testing.T) {
 	}
 }
 
-func TestCurrentPanelThreadIDsSkipTerminalGlobalObserverPanels(t *testing.T) {
+func TestCurrentPanelThreadIDsSkipTerminalFeishuInputPanels(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -1571,7 +1541,7 @@ func TestCurrentPanelThreadIDsSkipTerminalGlobalObserverPanels(t *testing.T) {
 		Status:           "completed",
 		ArchiveEnabled:   true,
 	}); err != nil {
-		t.Fatalf("CreateThreadPanel(global_observer terminal) failed: %v", err)
+		t.Fatalf("CreateThreadPanel(feishu_input terminal) failed: %v", err)
 	}
 	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
 		ChatID:           123456789,
@@ -1602,7 +1572,7 @@ func TestCurrentPanelThreadIDsSkipTerminalGlobalObserverPanels(t *testing.T) {
 	}
 
 	if foundA {
-		t.Fatalf("currentPanelThreadIDs unexpectedly include terminal global_observer panel: %#v", ids)
+		t.Fatalf("currentPanelThreadIDs unexpectedly include terminal feishu_input panel: %#v", ids)
 	}
 	if foundB {
 		t.Fatalf("currentPanelThreadIDs unexpectedly include terminal explicit panel: %#v", ids)
@@ -1734,7 +1704,7 @@ func TestAttachTrackedMarksArchivedFeishuTopicThreadFromResumeError(t *testing.T
 	}
 }
 
-func TestThreadNeedsLiveSyncSkipsTerminalGlobalObserverPanels(t *testing.T) {
+func TestThreadNeedsLiveSyncSkipsTerminalFeishuInputPanels(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -1761,7 +1731,7 @@ func TestThreadNeedsLiveSyncSkipsTerminalGlobalObserverPanels(t *testing.T) {
 	}
 
 	if service.threadNeedsLiveSync(ctx, thread.ID) {
-		t.Fatal("threadNeedsLiveSync returned true for terminal global_observer panel")
+		t.Fatal("threadNeedsLiveSync returned true for terminal feishu_input panel")
 	}
 
 	if service.threadNeedsLiveSync(ctx, thread.ID) {
@@ -2393,9 +2363,6 @@ func TestPollTrackedSkipsFirstSeenRecentTerminalAfterObserverRemoval(t *testing.
 	}
 	if err := service.store.UpsertThread(ctx, thread); err != nil {
 		t.Fatalf("UpsertThread failed: %v", err)
-	}
-	if err := service.store.SetGlobalObserverTarget(ctx, 123456789, 0, true); err != nil {
-		t.Fatalf("SetGlobalObserverTarget failed: %v", err)
 	}
 	service.poll = &stubSession{
 		threadReads: map[string]map[string]any{
@@ -3065,9 +3032,6 @@ func TestPollTrackedSkipsThreadNotLoadedWithoutRepair(t *testing.T) {
 	if err := service.store.UpsertThread(ctx, thread); err != nil {
 		t.Fatalf("UpsertThread failed: %v", err)
 	}
-	if err := service.store.SetGlobalObserverTarget(ctx, 123456789, 0, true); err != nil {
-		t.Fatalf("SetGlobalObserverTarget failed: %v", err)
-	}
 	service.poll = &stubSession{threadReadErr: errors.New("map[code:-32600 message:thread not loaded: thread-not-loaded]")}
 	service.pollConnected = true
 
@@ -3093,10 +3057,6 @@ func TestRefreshObserverIndexSkipsSyncAfterObserverRemoval(t *testing.T) {
 
 	service := newTestService(t)
 	ctx := context.Background()
-	if err := service.store.SetGlobalObserverTarget(ctx, 123456789, 0, true); err != nil {
-		t.Fatalf("SetGlobalObserverTarget failed: %v", err)
-	}
-
 	thread := model.Thread{
 		ID:           "thread-from-list",
 		Title:        "From list",
@@ -3125,7 +3085,7 @@ func TestRefreshObserverIndexSkipsSyncAfterObserverRemoval(t *testing.T) {
 	service.refreshObserverIndex(ctx)
 
 	if service.poll.(*stubSession).threadListCalls != 0 {
-		t.Fatalf("thread list calls = %d, want 0 after observer removal", service.poll.(*stubSession).threadListCalls)
+		t.Fatalf("thread list calls = %d, want 0 without passive observer", service.poll.(*stubSession).threadListCalls)
 	}
 	stored, err := service.store.GetThread(ctx, thread.ID)
 	if err != nil {
@@ -3141,9 +3101,6 @@ func TestRefreshObserverIndexSkipsSyncWithoutBackgroundObserver(t *testing.T) {
 
 	service := newTestService(t)
 	ctx := context.Background()
-	if err := service.store.SetGlobalObserverTarget(ctx, 123456789, 0, false); err != nil {
-		t.Fatalf("SetGlobalObserverTarget(disabled) failed: %v", err)
-	}
 	stub := &stubSession{}
 	service.poll = stub
 	service.pollConnected = true

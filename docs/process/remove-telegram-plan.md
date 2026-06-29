@@ -67,13 +67,18 @@ Verification:
 
 ## Phase 5: Tests
 
-- [ ] Delete Telegram-only test cases.
+- [x] Delete Telegram-only storage/global observer test cases.
 - [ ] Rewrite useful lifecycle coverage as Feishu topic tests.
-- [ ] Remove Telegram wording from test names, fixtures, and assertions.
+- [x] Remove Telegram/global observer wording from runtime test names, fixtures, and assertions touched so far.
 - [ ] Remove Telegram demo/e2e test assumptions.
+- [x] Remove legacy Telegram route table and message-id column names from active storage schema.
+- [x] Remove global observer and run notice storage state.
 
 Verification:
 
+- [x] `rg -n "Telegram|telegram|PanelSourceTelegram|telegram_origin|GlobalObserver|global_observer|RunNotice|run_notice|observer_targets|telegram_message" internal/storage internal/model internal/daemon cmd internal/feishu`
+  - Remaining `telegram_message_*` hits are one-time deletion checks for old database artifacts.
+- [x] `go test ./internal/storage ./internal/model ./internal/daemon ./internal/feishu`
 - [ ] `rg -n "Telegram|telegram|PanelSourceTelegram|telegram_origin" internal tests cmd`
 - [ ] `go test ./...`
 

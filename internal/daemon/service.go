@@ -446,8 +446,6 @@ func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID,
 		return &DirectResponse{Text: text}, nil
 	case "get_thread_id":
 		return s.threadIDResponse(ctx, route.ThreadID, route.TurnID), nil
-	case "observe_all":
-		return &DirectResponse{CallbackText: s.t(ctx, "观察器已移除", "Observer removed."), Text: s.t(ctx, "全局观察器已移除。请使用 /chats 或 /projects 打开 Codex 话题，然后在话题中回复。", "Global observer has been removed. Use /chats or /projects to open a Codex topic, then reply in that topic.")}, nil
 	case "reply_hint":
 		return &DirectResponse{Text: fmt.Sprintf(s.t(ctx, "使用下面命令回复这个会话：\n/reply %s <text>", "Reply to this thread with:\n/reply %s <text>"), route.ThreadID)}, nil
 	case "stop_turn":
@@ -1526,8 +1524,6 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 			return nil, err
 		}
 		return &DirectResponse{Text: text}, nil
-	case "/observe":
-		return &DirectResponse{Text: s.t(ctx, "全局观察器已移除。请使用 /chats 或 /projects 打开 Codex 话题，然后在话题中回复。", "Global observer has been removed. Use /chats or /projects to open a Codex topic, then reply in that topic.")}, nil
 	case "/setting", "/settings":
 		return s.codexSettingsOverview(ctx)
 	case "/chats":
@@ -3026,17 +3022,8 @@ func (s *Service) showThread(ctx context.Context, chatID, topicID int64, threadI
 }
 
 func (s *Service) contextCard(ctx context.Context, chatID, topicID int64) (string, error) {
-	contextState, err := s.store.GetChatContext(ctx, chatID, topicID)
-	if err != nil {
-		return "", err
-	}
 	lines := []string{s.t(ctx, "当前上下文", "Current context")}
-	switch {
-	case contextState.ObserverEnabled:
-		lines = append(lines, s.t(ctx, "模式：观察器", "Mode: Observer"))
-	default:
-		lines = append(lines, s.t(ctx, "模式：未绑定", "Mode: Unbound"), s.t(ctx, "使用 /chats 或 /projects 选择一个线程。", "Use /chats or /projects to choose a thread."))
-	}
+	lines = append(lines, s.t(ctx, "模式：未绑定", "Mode: Unbound"), s.t(ctx, "使用 /chats 或 /projects 选择一个线程。", "Use /chats or /projects to choose a thread."))
 	return strings.Join(lines, "\n"), nil
 }
 

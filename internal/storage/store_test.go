@@ -10,122 +10,6 @@ import (
 	"github.com/mideco-tech/codex-tg/internal/model"
 )
 
-func TestGlobalObserverTargetPersistsAndObserveOffDisablesMonitoring(t *testing.T) {
-	t.Parallel()
-
-	path := filepath.Join(t.TempDir(), "state.sqlite")
-	store, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open(%s) failed: %v", path, err)
-	}
-	t.Cleanup(func() {
-		_ = store.Close()
-	})
-	ctx := context.Background()
-
-	if err := store.SetGlobalObserverTarget(ctx, 123456789, 9, true); err != nil {
-		t.Fatalf("SetGlobalObserverTarget(enable) failed: %v", err)
-	}
-	enabledRaw, err := store.GetState(ctx, "observer.global_enabled")
-	if err != nil {
-		t.Fatalf("GetState(observer.global_enabled) failed: %v", err)
-	}
-	if enabledRaw != "true" {
-		t.Fatalf("observer.global_enabled = %q, want true", enabledRaw)
-	}
-	chatIDRaw, err := store.GetState(ctx, "observer.global_chat_id")
-	if err != nil {
-		t.Fatalf("GetState(observer.global_chat_id) failed: %v", err)
-	}
-	if chatIDRaw != "123456789" {
-		t.Fatalf("observer.global_chat_id = %q, want 123456789", chatIDRaw)
-	}
-	topicIDRaw, err := store.GetState(ctx, "observer.global_topic_id")
-	if err != nil {
-		t.Fatalf("GetState(observer.global_topic_id) failed: %v", err)
-	}
-	if topicIDRaw != "9" {
-		t.Fatalf("observer.global_topic_id = %q, want 9", topicIDRaw)
-	}
-	sinceRaw, err := store.GetState(ctx, "observer.global_since_unix")
-	if err != nil {
-		t.Fatalf("GetState(observer.global_since_unix) failed: %v", err)
-	}
-	if sinceRaw == "" {
-		t.Fatal("observer.global_since_unix must be set when global observer is enabled")
-	}
-
-	reopened, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open(reopened) failed: %v", err)
-	}
-	defer reopened.Close()
-
-	target, configured, err := reopened.GetGlobalObserverTarget(ctx)
-	if err != nil {
-		t.Fatalf("GetGlobalObserverTarget(reopened) failed: %v", err)
-	}
-	if !configured {
-		t.Fatal("GetGlobalObserverTarget(reopened) should report configured=true")
-	}
-	if target == nil {
-		t.Fatal("GetGlobalObserverTarget(reopened) returned nil target")
-	}
-	if target.ChatID != 123456789 || target.TopicID != 9 || !target.Enabled {
-		t.Fatalf("reopened global target = %#v, want enabled target 123456789:9", target)
-	}
-	sinceUnix, ok, err := reopened.GetGlobalObserverSinceUnix(ctx)
-	if err != nil {
-		t.Fatalf("GetGlobalObserverSinceUnix(reopened) failed: %v", err)
-	}
-	if !ok || sinceUnix <= 0 {
-		t.Fatalf("GetGlobalObserverSinceUnix(reopened) = %d ok=%t, want positive value", sinceUnix, ok)
-	}
-
-	if err := reopened.SetGlobalObserverTarget(ctx, 123456789, 9, false); err != nil {
-		t.Fatalf("SetGlobalObserverTarget(disable) failed: %v", err)
-	}
-	target, configured, err = reopened.GetGlobalObserverTarget(ctx)
-	if err != nil {
-		t.Fatalf("GetGlobalObserverTarget(disabled) failed: %v", err)
-	}
-	if !configured {
-		t.Fatal("GetGlobalObserverTarget(disabled) should remain configured")
-	}
-	if target != nil {
-		t.Fatalf("disabled global target = %#v, want nil", target)
-	}
-	enabledRaw, err = reopened.GetState(ctx, "observer.global_enabled")
-	if err != nil {
-		t.Fatalf("GetState(observer.global_enabled after disable) failed: %v", err)
-	}
-	if enabledRaw != "false" {
-		t.Fatalf("observer.global_enabled after disable = %q, want false", enabledRaw)
-	}
-}
-
-func TestGlobalObserverTargetRoundTrips(t *testing.T) {
-	t.Parallel()
-
-	store := openTestStore(t)
-	ctx := context.Background()
-
-	if err := store.SetGlobalObserverTarget(ctx, 123456789, 0, true); err != nil {
-		t.Fatalf("SetGlobalObserverTarget failed: %v", err)
-	}
-
-	target, configured, err := store.GetGlobalObserverTarget(ctx)
-	if err != nil {
-		t.Fatalf("GetGlobalObserverTarget failed: %v", err)
-	}
-	if !configured || target == nil {
-		t.Fatalf("global observer target = %#v configured=%t, want enabled target", target, configured)
-	}
-	if target.ChatID != 123456789 || target.TopicID != 0 {
-		t.Fatalf("global observer target = %#v, want 123456789:0", target)
-	}
-}
-
 func TestResolveExternalIDIsStableAndDistinctByNamespace(t *testing.T) {
 	t.Parallel()
 
@@ -375,8 +259,6 @@ func TestThreadPanelLifecycleKeepsSingleCurrentPanelPerChatThread(t *testing.T) 
 		LastSummaryHash:     "summary-1",
 		LastToolHash:        "tool-1",
 		LastOutputHash:      "output-1",
-		RunNoticeMessageID:  99,
-		LastRunNoticeFP:     "run-fp-1",
 		UserMessageID:       100,
 		LastUserNoticeFP:    "user-fp-1",
 		PlanPromptMessageID: 110,
@@ -426,9 +308,6 @@ func TestThreadPanelLifecycleKeepsSingleCurrentPanelPerChatThread(t *testing.T) 
 	if firstLoaded.UserMessageID != 100 || firstLoaded.LastUserNoticeFP != "user-fp-1" {
 		t.Fatalf("first user notice state = id %d fp %q, want 100/user-fp-1", firstLoaded.UserMessageID, firstLoaded.LastUserNoticeFP)
 	}
-	if firstLoaded.RunNoticeMessageID != 99 || firstLoaded.LastRunNoticeFP != "run-fp-1" {
-		t.Fatalf("first run notice state = id %d fp %q, want 99/run-fp-1", firstLoaded.RunNoticeMessageID, firstLoaded.LastRunNoticeFP)
-	}
 	if firstLoaded.PlanPromptMessageID != 110 || firstLoaded.LastPlanPromptFP != "plan-fp-1" {
 		t.Fatalf("first plan prompt state = id %d fp %q, want 110/plan-fp-1", firstLoaded.PlanPromptMessageID, firstLoaded.LastPlanPromptFP)
 	}
@@ -442,16 +321,6 @@ func TestThreadPanelLifecycleKeepsSingleCurrentPanelPerChatThread(t *testing.T) 
 	}
 	if secondLoaded.UserMessageID != 250 || secondLoaded.LastUserNoticeFP != "user-fp-2" {
 		t.Fatalf("second user notice state = id %d fp %q, want 250/user-fp-2", secondLoaded.UserMessageID, secondLoaded.LastUserNoticeFP)
-	}
-	if err := store.UpdateThreadPanelRunNotice(ctx, second.ID, 240, "run-fp-2"); err != nil {
-		t.Fatalf("UpdateThreadPanelRunNotice failed: %v", err)
-	}
-	secondLoaded, err = store.GetThreadPanelByID(ctx, second.ID)
-	if err != nil {
-		t.Fatalf("GetThreadPanelByID(second after run notice) failed: %v", err)
-	}
-	if secondLoaded.RunNoticeMessageID != 240 || secondLoaded.LastRunNoticeFP != "run-fp-2" {
-		t.Fatalf("second run notice state = id %d fp %q, want 240/run-fp-2", secondLoaded.RunNoticeMessageID, secondLoaded.LastRunNoticeFP)
 	}
 	if err := store.UpdateThreadPanelPlanPrompt(ctx, second.ID, 260, "plan-fp-2"); err != nil {
 		t.Fatalf("UpdateThreadPanelPlanPrompt failed: %v", err)
