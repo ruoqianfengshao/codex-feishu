@@ -2727,7 +2727,7 @@ func TestFinalCardDetailsCallbacksEditSameMessageAndExportToolsFile(t *testing.T
 		t.Fatalf("final card buttons = %#v, want Details", finalCard.buttons)
 	}
 
-	if _, err := service.HandleCallback(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, detailsToken); err != nil {
+	if _, err := service.HandleCallbackFromSource(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, detailsToken, model.PanelSourceFeishuInput); err != nil {
 		t.Fatalf("HandleCallback(details) failed: %v", err)
 	}
 	if len(sender.edits) < 1 {
@@ -2742,7 +2742,7 @@ func TestFinalCardDetailsCallbacksEditSameMessageAndExportToolsFile(t *testing.T
 	}
 
 	nextToken := buttonToken(details.buttons, ">")
-	if _, err := service.HandleCallback(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, nextToken); err != nil {
+	if _, err := service.HandleCallbackFromSource(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, nextToken, model.PanelSourceFeishuInput); err != nil {
 		t.Fatalf("HandleCallback(next) failed: %v", err)
 	}
 	next := sender.edits[len(sender.edits)-1]
@@ -2751,7 +2751,7 @@ func TestFinalCardDetailsCallbacksEditSameMessageAndExportToolsFile(t *testing.T
 	}
 
 	toolOnToken := buttonToken(details.buttons, "Tool on")
-	if _, err := service.HandleCallback(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, toolOnToken); err != nil {
+	if _, err := service.HandleCallbackFromSource(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, toolOnToken, model.PanelSourceFeishuInput); err != nil {
 		t.Fatalf("HandleCallback(tool on) failed: %v", err)
 	}
 	toolMode := sender.edits[len(sender.edits)-1]
@@ -2760,7 +2760,7 @@ func TestFinalCardDetailsCallbacksEditSameMessageAndExportToolsFile(t *testing.T
 	}
 
 	toolNextToken := buttonToken(toolMode.buttons, ">")
-	if _, err := service.HandleCallback(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, toolNextToken); err != nil {
+	if _, err := service.HandleCallbackFromSource(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, toolNextToken, model.PanelSourceFeishuInput); err != nil {
 		t.Fatalf("HandleCallback(tool next) failed: %v", err)
 	}
 	toolNext := sender.edits[len(sender.edits)-1]
@@ -2769,7 +2769,7 @@ func TestFinalCardDetailsCallbacksEditSameMessageAndExportToolsFile(t *testing.T
 	}
 
 	fileToken := buttonToken(toolMode.buttons, "Tools file")
-	if _, err := service.HandleCallback(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, fileToken); err != nil {
+	if _, err := service.HandleCallbackFromSource(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, fileToken, model.PanelSourceFeishuInput); err != nil {
 		t.Fatalf("HandleCallback(tools file) failed: %v", err)
 	}
 	if len(sender.documents) != 1 {
@@ -2786,7 +2786,7 @@ func TestFinalCardDetailsCallbacksEditSameMessageAndExportToolsFile(t *testing.T
 	}
 
 	backToken := buttonToken(toolMode.buttons, "Back")
-	if _, err := service.HandleCallback(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, backToken); err != nil {
+	if _, err := service.HandleCallbackFromSource(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, backToken, model.PanelSourceFeishuInput); err != nil {
 		t.Fatalf("HandleCallback(back) failed: %v", err)
 	}
 	back := sender.edits[len(sender.edits)-1]
@@ -2878,7 +2878,7 @@ func TestFinalCardDetailsShowsToolOnlyTurnWithoutCommentary(t *testing.T) {
 		t.Fatalf("final card buttons = %#v, want Details", finalCard.buttons)
 	}
 
-	if _, err := service.HandleCallback(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, detailsToken); err != nil {
+	if _, err := service.HandleCallbackFromSource(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, detailsToken, model.PanelSourceFeishuInput); err != nil {
 		t.Fatalf("HandleCallback(details) failed: %v", err)
 	}
 	details := sender.edits[len(sender.edits)-1]
@@ -2890,7 +2890,7 @@ func TestFinalCardDetailsShowsToolOnlyTurnWithoutCommentary(t *testing.T) {
 	}
 
 	toolOnToken := buttonToken(details.buttons, "Tool on")
-	if _, err := service.HandleCallback(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, toolOnToken); err != nil {
+	if _, err := service.HandleCallbackFromSource(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, toolOnToken, model.PanelSourceFeishuInput); err != nil {
 		t.Fatalf("HandleCallback(tool on) failed: %v", err)
 	}
 	toolMode := sender.edits[len(sender.edits)-1]
@@ -2899,7 +2899,7 @@ func TestFinalCardDetailsShowsToolOnlyTurnWithoutCommentary(t *testing.T) {
 	}
 
 	fileToken := buttonToken(toolMode.buttons, "Tools file")
-	if _, err := service.HandleCallback(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, fileToken); err != nil {
+	if _, err := service.HandleCallbackFromSource(ctx, target.ChatID, target.TopicID, cardMessageID, 123456789, fileToken, model.PanelSourceFeishuInput); err != nil {
 		t.Fatalf("HandleCallback(tools file) failed: %v", err)
 	}
 	if len(sender.documents) != 1 {
@@ -2975,7 +2975,7 @@ func TestDetailsCallbacksUsePanelTurnInsteadOfLatestThreadTurn(t *testing.T) {
 	}
 	token := service.callbackButton(ctx, "Details", "details_open", latest.Thread.ID, "turn-old", "", map[string]any{"panel_id": panel.ID, "page": 0}).CallbackData
 
-	if _, err := service.HandleCallback(ctx, 123456789, 0, 101, 123456789, token); err != nil {
+	if _, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 101, 123456789, token, model.PanelSourceFeishuInput); err != nil {
 		t.Fatalf("HandleCallback(details) failed: %v", err)
 	}
 	if len(sender.edits) != 1 {
@@ -2994,7 +2994,7 @@ func TestDetailsCallbacksStayBoundToOriginalPanelAfterNewerRunCompletes(t *testi
 	ctx := context.Background()
 
 	token := service.callbackButton(ctx, "Details", "details_open", thread.ID, "turn-old", "", map[string]any{"panel_id": oldPanel.ID, "page": 0}).CallbackData
-	if _, err := service.HandleCallback(ctx, oldPanel.ChatID, oldPanel.TopicID, oldPanel.SummaryMessageID, oldPanel.ChatID, token); err != nil {
+	if _, err := service.HandleCallbackFromSource(ctx, oldPanel.ChatID, oldPanel.TopicID, oldPanel.SummaryMessageID, oldPanel.ChatID, token, model.PanelSourceFeishuInput); err != nil {
 		t.Fatalf("HandleCallback(details) failed: %v", err)
 	}
 	if len(sender.edits) != 1 {
@@ -3012,7 +3012,7 @@ func TestDetailsCallbacksStayBoundToOriginalPanelAfterNewerRunCompletes(t *testi
 	if backToken == "" {
 		t.Fatalf("details buttons = %#v, want Back", details.buttons)
 	}
-	if _, err := service.HandleCallback(ctx, oldPanel.ChatID, oldPanel.TopicID, oldPanel.SummaryMessageID, oldPanel.ChatID, backToken); err != nil {
+	if _, err := service.HandleCallbackFromSource(ctx, oldPanel.ChatID, oldPanel.TopicID, oldPanel.SummaryMessageID, oldPanel.ChatID, backToken, model.PanelSourceFeishuInput); err != nil {
 		t.Fatalf("HandleCallback(back) failed: %v", err)
 	}
 	if len(sender.edits) != 2 {
@@ -3053,7 +3053,7 @@ func TestDetailsCallbackWithoutPanelIDDoesNotFallbackToCurrentPanel(t *testing.T
 	ctx := context.Background()
 
 	token := service.callbackButton(ctx, "Details", "details_open", thread.ID, "turn-old", "", map[string]any{"page": 0}).CallbackData
-	response, err := service.HandleCallback(ctx, oldPanel.ChatID, oldPanel.TopicID, oldPanel.SummaryMessageID, oldPanel.ChatID, token)
+	response, err := service.HandleCallbackFromSource(ctx, oldPanel.ChatID, oldPanel.TopicID, oldPanel.SummaryMessageID, oldPanel.ChatID, token, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(details missing panel) failed: %v", err)
 	}
@@ -3072,7 +3072,7 @@ func TestDetailsCallbackRejectsMismatchedMessageID(t *testing.T) {
 	ctx := context.Background()
 
 	token := service.callbackButton(ctx, "Details", "details_open", thread.ID, "turn-old", "", map[string]any{"panel_id": oldPanel.ID, "page": 0}).CallbackData
-	response, err := service.HandleCallback(ctx, oldPanel.ChatID, oldPanel.TopicID, newPanel.SummaryMessageID, oldPanel.ChatID, token)
+	response, err := service.HandleCallbackFromSource(ctx, oldPanel.ChatID, oldPanel.TopicID, newPanel.SummaryMessageID, oldPanel.ChatID, token, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(details wrong message) failed: %v", err)
 	}
@@ -3139,7 +3139,7 @@ func TestTurnOffPlanCallbackSetsDefaultOverrideAndEditsFinalCard(t *testing.T) {
 		t.Fatalf("final buttons = %#v, want Turn off Plan", buttons)
 	}
 
-	response, err := service.HandleCallback(ctx, panel.ChatID, panel.TopicID, panel.SummaryMessageID, panel.ChatID, token)
+	response, err := service.HandleCallbackFromSource(ctx, panel.ChatID, panel.TopicID, panel.SummaryMessageID, panel.ChatID, token, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(turn_off_plan) failed: %v", err)
 	}
@@ -3216,7 +3216,7 @@ func TestTurnOffPlanCallbackRejectsMismatchedMessageID(t *testing.T) {
 		t.Fatalf("final buttons = %#v, want Turn off Plan", buttons)
 	}
 
-	response, err := service.HandleCallback(ctx, panel.ChatID, panel.TopicID, panel.SummaryMessageID+99, panel.ChatID, token)
+	response, err := service.HandleCallbackFromSource(ctx, panel.ChatID, panel.TopicID, panel.SummaryMessageID+99, panel.ChatID, token, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(turn_off_plan stale) failed: %v", err)
 	}
@@ -3280,7 +3280,7 @@ func TestTurnOffPlanCallbackRejectsMismatchedPanelRoute(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			response, err := service.HandleCallback(ctx, tc.chatID, tc.topicID, tc.messageID, panel.ChatID, tc.token)
+			response, err := service.HandleCallbackFromSource(ctx, tc.chatID, tc.topicID, tc.messageID, panel.ChatID, tc.token, model.PanelSourceFeishuInput)
 			if err != nil {
 				t.Fatalf("HandleCallback(turn_off_plan stale) failed: %v", err)
 			}
@@ -3304,7 +3304,7 @@ func TestDetailsToolsFileRejectsMismatchedPanelRoute(t *testing.T) {
 	ctx := context.Background()
 
 	token := service.callbackButton(ctx, "Tools file", "details_tools_file", thread.ID, "turn-new", "", map[string]any{"panel_id": oldPanel.ID, "commentary_index": 1}).CallbackData
-	response, err := service.HandleCallback(ctx, oldPanel.ChatID, oldPanel.TopicID, oldPanel.SummaryMessageID, oldPanel.ChatID, token)
+	response, err := service.HandleCallbackFromSource(ctx, oldPanel.ChatID, oldPanel.TopicID, oldPanel.SummaryMessageID, oldPanel.ChatID, token, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(tools file wrong turn) failed: %v", err)
 	}

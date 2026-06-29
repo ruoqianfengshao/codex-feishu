@@ -339,10 +339,6 @@ func startedAtLabel(startedAt time.Time) string {
 	return startedAt.Format("2006-01-02 15:04:05")
 }
 
-func (s *Service) HandleMessage(ctx context.Context, chatID, topicID, userID int64, text string, replyToMessageID int64) (*DirectResponse, error) {
-	return s.HandleMessageFromSource(ctx, chatID, topicID, userID, text, replyToMessageID, model.PanelSourceChatInput)
-}
-
 func (s *Service) HandleMessageFromSource(ctx context.Context, chatID, topicID, userID int64, text string, replyToMessageID int64, sourceMode string) (*DirectResponse, error) {
 	if !s.IsAllowed(userID, chatID) {
 		return nil, nil
@@ -355,10 +351,6 @@ func (s *Service) HandleMessageFromSource(ctx context.Context, chatID, topicID, 
 		return s.handleCommandFromSource(ctx, chatID, topicID, text, replyToMessageID, sourceMode)
 	}
 	return s.handlePlainTextFromSource(ctx, chatID, topicID, text, replyToMessageID, sourceMode)
-}
-
-func (s *Service) HandleCallback(ctx context.Context, chatID, topicID, messageID, userID int64, token string) (*DirectResponse, error) {
-	return s.HandleCallbackFromSource(ctx, chatID, topicID, messageID, userID, token, model.PanelSourceChatInput)
 }
 
 func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID, messageID, userID int64, token, sourceMode string) (*DirectResponse, error) {
@@ -1514,10 +1506,6 @@ func (s *Service) processDeliveryBatch(ctx context.Context) {
 	}
 }
 
-func (s *Service) handleCommand(ctx context.Context, chatID, topicID int64, raw string, replyToMessageID int64) (*DirectResponse, error) {
-	return s.handleCommandFromSource(ctx, chatID, topicID, raw, replyToMessageID, model.PanelSourceChatInput)
-}
-
 func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID int64, raw string, replyToMessageID int64, sourceMode string) (*DirectResponse, error) {
 	parts := strings.SplitN(strings.TrimSpace(raw), " ", 2)
 	command := strings.ToLower(strings.SplitN(parts[0], "@", 2)[0])
@@ -1553,7 +1541,7 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 	case "/new":
 		return s.newChatCommandFromSource(ctx, chatID, topicID, rest, sourceMode)
 	case "/show":
-		decision, err := s.resolveRoute(ctx, chatID, topicID, rest, replyToMessageID)
+		decision, err := s.resolveRouteFromSource(ctx, chatID, topicID, rest, replyToMessageID, sourceMode)
 		if err != nil {
 			return nil, err
 		}
@@ -1562,7 +1550,7 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 		}
 		return s.showThread(ctx, chatID, topicID, decision.ThreadID, true, sourceMode)
 	case "/reply":
-		decision, text, collaborationMode, ok, err := s.resolveInputCommand(ctx, chatID, topicID, rest, replyToMessageID, "", true, false)
+		decision, text, collaborationMode, ok, err := s.resolveInputCommand(ctx, chatID, topicID, rest, replyToMessageID, sourceMode, "", true, false)
 		if err != nil {
 			return nil, err
 		}
@@ -1572,7 +1560,7 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 		s.logInputInbound(sourceMode, "command_reply", chatID, topicID, replyToMessageID, decision, text, collaborationMode)
 		return s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, decision.ThreadID, decision.TurnID, text, collaborationMode, sourceMode)
 	case "/default", "/default_mode":
-		decision, text, _, ok, err := s.resolveInputCommand(ctx, chatID, topicID, rest, replyToMessageID, collaborationModeDefault, false, true)
+		decision, text, _, ok, err := s.resolveInputCommand(ctx, chatID, topicID, rest, replyToMessageID, sourceMode, collaborationModeDefault, false, true)
 		if err != nil {
 			return nil, err
 		}
@@ -1582,7 +1570,7 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 		s.logInputInbound(sourceMode, "command_default", chatID, topicID, replyToMessageID, decision, text, collaborationModeDefault)
 		return s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, decision.ThreadID, decision.TurnID, text, collaborationModeDefault, sourceMode)
 	case "/plan", "/plan_mode":
-		decision, text, _, ok, err := s.resolveInputCommand(ctx, chatID, topicID, rest, replyToMessageID, collaborationModePlan, false, true)
+		decision, text, _, ok, err := s.resolveInputCommand(ctx, chatID, topicID, rest, replyToMessageID, sourceMode, collaborationModePlan, false, true)
 		if err != nil {
 			return nil, err
 		}
@@ -1599,7 +1587,7 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 		}
 		return &DirectResponse{Text: s.t(ctx, "已请求修复。App-server 会话会在后台重建。", "Repair requested. App-server sessions will be recreated in the background.")}, nil
 	case "/stop":
-		return s.stopThread(ctx, chatID, topicID, rest, replyToMessageID)
+		return s.stopThread(ctx, chatID, topicID, rest, replyToMessageID, sourceMode)
 	case "/approve":
 		if strings.TrimSpace(rest) == "" {
 			return &DirectResponse{Text: s.t(ctx, "请使用批准按钮，或输入 /approve <request_id>。", "Use approval buttons or /approve <request_id>.")}, nil
@@ -1613,10 +1601,6 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 	default:
 		return &DirectResponse{Text: s.t(ctx, "未知命令。请使用 /help。", "Unknown command. Use /help.")}, nil
 	}
-}
-
-func (s *Service) handlePlainText(ctx context.Context, chatID, topicID int64, text string, replyToMessageID int64) (*DirectResponse, error) {
-	return s.handlePlainTextFromSource(ctx, chatID, topicID, text, replyToMessageID, model.PanelSourceChatInput)
 }
 
 func (s *Service) handlePlainTextFromSource(ctx context.Context, chatID, topicID int64, text string, replyToMessageID int64, sourceMode string) (*DirectResponse, error) {
@@ -2106,7 +2090,7 @@ func containsString(values []string, needle string) bool {
 	return false
 }
 
-func (s *Service) resolveInputCommand(ctx context.Context, chatID, topicID int64, rest string, replyToMessageID int64, defaultCollaborationMode string, allowModeFlag bool, preferImplicitRouteForUnknownHead bool) (model.RouteDecision, string, string, bool, error) {
+func (s *Service) resolveInputCommand(ctx context.Context, chatID, topicID int64, rest string, replyToMessageID int64, sourceMode string, defaultCollaborationMode string, allowModeFlag bool, preferImplicitRouteForUnknownHead bool) (model.RouteDecision, string, string, bool, error) {
 	rest = strings.TrimSpace(rest)
 	if rest == "" {
 		return model.RouteDecision{}, "", "", false, nil
@@ -2130,10 +2114,10 @@ func (s *Service) resolveInputCommand(ctx context.Context, chatID, topicID int64
 	}
 	if remainder != "" {
 		if s.shouldTreatInputHeadAsExplicitThread(ctx, first, replyToMessageID, preferImplicitRouteForUnknownHead) {
-			decision, err := s.resolveRoute(ctx, chatID, topicID, first, replyToMessageID)
+			decision, err := s.resolveRouteFromSource(ctx, chatID, topicID, first, replyToMessageID, sourceMode)
 			return decision, strings.TrimSpace(remainder), collaborationMode, strings.TrimSpace(remainder) != "", err
 		}
-		decision, err := s.resolveRoute(ctx, chatID, topicID, "", replyToMessageID)
+		decision, err := s.resolveRouteFromSource(ctx, chatID, topicID, "", replyToMessageID, sourceMode)
 		if err != nil {
 			return model.RouteDecision{}, "", "", false, err
 		}
@@ -2143,10 +2127,10 @@ func (s *Service) resolveInputCommand(ctx context.Context, chatID, topicID int64
 		if preferImplicitRouteForUnknownHead {
 			return decision, "", collaborationMode, false, nil
 		}
-		decision, err = s.resolveRoute(ctx, chatID, topicID, first, replyToMessageID)
+		decision, err = s.resolveRouteFromSource(ctx, chatID, topicID, first, replyToMessageID, sourceMode)
 		return decision, strings.TrimSpace(remainder), collaborationMode, strings.TrimSpace(remainder) != "", err
 	}
-	decision, err := s.resolveRoute(ctx, chatID, topicID, "", replyToMessageID)
+	decision, err := s.resolveRouteFromSource(ctx, chatID, topicID, "", replyToMessageID, sourceMode)
 	if err != nil {
 		return model.RouteDecision{}, "", "", false, err
 	}
@@ -2191,7 +2175,7 @@ func splitCommandHead(rest string) (string, string) {
 }
 
 func (s *Service) sendInputToThread(ctx context.Context, chatID, topicID int64, threadID, text string) (*DirectResponse, error) {
-	return s.sendInputToThreadTurn(ctx, chatID, topicID, threadID, "", text, "")
+	return s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, threadID, "", text, "", model.PanelSourceFeishuInput)
 }
 
 func (s *Service) goalCommand(ctx context.Context, chatID, topicID int64, rest string, replyToMessageID int64, sourceMode string) (*DirectResponse, error) {
@@ -2246,10 +2230,6 @@ func (s *Service) resolveGoalCommand(ctx context.Context, chatID, topicID int64,
 		return decision, "", false, nil
 	}
 	return decision, rest, true, nil
-}
-
-func (s *Service) sendInputToThreadTurn(ctx context.Context, chatID, topicID int64, threadID, routeTurnID, text, collaborationMode string) (*DirectResponse, error) {
-	return s.sendInputToThreadTurnFromSource(ctx, chatID, topicID, threadID, routeTurnID, text, collaborationMode, model.PanelSourceChatInput)
 }
 
 func (s *Service) desktopInputHandledResponse(ctx context.Context, chatID, topicID int64, live Session, liveConnected bool, thread *model.Thread, routeTurnID, sourceMode string, desktopResult map[string]any, startedNewTurn bool, desktopCollaborationMode string) *DirectResponse {
@@ -2733,8 +2713,8 @@ func activeThreadReplyText(thread *model.Thread, steerErr error) string {
 	return fmt.Sprintf("%s is already active, but the active turn id is not available yet. Wait for completion or use /stop. I did not start a parallel turn.", label)
 }
 
-func (s *Service) stopThread(ctx context.Context, chatID, topicID int64, explicitThreadID string, replyToMessageID int64) (*DirectResponse, error) {
-	decision, err := s.resolveRoute(ctx, chatID, topicID, explicitThreadID, replyToMessageID)
+func (s *Service) stopThread(ctx context.Context, chatID, topicID int64, explicitThreadID string, replyToMessageID int64, sourceMode string) (*DirectResponse, error) {
+	decision, err := s.resolveRouteFromSource(ctx, chatID, topicID, explicitThreadID, replyToMessageID, sourceMode)
 	if err != nil {
 		return nil, err
 	}
@@ -3079,10 +3059,6 @@ func (s *Service) threadIDResponse(ctx context.Context, threadID, turnID string)
 		ThreadID: threadID,
 		TurnID:   responseTurnID,
 	}
-}
-
-func (s *Service) resolveRoute(ctx context.Context, chatID, topicID int64, explicitThreadID string, replyToMessageID int64) (model.RouteDecision, error) {
-	return s.resolveRouteFromSource(ctx, chatID, topicID, explicitThreadID, replyToMessageID, model.PanelSourceChatInput)
 }
 
 func (s *Service) resolveRouteFromSource(ctx context.Context, chatID, topicID int64, explicitThreadID string, replyToMessageID int64, sourceMode string) (model.RouteDecision, error) {

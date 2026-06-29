@@ -36,7 +36,7 @@ func TestResolveRoutePrecedenceExplicitThenReplyThenNone(t *testing.T) {
 		t.Fatalf("PutMessageRoute failed: %v", err)
 	}
 
-	explicit, err := service.resolveRoute(ctx, 123456789, 0, "explicit-thread", 99)
+	explicit, err := service.resolveRouteFromSource(ctx, 123456789, 0, "explicit-thread", 99, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("resolveRoute(explicit) failed: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestResolveRoutePrecedenceExplicitThenReplyThenNone(t *testing.T) {
 		t.Fatalf("explicit route = %#v, want explicit-thread / explicit", explicit)
 	}
 
-	reply, err := service.resolveRoute(ctx, 123456789, 0, "", 99)
+	reply, err := service.resolveRouteFromSource(ctx, 123456789, 0, "", 99, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("resolveRoute(reply) failed: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestResolveRoutePrecedenceExplicitThenReplyThenNone(t *testing.T) {
 		t.Fatalf("reply route turn/request = %#v, want reply-turn without request", reply)
 	}
 
-	none, err := service.resolveRoute(ctx, 123456789, 0, "", 0)
+	none, err := service.resolveRouteFromSource(ctx, 123456789, 0, "", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("resolveRoute(none) failed: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestResolveRouteExtractsPlanRequestIDOnlyFromPlanRequestEvent(t *testing.T)
 		t.Fatalf("PutMessageRoute(synthetic) failed: %v", err)
 	}
 
-	real, err := service.resolveRoute(ctx, 123456789, 0, "", 100)
+	real, err := service.resolveRouteFromSource(ctx, 123456789, 0, "", 100, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("resolveRoute(real plan request) failed: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestResolveRouteExtractsPlanRequestIDOnlyFromPlanRequestEvent(t *testing.T)
 		t.Fatalf("real plan route = %#v, want thread/turn/request", real)
 	}
 
-	synthetic, err := service.resolveRoute(ctx, 123456789, 0, "", 101)
+	synthetic, err := service.resolveRouteFromSource(ctx, 123456789, 0, "", 101, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("resolveRoute(synthetic plan) failed: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestObserveCommandIsRemoved(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
 
-	response, err := service.handleCommand(ctx, 42, 9, "/observe all", 0)
+	response, err := service.handleCommandFromSource(ctx, 42, 9, "/observe all", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/observe all) failed: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestThreadsCommandHidesInternalSubAgentThreads(t *testing.T) {
 		t.Fatalf("UpsertThread(notLoadedIDTitle) failed: %v", err)
 	}
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/chats 8", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/chats 8", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/chats) failed: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestThreadsCommandGroupsThreadsByProject(t *testing.T) {
 		}
 	}
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/chats 8", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/chats 8", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/chats) failed: %v", err)
 	}
@@ -541,7 +541,7 @@ func TestWorkspaceCommandReturnsDashboardCard(t *testing.T) {
 		t.Fatalf("UpsertThread failed: %v", err)
 	}
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/start", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/start", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/start) failed: %v", err)
 	}
@@ -569,7 +569,7 @@ func TestWorkspaceCommandUsesEnglishLanguagePreference(t *testing.T) {
 	if err := service.store.SetState(ctx, botLanguageStateKey, botLanguageEnglish); err != nil {
 		t.Fatalf("SetState(language) failed: %v", err)
 	}
-	response, err := service.handleCommand(ctx, 123456789, 0, "/start", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/start", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/start) failed: %v", err)
 	}
@@ -610,7 +610,7 @@ func TestStatusCommandReturnsWorkspaceStatsCard(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertThread(chat) failed: %v", err)
 	}
-	response, err := service.handleCommand(ctx, 123456789, 0, "/status", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/status", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/status) failed: %v", err)
 	}
@@ -648,7 +648,7 @@ func TestStatusCommandReturnsWorkspaceStatsCard(t *testing.T) {
 		t.Fatalf("Feishu buttons = %#v, want English language switch", response.Sections[4].Buttons)
 	}
 	token := callbackTokenForButton(response.Sections[4].Buttons, "English")
-	switched, err := service.HandleCallback(ctx, 123456789, 0, 902, 123456789, token)
+	switched, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 902, 123456789, token, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(status language switch) failed: %v", err)
 	}
@@ -666,7 +666,7 @@ func TestPlainTextWithoutRouteReturnsWorkspaceHint(t *testing.T) {
 
 	service := newTestService(t)
 	ctx := context.Background()
-	response, err := service.handlePlainText(ctx, 123456789, 0, "随便问一句", 0)
+	response, err := service.handlePlainTextFromSource(ctx, 123456789, 0, "随便问一句", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handlePlainText failed: %v", err)
 	}
@@ -688,7 +688,7 @@ func TestPlainTextWithoutRouteReturnsWorkspaceHint(t *testing.T) {
 	if token == "" {
 		t.Fatalf("hint buttons = %#v, want workspace token", response.Buttons)
 	}
-	callbackResponse, err := service.HandleCallback(ctx, 123456789, 0, 903, 123456789, token)
+	callbackResponse, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 903, 123456789, token, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(workspace) failed: %v", err)
 	}
@@ -705,7 +705,7 @@ func TestPlainTextWithoutRouteUsesEnglishWorkspaceHint(t *testing.T) {
 	if err := service.store.SetState(ctx, botLanguageStateKey, botLanguageEnglish); err != nil {
 		t.Fatalf("SetState(language) failed: %v", err)
 	}
-	response, err := service.handlePlainText(ctx, 123456789, 0, "hello", 0)
+	response, err := service.handlePlainTextFromSource(ctx, 123456789, 0, "hello", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handlePlainText failed: %v", err)
 	}
@@ -818,7 +818,7 @@ func TestProjectsCommandShowsProjectButtonsGroupedByCWD(t *testing.T) {
 		}
 	}
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/projects", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/projects", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/projects) failed: %v", err)
 	}
@@ -921,7 +921,7 @@ func TestProjectsCommandShowsChatsSectionAndSortsByRecency(t *testing.T) {
 		}
 	}
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/projects", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/projects", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/projects) failed: %v", err)
 	}
@@ -994,7 +994,7 @@ func TestProjectsPaginationUsesPreviewLimitsAndKeepsLatestChats(t *testing.T) {
 		}
 	}
 
-	page1, err := service.handleCommand(ctx, 123456789, 0, "/projects", 0)
+	page1, err := service.handleCommandFromSource(ctx, 123456789, 0, "/projects", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/projects) failed: %v", err)
 	}
@@ -1013,7 +1013,7 @@ func TestProjectsPaginationUsesPreviewLimitsAndKeepsLatestChats(t *testing.T) {
 	if nextToken == "" {
 		t.Fatalf("page1 buttons = %#v, want next button", page1.Buttons)
 	}
-	page2, err := service.HandleCallback(ctx, 123456789, 0, 42, 123456789, nextToken)
+	page2, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, nextToken, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(next projects page) failed: %v", err)
 	}
@@ -1051,7 +1051,7 @@ func TestOpenChatsPaginatesAndChatSelectionBindsThread(t *testing.T) {
 		}
 	}
 
-	projects, err := service.handleCommand(ctx, 123456789, 0, "/projects", 0)
+	projects, err := service.handleCommandFromSource(ctx, 123456789, 0, "/projects", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/projects) failed: %v", err)
 	}
@@ -1059,7 +1059,7 @@ func TestOpenChatsPaginatesAndChatSelectionBindsThread(t *testing.T) {
 	if openChats == "" {
 		t.Fatalf("/projects buttons = %#v, want Open Chats", projects.Buttons)
 	}
-	chats, err := service.HandleCallback(ctx, 123456789, 0, 42, 123456789, openChats)
+	chats, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, openChats, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(Open Chats) failed: %v", err)
 	}
@@ -1073,7 +1073,7 @@ func TestOpenChatsPaginatesAndChatSelectionBindsThread(t *testing.T) {
 	if chatToken == "" {
 		t.Fatalf("chats buttons = %#v, want first chat button", chats.Buttons)
 	}
-	opened, err := service.HandleCallback(ctx, 123456789, 0, 42, 123456789, chatToken)
+	opened, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, chatToken, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(Chat 1. Chat 5) failed: %v", err)
 	}
@@ -1132,7 +1132,7 @@ func TestProjectOpenShowsInteractiveThreadList(t *testing.T) {
 		t.Fatalf("UpsertThread(archived) failed: %v", err)
 	}
 
-	projects, err := service.handleCommand(ctx, 123456789, 0, "/projects", 0)
+	projects, err := service.handleCommandFromSource(ctx, 123456789, 0, "/projects", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/projects) failed: %v", err)
 	}
@@ -1141,7 +1141,7 @@ func TestProjectOpenShowsInteractiveThreadList(t *testing.T) {
 		t.Fatalf("/projects buttons = %#v, want project button", projects.Buttons)
 	}
 
-	menu, err := service.HandleCallback(ctx, 123456789, 0, 42, 123456789, token)
+	menu, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, token, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(project_open) failed: %v", err)
 	}
@@ -1264,14 +1264,14 @@ func TestProjectNewThreadRejectsThreadStartWithoutID(t *testing.T) {
 	service.liveConnected = true
 
 	menu := openOnlyProjectMenu(t, service, ctx)
-	armed, err := service.HandleCallback(ctx, 123456789, 0, 42, 123456789, callbackTokenForButton(menu.Buttons, "New thread"))
+	armed, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, callbackTokenForButton(menu.Buttons, "New thread"), model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(New thread) failed: %v", err)
 	}
 	if armed == nil || !strings.Contains(armed.Text, "Send the first prompt") {
 		t.Fatalf("armed response = %#v, want prompt instruction", armed)
 	}
-	response, err := service.handlePlainText(ctx, 123456789, 0, "first prompt", 0)
+	response, err := service.handlePlainTextFromSource(ctx, 123456789, 0, "first prompt", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handlePlainText failed: %v", err)
 	}
@@ -1316,7 +1316,7 @@ func TestNewChatCommandCreatesCodexUIChatCWDAndBinds(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/new Проверь tool call по погоде", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/new Проверь tool call по погоде", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/new) failed: %v", err)
 	}
@@ -1384,7 +1384,7 @@ func TestNewChatCommandRejectsMissingThreadID(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/new first chat prompt", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/new first chat prompt", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/new) failed: %v", err)
 	}
@@ -1413,7 +1413,7 @@ func TestNewChatCommandTurnStartFailureSavesAndBindsThread(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/new first chat prompt", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/new first chat prompt", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/new) failed: %v", err)
 	}
@@ -3226,7 +3226,7 @@ func TestPlainReplyToSyntheticPlanPromptUsesTurnSteer(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handlePlainText(ctx, 123456789, 0, "Use option A", 777)
+	response, err := service.handlePlainTextFromSource(ctx, 123456789, 0, "Use option A", 777, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handlePlainText failed: %v", err)
 	}
@@ -3270,7 +3270,7 @@ func TestPlainReplyToSyntheticPlanPromptFallsBackToTurnStart(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handlePlainText(ctx, 123456789, 0, "Start new turn instead", 778)
+	response, err := service.handlePlainTextFromSource(ctx, 123456789, 0, "Start new turn instead", 778, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handlePlainText failed: %v", err)
 	}
@@ -3426,7 +3426,7 @@ func TestReplyToActiveThreadDoesNotFallbackToTurnStartWhenSteerFails(t *testing.
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.sendInputToThreadTurn(ctx, 123456789, 0, thread.ID, "turn-active", "Do not fork this", "")
+	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "turn-active", "Do not fork this", "", model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("sendInputToThreadTurn failed: %v", err)
 	}
@@ -3959,7 +3959,7 @@ func TestPlanCommandStartsPlanCollaborationMode(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/plan "+thread.ID+" propose options", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/plan "+thread.ID+" propose options", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/plan) failed: %v", err)
 	}
@@ -4034,7 +4034,7 @@ func TestGoalCommandCanUseExplicitThreadAndClear(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	setResponse, err := service.handleCommand(ctx, 123456789, 0, "/goal "+thread.ID+" ship this feature", 0)
+	setResponse, err := service.handleCommandFromSource(ctx, 123456789, 0, "/goal "+thread.ID+" ship this feature", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/goal explicit) failed: %v", err)
 	}
@@ -4045,7 +4045,7 @@ func TestGoalCommandCanUseExplicitThreadAndClear(t *testing.T) {
 		t.Fatalf("goalSetCalls = %#v, want explicit goal", stub.goalSetCalls)
 	}
 
-	clearResponse, err := service.handleCommand(ctx, 123456789, 0, "/goal "+thread.ID+" clear", 0)
+	clearResponse, err := service.handleCommandFromSource(ctx, 123456789, 0, "/goal "+thread.ID+" clear", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/goal clear) failed: %v", err)
 	}
@@ -4066,7 +4066,7 @@ func TestPlanCommandUnknownHeadWithoutImplicitRouteShowsUsage(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/plan first second third", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/plan first second third", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/plan no route) failed: %v", err)
 	}
@@ -4085,7 +4085,7 @@ func TestPlanCommandUUIDLikeHeadStaysExplicit(t *testing.T) {
 	ctx := context.Background()
 	explicitID := "01900000-0000-7000-8000-000000000999"
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/plan "+explicitID+" propose options", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/plan "+explicitID+" propose options", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/plan uuid text) failed: %v", err)
 	}
@@ -4113,7 +4113,7 @@ func TestPlanCommandKnownThreadHeadStaysExplicit(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/plan "+explicit.ID+" propose options", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/plan "+explicit.ID+" propose options", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/plan known-thread text) failed: %v", err)
 	}
@@ -4151,7 +4151,7 @@ func TestChatTurnLifecycleLogsSuccessfulStart(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.sendInputToThreadTurn(ctx, 123456789, 0, thread.ID, "", "keep this prompt private", collaborationModePlan)
+	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", "keep this prompt private", collaborationModePlan, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("sendInputToThreadTurn failed: %v", err)
 	}
@@ -4232,7 +4232,7 @@ func TestChatTurnLifecycleLogsThreadResumeFailure(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	_, err := service.sendInputToThreadTurn(ctx, 123456789, 0, thread.ID, "", "hello", "")
+	_, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", "hello", "", model.PanelSourceFeishuInput)
 	if err == nil {
 		t.Fatal("sendInputToThreadTurn succeeded, want resume failure")
 	}
@@ -4254,7 +4254,7 @@ func TestChatTurnLifecycleLogsTurnStartFailure(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	_, err := service.sendInputToThreadTurn(ctx, 123456789, 0, thread.ID, "", "hello", "")
+	_, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", "hello", "", model.PanelSourceFeishuInput)
 	if err == nil {
 		t.Fatal("sendInputToThreadTurn succeeded, want turn start failure")
 	}
@@ -4277,7 +4277,7 @@ func TestChatTurnLifecycleLogsRefreshFailuresAroundStart(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.sendInputToThreadTurn(ctx, 123456789, 0, thread.ID, "", "hello", "")
+	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", "hello", "", model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("sendInputToThreadTurn failed: %v", err)
 	}
@@ -4614,7 +4614,7 @@ func TestReplyPlanFlagStartsPlanCollaborationMode(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/reply --plan "+thread.ID+" sketch the plan", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/reply --plan "+thread.ID+" sketch the plan", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/reply --plan) failed: %v", err)
 	}
@@ -4654,7 +4654,7 @@ func TestReplyDefaultFlagStartsDefaultCollaborationMode(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/reply --default "+thread.ID+" do the work", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/reply --default "+thread.ID+" do the work", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/reply --default) failed: %v", err)
 	}
@@ -4691,7 +4691,7 @@ func TestDefaultModeCommandStartsDefaultCollaborationMode(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/default "+thread.ID+" do the work", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/default "+thread.ID+" do the work", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/default) failed: %v", err)
 	}
@@ -4710,7 +4710,7 @@ func TestHelpHidesDefaultModeFallback(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
-	response, err := service.handleCommand(context.Background(), 123456789, 0, "/help", 0)
+	response, err := service.handleCommandFromSource(context.Background(), 123456789, 0, "/help", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/help) failed: %v", err)
 	}
@@ -4745,7 +4745,7 @@ func TestStopSetsDefaultOverrideForActiveThread(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/stop "+thread.ID, 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/stop "+thread.ID, 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/stop) failed: %v", err)
 	}
@@ -4779,7 +4779,7 @@ func TestStopSetsDefaultOverrideForIdleThread(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/stop "+thread.ID, 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/stop "+thread.ID, 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/stop idle) failed: %v", err)
 	}
@@ -4814,7 +4814,7 @@ func TestStopTreatsCompletedThreadWithStaleActiveTurnAsIdle(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/stop "+thread.ID, 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/stop "+thread.ID, 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/stop stale completed) failed: %v", err)
 	}
@@ -4863,7 +4863,7 @@ func TestPlanModeCommandCanRouteByReply(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/plan plan this reply-routed task", 812)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/plan plan this reply-routed task", 812, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/plan) failed: %v", err)
 	}
@@ -4934,7 +4934,7 @@ func TestSummaryPanelGetThreadIDButtonSendsCopyableIDs(t *testing.T) {
 		t.Fatalf("Get thread id button not found in %#v", buttons)
 	}
 
-	response, err := service.HandleCallback(ctx, 123456789, 0, 42, 123456789, token)
+	response, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, token, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(get_thread_id) failed: %v", err)
 	}
@@ -4998,7 +4998,7 @@ func TestFinalCardGetThreadIDButtonSendsCopyableIDs(t *testing.T) {
 		t.Fatalf("Get thread id button not found in final card buttons %#v", buttons)
 	}
 
-	response, err := service.HandleCallback(ctx, 123456789, 0, 42, 123456789, token)
+	response, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, token, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(final get_thread_id) failed: %v", err)
 	}
@@ -5150,7 +5150,7 @@ func TestReplyCommandKeepsDefaultCollaborationMode(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/reply "+thread.ID+" do the work", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/reply "+thread.ID+" do the work", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/reply) failed: %v", err)
 	}
@@ -5193,7 +5193,7 @@ func TestReplyCommandConsumesDefaultOverrideOnce(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/reply "+thread.ID+" do the work", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/reply "+thread.ID+" do the work", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/reply) failed: %v", err)
 	}
@@ -5239,7 +5239,7 @@ func TestDefaultOverrideSurvivesTurnStartFailure(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	_, err := service.handleCommand(ctx, 123456789, 0, "/reply "+thread.ID+" do the work", 0)
+	_, err := service.handleCommandFromSource(ctx, 123456789, 0, "/reply "+thread.ID+" do the work", 0, model.PanelSourceFeishuInput)
 	if err == nil {
 		t.Fatal("handleCommand(/reply) succeeded, want turn start error")
 	}
@@ -5273,7 +5273,7 @@ func TestPlanCommandClearsStaleDefaultOverride(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handleCommand(ctx, 123456789, 0, "/plan "+thread.ID+" propose options", 0)
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/plan "+thread.ID+" propose options", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/plan) failed: %v", err)
 	}
@@ -5306,7 +5306,7 @@ func TestModelMenuPersistsSelectedModel(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	settings, err := service.handleCommand(ctx, 123456789, 0, "/setting", 0)
+	settings, err := service.handleCommandFromSource(ctx, 123456789, 0, "/setting", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/setting) failed: %v", err)
 	}
@@ -5314,7 +5314,7 @@ func TestModelMenuPersistsSelectedModel(t *testing.T) {
 	if menuToken == "" {
 		t.Fatalf("settings buttons = %#v, want model menu", settings.Buttons)
 	}
-	response, err := service.HandleCallback(ctx, 123456789, 0, 899, 123456789, menuToken)
+	response, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 899, 123456789, menuToken, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(model menu) failed: %v", err)
 	}
@@ -5322,7 +5322,7 @@ func TestModelMenuPersistsSelectedModel(t *testing.T) {
 	if token == "" {
 		t.Fatalf("model menu buttons = %#v, want gpt-menu", response.Buttons)
 	}
-	callbackResponse, err := service.HandleCallback(ctx, 123456789, 0, 900, 123456789, token)
+	callbackResponse, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 900, 123456789, token, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(model select) failed: %v", err)
 	}
@@ -5356,7 +5356,7 @@ func TestReasoningMenuUsesSelectedModelEfforts(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	settings, err := service.handleCommand(ctx, 123456789, 0, "/setting", 0)
+	settings, err := service.handleCommandFromSource(ctx, 123456789, 0, "/setting", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/setting) failed: %v", err)
 	}
@@ -5364,7 +5364,7 @@ func TestReasoningMenuUsesSelectedModelEfforts(t *testing.T) {
 	if menuToken == "" {
 		t.Fatalf("settings buttons = %#v, want reasoning menu", settings.Buttons)
 	}
-	response, err := service.HandleCallback(ctx, 123456789, 0, 900, 123456789, menuToken)
+	response, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 900, 123456789, menuToken, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(reasoning menu) failed: %v", err)
 	}
@@ -5375,7 +5375,7 @@ func TestReasoningMenuUsesSelectedModelEfforts(t *testing.T) {
 		t.Fatalf("reasoning buttons = %#v, want no high option for selected model", response.Buttons)
 	}
 	token := callbackTokenForButton(response.Buttons, "minimal")
-	callbackResponse, err := service.HandleCallback(ctx, 123456789, 0, 901, 123456789, token)
+	callbackResponse, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 901, 123456789, token, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(reasoning select) failed: %v", err)
 	}
@@ -5399,7 +5399,7 @@ func TestLanguageMenuPersistsSelectedLanguage(t *testing.T) {
 
 	service := newTestService(t)
 	ctx := context.Background()
-	settings, err := service.handleCommand(ctx, 123456789, 0, "/setting", 0)
+	settings, err := service.handleCommandFromSource(ctx, 123456789, 0, "/setting", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/setting) failed: %v", err)
 	}
@@ -5407,7 +5407,7 @@ func TestLanguageMenuPersistsSelectedLanguage(t *testing.T) {
 	if menuToken == "" {
 		t.Fatalf("settings buttons = %#v, want language menu", settings.Buttons)
 	}
-	response, err := service.HandleCallback(ctx, 123456789, 0, 901, 123456789, menuToken)
+	response, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 901, 123456789, menuToken, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(language menu) failed: %v", err)
 	}
@@ -5415,7 +5415,7 @@ func TestLanguageMenuPersistsSelectedLanguage(t *testing.T) {
 	if token == "" {
 		t.Fatalf("language menu buttons = %#v, want English", response.Buttons)
 	}
-	callbackResponse, err := service.HandleCallback(ctx, 123456789, 0, 902, 123456789, token)
+	callbackResponse, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 902, 123456789, token, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(language select) failed: %v", err)
 	}
@@ -5429,7 +5429,7 @@ func TestLanguageMenuPersistsSelectedLanguage(t *testing.T) {
 	if value != botLanguageEnglish {
 		t.Fatalf("stored language = %q, want en", value)
 	}
-	workspace, err := service.handleCommand(ctx, 123456789, 0, "/start", 0)
+	workspace, err := service.handleCommandFromSource(ctx, 123456789, 0, "/start", 0, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handleCommand(/start) failed: %v", err)
 	}
@@ -5544,7 +5544,7 @@ func TestPlainReplyToRealPlanPromptUsesServerRequest(t *testing.T) {
 	service.live = stub
 	service.liveConnected = true
 
-	response, err := service.handlePlainText(ctx, 123456789, 0, "The answer", 779)
+	response, err := service.handlePlainTextFromSource(ctx, 123456789, 0, "The answer", 779, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("handlePlainText failed: %v", err)
 	}
