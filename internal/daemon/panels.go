@@ -551,18 +551,92 @@ func (s *Service) sendUserRequestNotice(ctx context.Context, sender Sender, targ
 }
 
 func (s *Service) renderUserRequestNoticeCard(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, renderSourceMode string) []model.RenderedMessage {
+	text := snapshot.LatestUserMessageText
+	if renderSourceMode != model.PanelSourceFeishuInput {
+		text = feishuDesktopUserNoticeText(text)
+	}
 	messages := msgformat.RenderSegments([]msgformat.Segment{
-		msgformat.Markdown(snapshot.LatestUserMessageText),
+		msgformat.Markdown(text),
 	}, msgformat.MessageLimit)
 	if renderSourceMode != model.PanelSourceFeishuInput {
 		for i := range messages {
 			messages[i].Style = model.MessageStyleDesktopUser
 		}
 	}
+	if len(messages) == 0 && strings.TrimSpace(snapshot.LatestUserMessageImagePath) != "" {
+		messages = []model.RenderedMessage{{Style: model.MessageStyleDesktopUser}}
+	}
 	if len(messages) > 0 && strings.TrimSpace(snapshot.LatestUserMessageImagePath) != "" {
 		messages[0].ImagePath = strings.TrimSpace(snapshot.LatestUserMessageImagePath)
 	}
 	return messages
+}
+
+func feishuDesktopUserNoticeText(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	skipFiles := false
+	skipRequestHeading := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case isMarkdownHeadingText(trimmed, "Files mentioned by the user:"):
+			skipFiles = true
+			continue
+		case isMarkdownHeadingText(trimmed, "My request for Codex:"):
+			skipFiles = false
+			skipRequestHeading = true
+			continue
+		case skipFiles:
+			continue
+		case skipRequestHeading && trimmed == "":
+			continue
+		}
+		skipRequestHeading = false
+		if isImagePlaceholderLine(trimmed) {
+			continue
+		}
+		if isImageBridgePromptLine(trimmed) || isCodexImageTagLine(trimmed) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func isMarkdownHeadingText(line, text string) bool {
+	line = strings.TrimSpace(line)
+	for strings.HasPrefix(line, "#") {
+		line = strings.TrimSpace(strings.TrimPrefix(line, "#"))
+	}
+	return strings.EqualFold(line, text)
+}
+
+func isImagePlaceholderLine(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	if strings.HasPrefix(line, "[Image: ") && strings.HasSuffix(line, "]") {
+		return true
+	}
+	if strings.EqualFold(line, "[Image]") {
+		return true
+	}
+	return false
+}
+
+func isImageBridgePromptLine(line string) bool {
+	line = strings.TrimSpace(line)
+	return strings.EqualFold(line, "请读取并分析这张图片。") ||
+		strings.EqualFold(line, "Please read and analyze this image.")
+}
+
+func isCodexImageTagLine(line string) bool {
+	line = strings.TrimSpace(line)
+	return (strings.HasPrefix(line, "<image ") && strings.Contains(line, `path="`) && strings.HasSuffix(line, ">")) ||
+		strings.EqualFold(line, "</image>")
 }
 
 func (s *Service) userRequestNoticeSourceMode(ctx context.Context, threadID, turnID, fallback string) string {
@@ -750,7 +824,6 @@ func (s *Service) renderSummaryPanel(ctx context.Context, thread model.Thread, s
 	if !isTerminalStatus(cardDisplayStatus(snapshot, thread)) {
 		buttons = append(buttons, []model.ButtonSpec{
 			s.callbackButton(ctx, s.t(ctx, "停止", "Stop"), "stop_turn", thread.ID, snapshot.LatestTurnID, "", nil),
-			s.callbackButton(ctx, s.t(ctx, "引导", "Steer"), "arm_steer", thread.ID, snapshot.LatestTurnID, "", nil),
 			s.callbackButton(ctx, s.t(ctx, "查看上下文", "Show context"), "show_context", thread.ID, snapshot.LatestTurnID, "", nil),
 		})
 		if !compactFeishuTopicCard(ctx) {
@@ -832,7 +905,7 @@ func (s *Service) renderSummaryPanelMarkdown(ctx context.Context, thread model.T
 func (s *Service) renderSummaryPanelMarkdownAt(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, entries []appserver.AgentMessageEntry, pending *model.PendingApproval, now time.Time) []model.RenderedMessage {
 	pending = pendingForSnapshot(pending, snapshot)
 	status := cardDisplayStatus(snapshot, thread)
-	statusText := readableProgressStatusLang(s.botLanguage(ctx), status)
+	statusText := s.codexPanelStatusText(ctx, snapshot, status, now)
 	progressSegments := []msgformat.Segment{}
 	if detailSegments, ok := s.summaryDetailTimelineSegments(ctx, snapshot); ok {
 		progressSegments = append(progressSegments, detailSegments...)
@@ -864,17 +937,17 @@ func (s *Service) renderSummaryPanelMarkdownAt(ctx context.Context, thread model
 	} else if snapshot != nil && snapshot.PlanPrompt != nil {
 		segments = append(segments, msgformat.Plain(s.t(ctx, "\n\n[Plan]\n等待输入。请回复 [Plan] 消息或使用 /reply。", "\n\n[Plan]\nWaiting for input. Reply to the [Plan] message or use /reply.")))
 	}
-	if line := s.runTimingFooter(ctx, snapshot, now); line != "" {
-		progressSegments = append(progressSegments, msgformat.Plain("\n\n"+line))
-	}
 	progress := strings.TrimSpace(firstRenderedMessage(msgformat.RenderSegments(progressSegments, msgformat.MessageLimit)).Text)
 	finalText, _ := terminalCardTextAndFP(snapshot)
 	finalText = strings.TrimSpace(finalText)
 	if finalText != "" && isTerminalStatus(status) {
 		segments = append(segments, msgformat.Markdown(finalText))
 	}
-	displaySegments := []msgformat.Segment{msgformat.Markdown(statusText), msgformat.Plain("\n\n")}
-	displaySegments = append(displaySegments, progressSegments...)
+	displaySegments := []msgformat.Segment{msgformat.Markdown(statusText)}
+	if len(progressSegments) > 0 {
+		displaySegments = append(displaySegments, msgformat.Plain("\n\n"))
+		displaySegments = append(displaySegments, progressSegments...)
+	}
 	if len(segments) > 0 {
 		displaySegments = append(displaySegments, msgformat.Plain("\n\n"))
 	}
@@ -889,6 +962,18 @@ func (s *Service) renderSummaryPanelMarkdownAt(ctx context.Context, thread model
 		message.CodexFinalMarkdown = ""
 	}
 	return []model.RenderedMessage{message}
+}
+
+func (s *Service) codexPanelStatusText(ctx context.Context, snapshot *appserver.ThreadReadSnapshot, status string, now time.Time) string {
+	lang := s.botLanguage(ctx)
+	label := readableProgressStatusLang(lang, status)
+	if isTerminalStatus(status) {
+		label = localized(lang, "已处理", "Processed")
+	}
+	if elapsed := runElapsedDuration(snapshot, now); elapsed > 0 {
+		return strings.TrimSpace(label + " " + formatToolDuration(elapsed))
+	}
+	return label
 }
 
 func (s *Service) summaryDetailTimelineSegments(ctx context.Context, snapshot *appserver.ThreadReadSnapshot) ([]msgformat.Segment, bool) {
@@ -909,7 +994,7 @@ func (s *Service) summaryDetailTimelineSegments(ctx context.Context, snapshot *a
 			if text == "" {
 				continue
 			}
-			segments = appendStatusTimelineBlock(segments, s.t(ctx, "工具调用中...", "Using tools..."), text)
+			segments = appendStatusTimelineBlock(segments, s.toolTimelineStatus(ctx, item), text)
 		case model.DetailItemOutput:
 			text := summaryOutputDetailText(item)
 			if text == "" {
@@ -918,10 +1003,31 @@ func (s *Service) summaryDetailTimelineSegments(ctx context.Context, snapshot *a
 			segments = appendStatusTimelineBlock(segments, s.t(ctx, "工具调用中...", "Using tools..."), text)
 		}
 	}
+	if len(segments) == 0 && strings.TrimSpace(cleanNilLiteral(snapshot.LatestToolLabel)) != "" {
+		item := model.DetailItem{
+			Kind:     model.DetailItemTool,
+			Label:    snapshot.LatestToolLabel,
+			ToolKind: snapshot.LatestToolKind,
+			Status:   snapshot.LatestToolStatus,
+			Output:   snapshot.LatestToolOutput,
+		}
+		segments = appendStatusTimelineBlock(segments, s.toolTimelineStatus(ctx, item), summaryToolDetailText(item))
+	}
 	if len(segments) > 0 {
 		return segments, true
 	}
 	return nil, false
+}
+
+func (s *Service) toolTimelineStatus(ctx context.Context, item model.DetailItem) string {
+	switch strings.TrimSpace(item.ToolKind) {
+	case "commandExecution":
+		return s.t(ctx, "已运行", "Ran")
+	case "fileChange":
+		return s.t(ctx, "已编辑", "Edited")
+	default:
+		return s.t(ctx, "工具调用中...", "Using tools...")
+	}
 }
 
 func appendStatusTimelineBlock(segments []msgformat.Segment, status, body string) []msgformat.Segment {
@@ -936,6 +1042,9 @@ func appendStatusTimelineBlock(segments []msgformat.Segment, status, body string
 func summaryToolDetailText(item model.DetailItem) string {
 	parts := []string{}
 	if label := strings.TrimSpace(cleanNilLiteral(item.Label)); label != "" {
+		if strings.TrimSpace(item.ToolKind) == "fileChange" {
+			label = strings.TrimPrefix(label, "File changed: ")
+		}
 		parts = append(parts, label)
 	}
 	if text := strings.TrimSpace(cleanNilLiteral(item.Text)); text != "" && text != strings.TrimSpace(cleanNilLiteral(item.Label)) {
@@ -1078,16 +1187,7 @@ func (s *Service) renderToolPanel(ctx context.Context, thread model.Thread, snap
 }
 
 func (s *Service) renderToolPanelIfNeeded(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot) (string, string, bool) {
-	if current, ok := s.currentChatOriginTool(ctx, thread, snapshot); ok && strings.TrimSpace(cleanNilLiteral(current.Label)) != "" {
-		text, hash := s.renderToolPanel(ctx, thread, snapshot)
-		return text, hash, true
-	}
-	tool, ok := lastCompletedTool(snapshot)
-	if !ok || strings.TrimSpace(cleanNilLiteral(tool.Label)) == "" {
-		return "", "", false
-	}
-	text, hash := s.renderToolPanel(ctx, thread, snapshot)
-	return text, hash, true
+	return "", "", false
 }
 
 func (s *Service) renderToolPanelAt(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, now time.Time) (string, string) {
@@ -1149,9 +1249,23 @@ func runTimingFooter(snapshot *appserver.ThreadReadSnapshot, now time.Time) stri
 	if snapshot == nil {
 		return ""
 	}
+	elapsed := runElapsedDuration(snapshot, now)
+	if elapsed <= 0 {
+		return ""
+	}
+	if isTerminalStatus(snapshot.LatestTurnStatus) {
+		return fmt.Sprintf("Run duration: %s", formatToolDuration(elapsed))
+	}
+	return fmt.Sprintf("Run active for: %s", formatToolDuration(elapsed))
+}
+
+func runElapsedDuration(snapshot *appserver.ThreadReadSnapshot, now time.Time) time.Duration {
+	if snapshot == nil {
+		return 0
+	}
 	startedAt := parseTime(model.TimeString(snapshot.LatestTurnStartedAt))
 	if startedAt.IsZero() {
-		return ""
+		return 0
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -1163,9 +1277,9 @@ func runTimingFooter(snapshot *appserver.ThreadReadSnapshot, now time.Time) stri
 		if endedAt.IsZero() {
 			endedAt = now
 		}
-		return fmt.Sprintf("Run duration: %s", formatToolDuration(endedAt.Sub(startedAt)))
+		return endedAt.Sub(startedAt)
 	}
-	return fmt.Sprintf("Run active for: %s", formatToolDuration(now.Sub(startedAt)))
+	return now.Sub(startedAt)
 }
 
 func (s *Service) runTimingFooter(ctx context.Context, snapshot *appserver.ThreadReadSnapshot, now time.Time) string {
@@ -1229,17 +1343,7 @@ func (s *Service) renderOutputPanel(ctx context.Context, thread model.Thread, sn
 }
 
 func (s *Service) renderOutputPanelIfNeeded(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot) (string, string, bool) {
-	tool, ok := lastCompletedTool(snapshot)
-	if !ok {
-		return "", "", false
-	}
-	output := strings.ReplaceAll(tool.Output, "\r\n", "\n")
-	output = cleanNilLiteral(output)
-	if strings.TrimSpace(output) == "" {
-		return "", "", false
-	}
-	text, hash := s.renderOutputPanel(ctx, thread, snapshot)
-	return text, hash, true
+	return "", "", false
 }
 
 type completedToolView struct {

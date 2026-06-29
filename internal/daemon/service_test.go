@@ -2161,8 +2161,8 @@ func TestPollSnapshotWithoutToolDoesNotPreserveSameTurnRunningToolAsCurrent(t *t
 	if len(summaryMessages) != 1 {
 		t.Fatalf("len(summaryMessages) = %d, want 1", len(summaryMessages))
 	}
-	if !strings.Contains(summaryMessages[0].Text, "Run active for: 8s") {
-		t.Fatalf("rendered summary = %q, want elapsed run time", summaryMessages[0].Text)
+	if !strings.Contains(summaryMessages[0].CodexStatus, "Processing 8s") {
+		t.Fatalf("codex status = %q, want elapsed run time", summaryMessages[0].CodexStatus)
 	}
 }
 
@@ -3519,13 +3519,19 @@ func TestFeishuImageInputUsesDesktopLocalImagePart(t *testing.T) {
 	if !ok {
 		t.Fatalf("desktop start input = %#v, want []map[string]any", desktop.startCalls[0]["input"])
 	}
-	if len(input) != 1 {
-		t.Fatalf("desktop start input = %#v, want only localImage part", input)
+	if len(input) != 2 {
+		t.Fatalf("desktop start input = %#v, want metadata text and localImage parts", input)
 	}
-	if got, want := input[0]["type"], "localImage"; got != want {
+	if got, want := input[0]["type"], "text"; got != want {
+		t.Fatalf("metadata part type = %v, want %q", got, want)
+	}
+	if got := input[0]["text"].(string); !strings.Contains(got, "Files mentioned by the user") || !strings.Contains(got, "My request for Codex") {
+		t.Fatalf("metadata text = %q, want Codex attachment metadata", got)
+	}
+	if got, want := input[1]["type"], "localImage"; got != want {
 		t.Fatalf("image part type = %v, want %q", got, want)
 	}
-	if got, want := input[0]["path"], "/Users/vico/.codex-tg/data/feishu-attachments/7893bfdbd95a.jpg"; got != want {
+	if got, want := input[1]["path"], "/Users/vico/.codex-tg/data/feishu-attachments/7893bfdbd95a.jpg"; got != want {
 		t.Fatalf("image part path = %v, want %q", got, want)
 	}
 }
@@ -3569,14 +3575,46 @@ func TestFeishuImageReplyUsesDesktopLocalImagePart(t *testing.T) {
 		t.Fatalf("desktop steerInputs = %#v, want one", desktop.steerInputs)
 	}
 	input := desktop.steerInputs[0]
-	if len(input) != 1 {
-		t.Fatalf("desktop steer input = %#v, want only localImage part", input)
+	if len(input) != 2 {
+		t.Fatalf("desktop steer input = %#v, want metadata text and localImage parts", input)
 	}
-	if got, want := input[0]["type"], "localImage"; got != want {
+	if got, want := input[0]["type"], "text"; got != want {
+		t.Fatalf("request part type = %v, want %q", got, want)
+	}
+	if got := input[0]["text"].(string); !strings.Contains(got, "Files mentioned by the user") || !strings.Contains(got, "My request for Codex") {
+		t.Fatalf("metadata text = %q, want Codex attachment metadata", got)
+	}
+	if got, want := input[1]["type"], "localImage"; got != want {
 		t.Fatalf("image part type = %v, want %q", got, want)
 	}
-	if got, want := input[0]["path"], "/Users/vico/.codex-tg/data/feishu-attachments/reply.jpg"; got != want {
+	if got, want := input[1]["path"], "/Users/vico/.codex-tg/data/feishu-attachments/reply.jpg"; got != want {
 		t.Fatalf("image part path = %v, want %q", got, want)
+	}
+}
+
+func TestDesktopImageInputPreservesCodexAttachmentRequest(t *testing.T) {
+	t.Parallel()
+
+	text := "\n# Files mentioned by the user:\n\n" +
+		"## prompt.jpg: /tmp/prompt.jpg\n\n" +
+		"## My request for Codex:\n" +
+		"看看这张图里有什么\n" +
+		"<image name=[Image #1] path=\"/tmp/prompt.jpg\">\n" +
+		"</image>"
+
+	input := desktopTextInput(text)
+
+	if len(input) != 2 {
+		t.Fatalf("input = %#v, want request and localImage parts", input)
+	}
+	if got, want := input[0]["text"], "看看这张图里有什么"; got != want {
+		t.Fatalf("request text = %v, want %q", got, want)
+	}
+	if got, want := input[1]["type"], "localImage"; got != want {
+		t.Fatalf("image part type = %v, want %q", got, want)
+	}
+	if got, want := input[1]["path"], "/tmp/prompt.jpg"; got != want {
+		t.Fatalf("image path = %v, want %q", got, want)
 	}
 }
 
@@ -3779,6 +3817,50 @@ func TestFeishuInputStartsDesktopTurnWhenReplySteerFindsNoActiveTurn(t *testing.
 	}
 	if len(stub.turnStartCalls) != 0 {
 		t.Fatalf("app-server turnStartCalls = %#v, want none", stub.turnStartCalls)
+	}
+}
+
+func TestFeishuInputStartsDesktopTurnWhenReplySteerReturnsEmptyTurn(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "01900000-0000-7000-8000-000000000216",
+		Title:       "Feishu desktop empty steer",
+		ProjectName: "Codex",
+		CWD:         "/Users/example/project",
+		Status:      "idle",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	service.live = &stubSession{}
+	service.liveConnected = true
+	desktop := &stubDesktopInputDispatcher{
+		steerResult: map[string]any{"ok": true},
+		startResult: map[string]any{
+			"result": map[string]any{"turn": map[string]any{"id": "desktop-empty-steer-start"}},
+		},
+	}
+	service.desktopInputDispatcher = desktop
+	service.desktopOpener = func(ctx context.Context, threadID string) error {
+		return nil
+	}
+
+	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "old-ended-turn", "Reply after empty steer", "", model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
+	}
+	if response == nil || response.ThreadID != thread.ID || response.TurnID != "desktop-empty-steer-start" {
+		t.Fatalf("response = %#v, want desktop start after empty steer", response)
+	}
+	if len(desktop.steerCalls) != 1 {
+		t.Fatalf("steerCalls = %#v, want one attempted steer", desktop.steerCalls)
+	}
+	if len(desktop.startCalls) != 1 {
+		t.Fatalf("startCalls = %#v, want fallback start", desktop.startCalls)
 	}
 }
 

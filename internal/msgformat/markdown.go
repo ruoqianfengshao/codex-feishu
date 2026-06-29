@@ -2,6 +2,7 @@ package msgformat
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
@@ -115,6 +116,32 @@ func renderMarkdownEntities(markdown string) (string, []model.MessageEntity) {
 				continue
 			}
 		}
+		if markdown[i] == '[' {
+			if label, link, consumed, ok := parseMarkdownLink(markdown[i:]); ok {
+				offset := utf16Len(out.String())
+				out.WriteString(label)
+				entities = append(entities, model.MessageEntity{
+					Type:   "text_link",
+					Offset: offset,
+					Length: utf16Len(label),
+					URL:    link,
+				})
+				i += consumed
+				continue
+			}
+		}
+		if link, consumed, ok := parseBareURL(markdown[i:]); ok {
+			offset := utf16Len(out.String())
+			out.WriteString(link)
+			entities = append(entities, model.MessageEntity{
+				Type:   "text_link",
+				Offset: offset,
+				Length: utf16Len(link),
+				URL:    link,
+			})
+			i += consumed
+			continue
+		}
 		r, size := utf8.DecodeRuneInString(markdown[i:])
 		if r == utf8.RuneError && size == 0 {
 			break
@@ -123,6 +150,62 @@ func renderMarkdownEntities(markdown string) (string, []model.MessageEntity) {
 		i += size
 	}
 	return out.String(), entities
+}
+
+func parseMarkdownLink(text string) (string, string, int, bool) {
+	closeLabel := strings.IndexByte(text, ']')
+	if closeLabel <= 0 || closeLabel+1 >= len(text) || text[closeLabel+1] != '(' {
+		return "", "", 0, false
+	}
+	closeURLRel := strings.IndexByte(text[closeLabel+2:], ')')
+	if closeURLRel < 0 {
+		return "", "", 0, false
+	}
+	label := text[1:closeLabel]
+	link := strings.TrimSpace(text[closeLabel+2 : closeLabel+2+closeURLRel])
+	if strings.TrimSpace(label) == "" || !isHTTPURL(link) {
+		return "", "", 0, false
+	}
+	return label, link, closeLabel + 2 + closeURLRel + 1, true
+}
+
+func parseBareURL(text string) (string, int, bool) {
+	if !strings.HasPrefix(text, "http://") && !strings.HasPrefix(text, "https://") {
+		return "", 0, false
+	}
+	end := 0
+	for end < len(text) {
+		r, size := utf8.DecodeRuneInString(text[end:])
+		if r == utf8.RuneError && size == 0 {
+			break
+		}
+		if isURLTerminator(r) {
+			break
+		}
+		end += size
+	}
+	link := strings.TrimRight(text[:end], ".,;:!?)]}")
+	if !isHTTPURL(link) {
+		return "", 0, false
+	}
+	return link, len(link), true
+}
+
+func isURLTerminator(r rune) bool {
+	switch r {
+	case ' ', '\n', '\r', '\t', '<', '>', '"', '\'':
+		return true
+	default:
+		return false
+	}
+}
+
+func isHTTPURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	return (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != ""
 }
 
 func splitRenderedMessage(text string, entities []model.MessageEntity, maxLen int) []model.RenderedMessage {

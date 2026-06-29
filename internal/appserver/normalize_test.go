@@ -563,6 +563,43 @@ func TestSnapshotFromThreadReadUsesLocalImageUserMessage(t *testing.T) {
 	}
 }
 
+func TestSnapshotFromThreadReadKeepsCaptionAroundLocalImageTag(t *testing.T) {
+	t.Parallel()
+
+	snapshot := SnapshotFromThreadRead(map[string]any{
+		"id":     "thread-image-caption",
+		"title":  "Image caption thread",
+		"status": "inProgress",
+		"turns": []any{
+			map[string]any{
+				"id":     "turn-image-caption",
+				"status": "inProgress",
+				"items": []any{
+					map[string]any{
+						"id":   "user-image-caption",
+						"type": "userMessage",
+						"content": []any{
+							map[string]any{"type": "input_text", "text": "测一下 codex 发图片\n<image name=[Image #1] path=\"/tmp/IMG.JPG\">"},
+							map[string]any{"type": "input_image", "image_url": "data:image/jpeg;base64,abc"},
+							map[string]any{"type": "input_text", "text": "</image>"},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	if got, want := snapshot.LatestUserMessageImagePath, "/tmp/IMG.JPG"; got != want {
+		t.Fatalf("LatestUserMessageImagePath = %q, want %q", got, want)
+	}
+	if !strings.Contains(snapshot.LatestUserMessageText, "测一下 codex 发图片") {
+		t.Fatalf("LatestUserMessageText = %q, want caption", snapshot.LatestUserMessageText)
+	}
+	if !strings.Contains(snapshot.LatestUserMessageText, "[Image: /tmp/IMG.JPG]") {
+		t.Fatalf("LatestUserMessageText = %q, want image placeholder", snapshot.LatestUserMessageText)
+	}
+}
+
 func TestSnapshotFromThreadReadTreatsFinalAnswerAsCompletedWhenStatusIsStale(t *testing.T) {
 	t.Parallel()
 
@@ -646,6 +683,9 @@ func TestSnapshotFromThreadReadBuildsOrderedDetailsAndLinksToolsToCommentary(t *
 	if got, want := snapshot.DetailItems[2].Kind, model.DetailItemTool; got != want {
 		t.Fatalf("DetailItems[2].Kind = %q, want %q", got, want)
 	}
+	if got, want := snapshot.DetailItems[2].ToolKind, "commandExecution"; got != want {
+		t.Fatalf("DetailItems[2].ToolKind = %q, want %q", got, want)
+	}
 	if got, want := snapshot.DetailItems[2].CommentaryIndex, 1; got != want {
 		t.Fatalf("tool CommentaryIndex = %d, want %d", got, want)
 	}
@@ -657,6 +697,36 @@ func TestSnapshotFromThreadReadBuildsOrderedDetailsAndLinksToolsToCommentary(t *
 	}
 	if got, want := snapshot.DetailItems[4].CommentaryIndex, 2; got != want {
 		t.Fatalf("second commentary index = %d, want %d", got, want)
+	}
+}
+
+func TestSnapshotFromThreadReadPreservesFileChangeToolKind(t *testing.T) {
+	t.Parallel()
+
+	snapshot := SnapshotFromThreadRead(map[string]any{
+		"id":     "thread-file-change",
+		"name":   "File change",
+		"cwd":    "/Users/example/project",
+		"status": "active",
+		"turns": []any{
+			map[string]any{
+				"id":     "turn-file-change",
+				"status": "inProgress",
+				"items": []any{
+					map[string]any{"id": "file-1", "type": "fileChange", "path": "internal/feishu/card.go", "status": "completed"},
+				},
+			},
+		},
+	})
+
+	if len(snapshot.DetailItems) != 2 {
+		t.Fatalf("len(DetailItems) = %d, want 2: %#v", len(snapshot.DetailItems), snapshot.DetailItems)
+	}
+	if got, want := snapshot.DetailItems[0].Kind, model.DetailItemTool; got != want {
+		t.Fatalf("DetailItems[0].Kind = %q, want %q", got, want)
+	}
+	if got, want := snapshot.DetailItems[0].ToolKind, "fileChange"; got != want {
+		t.Fatalf("DetailItems[0].ToolKind = %q, want %q", got, want)
 	}
 }
 

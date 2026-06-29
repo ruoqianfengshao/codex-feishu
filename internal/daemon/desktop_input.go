@@ -80,12 +80,22 @@ func (s *Service) maybeSendFeishuInputViaDesktop(ctx context.Context, chatID, to
 		result, steerErr = dispatcher.SteerTurn(requestCtx, thread.ID, input, restoreMessage)
 	}
 	if result != nil {
-		s.logLifecycle("codex_desktop_input_steered", lifecycleFields{
-			"thread_id": thread.ID,
-			"route":     route,
-			"turn_id":   appserverThreadTurnID(desktopFollowerResult(result)),
-		})
-		return desktopFollowerResult(result), true, false, "", nil
+		follower := desktopFollowerResult(result)
+		turnID := appserverThreadTurnID(follower)
+		if strings.TrimSpace(turnID) == "" {
+			s.logLifecycle("codex_desktop_input_steer_empty_turn", lifecycleFields{
+				"thread_id": thread.ID,
+				"route":     route,
+			})
+			result = nil
+		} else {
+			s.logLifecycle("codex_desktop_input_steered", lifecycleFields{
+				"thread_id": thread.ID,
+				"route":     route,
+				"turn_id":   turnID,
+			})
+			return follower, true, false, "", nil
+		}
 	}
 	if steerErr != nil {
 		s.logLifecycle("codex_desktop_input_steer_failed", lifecycleFields{
@@ -225,6 +235,7 @@ func desktopInputParts(text string) []map[string]any {
 	caption := desktopImageCaptionFromText(text)
 	if caption == "" {
 		return []map[string]any{
+			{"type": "text", "text": codexImageAttachmentMetadataText(text, imagePath), "text_elements": []any{}},
 			{"type": "localImage", "path": imagePath},
 		}
 	}
@@ -273,6 +284,49 @@ func desktopImageCaptionFromText(text string) string {
 		return ""
 	}
 	return trimmed
+}
+
+func codexImageAttachmentMetadataText(text, imagePath string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	if request := codexImageAttachmentRequest(text); request != "" {
+		return request
+	}
+	name := imagePath
+	if slash := strings.LastIndexAny(name, `/\`); slash >= 0 {
+		name = name[slash+1:]
+	}
+	return "\n# Files mentioned by the user:\n\n## " + name + ": " + imagePath + "\n\n## My request for Codex:\n"
+}
+
+func codexImageAttachmentRequest(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	start := -1
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if isDesktopImageRequestHeading(strings.TrimSpace(line)) {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	out := make([]string, 0, len(lines)-start)
+	for _, line := range lines[start:] {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "<image ") && strings.Contains(trimmed, `path="`) {
+			break
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func isDesktopImageRequestHeading(line string) bool {
+	for strings.HasPrefix(line, "#") {
+		line = strings.TrimSpace(strings.TrimPrefix(line, "#"))
+	}
+	return strings.EqualFold(line, "My request for Codex:")
 }
 
 func imagePathBetween(text, startMarker, endMarker string) string {

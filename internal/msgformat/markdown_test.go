@@ -46,12 +46,71 @@ func TestRenderSegmentsSplitsLongMarkdown(t *testing.T) {
 	}
 }
 
+func TestRenderSegmentsAutolinksBareURL(t *testing.T) {
+	t.Parallel()
+
+	messages := RenderSegments([]Segment{
+		Markdown("See https://example.com/path?q=1 for details."),
+	}, MessageLimit)
+	if len(messages) != 1 {
+		t.Fatalf("len(messages) = %d, want 1", len(messages))
+	}
+	if !hasEntityURL(messages[0].Entities, "https://example.com/path?q=1") {
+		t.Fatalf("entities = %#v, want URL entity", messages[0].Entities)
+	}
+}
+
+func TestRenderSegmentsKeepsMarkdownLinkClickable(t *testing.T) {
+	t.Parallel()
+
+	messages := RenderSegments([]Segment{
+		Markdown("Open [docs](https://example.com/docs)."),
+	}, MessageLimit)
+	if len(messages) != 1 {
+		t.Fatalf("len(messages) = %d, want 1", len(messages))
+	}
+	if strings.Contains(messages[0].Text, "[docs](") || !strings.Contains(messages[0].Text, "Open docs.") {
+		t.Fatalf("text = %q, want markdown link label only", messages[0].Text)
+	}
+	if !hasEntityURL(messages[0].Entities, "https://example.com/docs") {
+		t.Fatalf("entities = %#v, want markdown URL entity", messages[0].Entities)
+	}
+}
+
+func TestRenderSegmentsDoesNotAutolinkCodeURL(t *testing.T) {
+	t.Parallel()
+
+	messages := RenderSegments([]Segment{
+		Markdown("Run `curl https://example.com` then inspect."),
+	}, MessageLimit)
+	if len(messages) != 1 {
+		t.Fatalf("len(messages) = %d, want 1", len(messages))
+	}
+	for _, entity := range messages[0].Entities {
+		if entity.Type == "text_link" || entity.URL != "" {
+			t.Fatalf("entities = %#v, want no URL entity inside code", messages[0].Entities)
+		}
+	}
+	if !hasEntity(messages[0].Entities, "code", "") {
+		t.Fatalf("entities = %#v, want code entity", messages[0].Entities)
+	}
+}
+
 func hasEntity(entities []model.MessageEntity, entityType, language string) bool {
 	for _, entity := range entities {
 		if entity.Type != entityType {
 			continue
 		}
 		if language == "" || entity.Language == language {
+			return true
+		}
+	}
+	return false
+}
+
+func hasEntityURL(entities []model.MessageEntity, url string) bool {
+	for _, entity := range entities {
+		if entity.Type == "text_link" && entity.URL == url {
 			return true
 		}
 	}

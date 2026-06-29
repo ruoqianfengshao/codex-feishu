@@ -706,6 +706,7 @@ func (b *Bot) handleMessageEvent(ctx context.Context, event *larkim.P2MessageRec
 	openChatID := value(message.ChatId)
 	openMessageID := value(message.MessageId)
 	openUserID := senderOpenID(event.Event.Sender)
+	b.logInboundMessageEvent(message, openChatID, openMessageID, openUserID)
 	text := parseTextContent(value(message.MessageType), value(message.Content))
 	if text == "" {
 		var err error
@@ -715,6 +716,7 @@ func (b *Bot) handleMessageEvent(ctx context.Context, event *larkim.P2MessageRec
 		}
 	}
 	if openChatID == "" || openMessageID == "" || openUserID == "" || text == "" {
+		b.logIgnoredInboundMessage(message, openChatID, openMessageID, openUserID, text)
 		return nil
 	}
 	chatID, err := b.store.ResolveExternalID(ctx, namespaceChat, openChatID)
@@ -767,7 +769,10 @@ func (b *Bot) imageMessageText(ctx context.Context, message *larkim.EventMessage
 	if b == nil || message == nil || b.api == nil {
 		return "", nil
 	}
-	imageKey := parseImageKeyContent(value(message.MessageType), value(message.Content))
+	request, imageKey := parsePostContent(value(message.MessageType), value(message.Content))
+	if imageKey == "" {
+		imageKey = parseImageKeyContent(value(message.MessageType), value(message.Content))
+	}
 	if imageKey == "" {
 		return "", nil
 	}
@@ -781,10 +786,17 @@ func (b *Bot) imageMessageText(ctx context.Context, message *larkim.EventMessage
 	if err != nil {
 		return "", err
 	}
-	return b.t(ctx,
-		fmt.Sprintf("用户发送了一张图片，已保存到：%s\n请读取并分析这张图片。", path),
-		fmt.Sprintf("The user sent an image saved at: %s\nPlease read and analyze this image.", path),
-	), nil
+	return codexAttachmentPrompt(path, request), nil
+}
+
+func codexAttachmentPrompt(path, request string) string {
+	path = strings.TrimSpace(path)
+	request = strings.TrimSpace(request)
+	name := filepath.Base(path)
+	if name == "." || name == string(filepath.Separator) {
+		name = "image"
+	}
+	return fmt.Sprintf("\n# Files mentioned by the user:\n\n## %s: %s\n\n## My request for Codex:\n%s\n<image name=[Image #1] path=\"%s\">\n</image>", name, path, request, path)
 }
 
 func (b *Bot) saveInboundImage(openMessageID, imageKey string, data []byte) (string, error) {
@@ -965,6 +977,42 @@ func (b *Bot) logInboundMessage(message *larkim.EventMessage, chatID, messageID,
 		safeIDForLog(value(message.RootId)),
 		len([]rune(text)),
 		shortHashForLog(text),
+	)
+}
+
+func (b *Bot) logInboundMessageEvent(message *larkim.EventMessage, openChatID, openMessageID, openUserID string) {
+	if b == nil || b.logger == nil || message == nil {
+		return
+	}
+	content := value(message.Content)
+	b.logger.Printf(
+		"feishu inbound event: open_chat=%s open_message=%s open_user=%s chat_type=%s message_type=%s parent=%s root=%s thread=%s content_len=%d content_sha256=%s",
+		safeIDForLog(openChatID),
+		safeIDForLog(openMessageID),
+		safeIDForLog(openUserID),
+		strings.TrimSpace(value(message.ChatType)),
+		strings.TrimSpace(value(message.MessageType)),
+		safeIDForLog(value(message.ParentId)),
+		safeIDForLog(value(message.RootId)),
+		safeIDForLog(value(message.ThreadId)),
+		len([]rune(content)),
+		shortHashForLog(content),
+	)
+}
+
+func (b *Bot) logIgnoredInboundMessage(message *larkim.EventMessage, openChatID, openMessageID, openUserID, text string) {
+	if b == nil || b.logger == nil || message == nil {
+		return
+	}
+	b.logger.Printf(
+		"feishu inbound ignored: open_chat_empty=%t open_message_empty=%t open_user_empty=%t text_empty=%t message_type=%s content_len=%d content_sha256=%s",
+		strings.TrimSpace(openChatID) == "",
+		strings.TrimSpace(openMessageID) == "",
+		strings.TrimSpace(openUserID) == "",
+		strings.TrimSpace(text) == "",
+		strings.TrimSpace(value(message.MessageType)),
+		len([]rune(value(message.Content))),
+		shortHashForLog(value(message.Content)),
 	)
 }
 

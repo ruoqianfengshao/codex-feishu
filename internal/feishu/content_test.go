@@ -66,10 +66,19 @@ func TestImageMessageTextDownloadsImageAndReturnsLocalPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("imageMessageText failed: %v", err)
 	}
-	if !strings.Contains(text, "feishu-attachments") || !strings.Contains(text, "请读取并分析这张图片") {
-		t.Fatalf("text = %q, want local image path prompt", text)
+	if !strings.Contains(text, "feishu-attachments") || !strings.Contains(text, "Files mentioned by the user") || !strings.Contains(text, "My request for Codex") {
+		t.Fatalf("text = %q, want Codex attachment prompt", text)
 	}
-	path := strings.TrimSpace(strings.Split(strings.Split(text, "：")[1], "\n")[0])
+	start := strings.Index(text, `path="`)
+	if start < 0 {
+		t.Fatalf("text = %q, want image path attribute", text)
+	}
+	start += len(`path="`)
+	end := strings.Index(text[start:], `"`)
+	if end < 0 {
+		t.Fatalf("text = %q, want closed image path attribute", text)
+	}
+	path := text[start : start+end]
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile(%q) failed: %v", path, err)
@@ -79,6 +88,54 @@ func TestImageMessageTextDownloadsImageAndReturnsLocalPath(t *testing.T) {
 	}
 	if api.downloadImageMessageIDs[0] != "om_image" || api.downloadImageKeys[0] != "img_test" {
 		t.Fatalf("download image calls = messages %#v keys %#v, want om_image/img_test", api.downloadImageMessageIDs, api.downloadImageKeys)
+	}
+}
+
+func TestPostMessageTextDownloadsImageAndKeepsRequestText(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	api := &fakeAPIClient{downloadedImages: map[string][]byte{"img_post": []byte("post image bytes")}}
+	bot := &Bot{
+		cfg: config.Config{Paths: config.Paths{DataDir: dataDir}},
+		api: api,
+	}
+	event := newPostImageMessageEvent("oc_chat", "om_post", "ou_user", "帮我看看这个甜品", "img_post")
+
+	text, err := bot.imageMessageText(ctx, event.Event.Message)
+	if err != nil {
+		t.Fatalf("imageMessageText failed: %v", err)
+	}
+	if !strings.Contains(text, "帮我看看这个甜品") || !strings.Contains(text, "My request for Codex") || !strings.Contains(text, "feishu-attachments") {
+		t.Fatalf("text = %q, want Codex attachment prompt with request text", text)
+	}
+	if api.downloadImageMessageIDs[0] != "om_post" || api.downloadImageKeys[0] != "img_post" {
+		t.Fatalf("download image calls = messages %#v keys %#v, want om_post/img_post", api.downloadImageMessageIDs, api.downloadImageKeys)
+	}
+}
+
+func TestDirectPostMessageTextDownloadsImageAndKeepsRequestText(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	api := &fakeAPIClient{downloadedImages: map[string][]byte{"img_direct": []byte("direct post image bytes")}}
+	bot := &Bot{
+		cfg: config.Config{Paths: config.Paths{DataDir: dataDir}},
+		api: api,
+	}
+	event := newDirectPostImageMessageEvent("oc_chat", "om_direct", "ou_user", "图片加文字测试", "img_direct")
+
+	text, err := bot.imageMessageText(ctx, event.Event.Message)
+	if err != nil {
+		t.Fatalf("imageMessageText failed: %v", err)
+	}
+	if !strings.Contains(text, "图片加文字测试") || !strings.Contains(text, "My request for Codex") || !strings.Contains(text, "feishu-attachments") {
+		t.Fatalf("text = %q, want Codex attachment prompt with request text", text)
+	}
+	if api.downloadImageMessageIDs[0] != "om_direct" || api.downloadImageKeys[0] != "img_direct" {
+		t.Fatalf("download image calls = messages %#v keys %#v, want om_direct/img_direct", api.downloadImageMessageIDs, api.downloadImageKeys)
 	}
 }
 
@@ -137,7 +194,7 @@ func TestBuildCodexPanelCardUsesDocumentedCollapsiblePanelFields(t *testing.T) {
 	card, err := buildRenderedCard(model.RenderedMessage{
 		Style:                 model.MessageStyleCodexPanel,
 		Text:                  "Running",
-		CodexStatus:           "运行中",
+		CodexStatus:           "已处理 5m 58s",
 		CodexProgressMarkdown: "思考中...\n\n工具调用中...",
 		CodexProgressExpanded: true,
 	}, nil)
@@ -155,10 +212,17 @@ func TestBuildCodexPanelCardUsesDocumentedCollapsiblePanelFields(t *testing.T) {
 				BackgroundColor string `json:"background_color"`
 				Header          struct {
 					BackgroundColor string `json:"background_color"`
+					IconPosition    string `json:"icon_position"`
+					IconAngle       int    `json:"icon_expanded_angle"`
 					Title           struct {
 						Tag     string `json:"tag"`
 						Content string `json:"content"`
 					} `json:"title"`
+					Icon struct {
+						Tag   string `json:"tag"`
+						Token string `json:"token"`
+						Size  string `json:"size"`
+					} `json:"icon"`
 				} `json:"header"`
 				Border struct {
 					Color        string `json:"color"`
@@ -179,8 +243,11 @@ func TestBuildCodexPanelCardUsesDocumentedCollapsiblePanelFields(t *testing.T) {
 		if element.BackgroundColor != "grey" || element.Header.BackgroundColor != "grey" || element.Border.Color != "grey" || element.Border.CornerRadius != "8px" {
 			t.Fatalf("collapsible panel = %#v, want documented color/border fields", element)
 		}
-		if element.Header.Title.Tag != "markdown" || element.Header.Title.Content != "运行中" {
+		if element.Header.Title.Tag != "markdown" || element.Header.Title.Content != "已处理 5m 58s" {
 			t.Fatalf("collapsible panel header title = %#v, want markdown title under header", element.Header.Title)
+		}
+		if element.Header.Icon.Tag != "standard_icon" || element.Header.Icon.Token != "down-small-ccm_outlined" || element.Header.Icon.Size != "16px 16px" || element.Header.IconPosition != "right" || element.Header.IconAngle != -180 {
+			t.Fatalf("collapsible panel header icon = %#v position=%q angle=%d, want documented arrow icon", element.Header.Icon, element.Header.IconPosition, element.Header.IconAngle)
 		}
 	}
 	if !panelFound {
@@ -581,6 +648,38 @@ func TestSendRenderedMessagesUsesMarkdownCardWithoutButtons(t *testing.T) {
 		if !strings.Contains(api.lastContent, want) {
 			t.Fatalf("content missing %q:\n%s", want, api.lastContent)
 		}
+	}
+}
+
+func TestSendRenderedMessagesRendersTextLinkEntitiesAsMarkdownLinks(t *testing.T) {
+	t.Parallel()
+
+	store, err := storage.Open(t.TempDir() + "/state.sqlite")
+	if err != nil {
+		t.Fatalf("storage.Open failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	chatID, err := store.ResolveExternalID(context.Background(), namespaceChat, "oc_chat")
+	if err != nil {
+		t.Fatalf("ResolveExternalID failed: %v", err)
+	}
+	api := &fakeAPIClient{}
+	bot := &Bot{store: store, api: api}
+
+	_, err = bot.SendRenderedMessages(context.Background(), chatID, 0, []model.RenderedMessage{{
+		Text: "Open docs",
+		Entities: []model.MessageEntity{{
+			Type:   "text_link",
+			Offset: 5,
+			Length: 4,
+			URL:    "https://example.com/docs",
+		}},
+	}}, nil, model.SendOptions{})
+	if err != nil {
+		t.Fatalf("SendRenderedMessages failed: %v", err)
+	}
+	if !strings.Contains(api.lastContent, "[docs](https://example.com/docs)") {
+		t.Fatalf("content = %s, want markdown link", api.lastContent)
 	}
 }
 
@@ -1309,6 +1408,62 @@ func newTextMessageEvent(openChatID, openMessageID, openUserID, text string) *la
 func newImageMessageEvent(openChatID, openMessageID, openUserID, imageKey string) *larkim.P2MessageReceiveV1 {
 	messageType := "image"
 	content, err := json.Marshal(imageContent{ImageKey: imageKey})
+	if err != nil {
+		panic(err)
+	}
+	contentText := string(content)
+	return &larkim.P2MessageReceiveV1{
+		Event: &larkim.P2MessageReceiveV1Data{
+			Sender: &larkim.EventSender{
+				SenderId: &larkim.UserId{OpenId: &openUserID},
+			},
+			Message: &larkim.EventMessage{
+				ChatId:      &openChatID,
+				MessageId:   &openMessageID,
+				MessageType: &messageType,
+				Content:     &contentText,
+			},
+		},
+	}
+}
+
+func newPostImageMessageEvent(openChatID, openMessageID, openUserID, text, imageKey string) *larkim.P2MessageReceiveV1 {
+	messageType := "post"
+	content, err := json.Marshal(postContent{Post: map[string]postLanguageContent{
+		"zh_cn": {
+			Content: [][]postElement{{
+				{Tag: "text", Text: text},
+				{Tag: "img", ImageKey: imageKey},
+			}},
+		},
+	}})
+	if err != nil {
+		panic(err)
+	}
+	contentText := string(content)
+	return &larkim.P2MessageReceiveV1{
+		Event: &larkim.P2MessageReceiveV1Data{
+			Sender: &larkim.EventSender{
+				SenderId: &larkim.UserId{OpenId: &openUserID},
+			},
+			Message: &larkim.EventMessage{
+				ChatId:      &openChatID,
+				MessageId:   &openMessageID,
+				MessageType: &messageType,
+				Content:     &contentText,
+			},
+		},
+	}
+}
+
+func newDirectPostImageMessageEvent(openChatID, openMessageID, openUserID, text, imageKey string) *larkim.P2MessageReceiveV1 {
+	messageType := "post"
+	content, err := json.Marshal(postLanguageContent{
+		Content: [][]postElement{{
+			{Tag: "text", Text: text},
+			{Tag: "img", ImageKey: imageKey},
+		}},
+	})
 	if err != nil {
 		panic(err)
 	}

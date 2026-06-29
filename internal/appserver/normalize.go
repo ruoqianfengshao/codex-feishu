@@ -982,6 +982,7 @@ func collectDetailItemsFromItems(items []any, turnStatus string) []model.DetailI
 				ID:              itemID,
 				Kind:            model.DetailItemTool,
 				Label:           label,
+				ToolKind:        itemType,
 				Status:          status,
 				FP:              toolFP,
 				CommentaryIndex: commentaryIndex,
@@ -1012,6 +1013,7 @@ func liveToolDetailItems(snapshot ThreadReadSnapshot) []model.DetailItem {
 		ID:     snapshot.LatestToolID,
 		Kind:   model.DetailItemTool,
 		Label:  snapshot.LatestToolLabel,
+		ToolKind: snapshot.LatestToolKind,
 		Status: snapshot.LatestToolStatus,
 		FP:     snapshot.LatestToolFP,
 	}}
@@ -1277,6 +1279,9 @@ func userMessageText(item map[string]any) string {
 		}
 		if text := strings.TrimSpace(stringValue(part["text"], "")); text != "" {
 			if path := extractImagePathFromText(text); path != "" {
+				if caption := strings.TrimSpace(stripImageTagsFromText(text)); caption != "" {
+					parts = append(parts, caption)
+				}
 				parts = append(parts, "[Image: "+path+"]")
 				continue
 			}
@@ -1367,6 +1372,20 @@ func extractImagePathFromText(text string) string {
 		return ""
 	}
 	return strings.TrimSpace(text[start : start+end])
+}
+
+func stripImageTagsFromText(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "<image ") || strings.EqualFold(trimmed, "</image>") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 func stringSliceValue(value any) []string {

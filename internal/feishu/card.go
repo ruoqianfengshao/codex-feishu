@@ -89,6 +89,15 @@ func collapsiblePanelElement(title, content string, expanded bool) map[string]an
 		"header": map[string]any{
 			"title":            markdownElementV2(title),
 			"background_color": "grey",
+			"vertical_align":   "center",
+			"icon": map[string]any{
+				"tag":   "standard_icon",
+				"token": "down-small-ccm_outlined",
+				"color": "",
+				"size":  "16px 16px",
+			},
+			"icon_position":       "right",
+			"icon_expanded_angle": -180,
 		},
 		"border": map[string]any{
 			"color":         "grey",

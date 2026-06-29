@@ -342,6 +342,7 @@ type DetailItem struct {
 	Phase           string `json:"phase,omitempty"`
 	Text            string `json:"text,omitempty"`
 	Label           string `json:"label,omitempty"`
+	ToolKind        string `json:"tool_kind,omitempty"`
 	Status          string `json:"status,omitempty"`
 	Output          string `json:"output,omitempty"`
 	FP              string `json:"fp,omitempty"`

@@ -411,8 +411,11 @@ func TestSyncThreadPanelDoesNotDuplicateFinalAnswerOnRepeatedSync(t *testing.T) 
 		t.Fatalf("message count = %d, want one Codex panel on first sync only; messages=%#v", len(sender.messages), sender.messages)
 	}
 	panelMessage := lastCodexPanelMessage(t, sender.messages)
-	if !strings.Contains(panelMessage.text, "Completed") && !strings.Contains(panelMessage.text, "已完成") {
-		t.Fatalf("panel message = %#v, want completed status", panelMessage)
+	if !strings.Contains(panelMessage.text, "Processed") && !strings.Contains(panelMessage.text, "已处理") {
+		t.Fatalf("panel message = %#v, want processed status", panelMessage)
+	}
+	if strings.Contains(panelMessage.text, "Completed") || strings.Contains(panelMessage.text, "已完成") {
+		t.Fatalf("panel message = %#v, want no raw completed status", panelMessage)
 	}
 	if len(sender.documents) != 0 {
 		t.Fatalf("documents = %#v, want no tool documents for a completed turn without tool output", sender.documents)
@@ -605,7 +608,7 @@ func TestSummaryPanelTreatsInterruptedCommentaryAsInProgress(t *testing.T) {
 			t.Fatalf("summary text contains %q: %q", forbidden, text)
 		}
 	}
-	if !strings.Contains(text, "Processing") || !strings.Contains(text, "Thinking...") || !strings.Contains(text, "Checking the status counters.") {
+	if !strings.Contains(messages[0].CodexStatus, "Processing") || !strings.Contains(text, "Thinking...") || !strings.Contains(text, "Checking the status counters.") {
 		t.Fatalf("summary text = %q, want in-progress status, thinking log, and commentary text", text)
 	}
 }
@@ -620,7 +623,7 @@ func TestSummaryPanelAddsInterruptedToolStatusLog(t *testing.T) {
 		LatestTurnStatus: "interrupted",
 		LatestToolLabel:  "go test ./...",
 		DetailItems: []model.DetailItem{
-			{ID: "tool-1", Kind: model.DetailItemTool, Label: "go test ./...", Status: "inProgress"},
+			{ID: "tool-1", Kind: model.DetailItemTool, ToolKind: "commandExecution", Label: "go test ./...", Status: "inProgress"},
 		},
 	}
 
@@ -630,8 +633,8 @@ func TestSummaryPanelAddsInterruptedToolStatusLog(t *testing.T) {
 		t.Fatalf("len(messages) = %d, want 1", len(messages))
 	}
 	text := messages[0].Text
-	if !strings.Contains(text, "Using tools...") || !strings.Contains(text, "Using tools") {
-		t.Fatalf("summary text = %q, want tool status log and status", text)
+	if !strings.Contains(text, "Ran") || !strings.Contains(text, "go test ./...") {
+		t.Fatalf("summary text = %q, want command action log", text)
 	}
 	for _, forbidden := range []string{"已中断", "interrupted"} {
 		if strings.Contains(text, forbidden) {
@@ -650,7 +653,7 @@ func TestSummaryPanelInterleavesDetailStatusLogs(t *testing.T) {
 		LatestTurnStatus: "interrupted",
 		DetailItems: []model.DetailItem{
 			{ID: "agent-1", Kind: model.DetailItemCommentary, Text: "Inspecting the request.", FP: "agent-1", CommentaryIndex: 1},
-			{ID: "tool-1", Kind: model.DetailItemTool, Label: "rg -n status internal/daemon", Status: "completed", FP: "tool-1", CommentaryIndex: 1},
+			{ID: "tool-1", Kind: model.DetailItemTool, ToolKind: "commandExecution", Label: "rg -n status internal/daemon", Status: "completed", FP: "tool-1", CommentaryIndex: 1},
 			{ID: "agent-2", Kind: model.DetailItemCommentary, Text: "Found the rendering branch.", FP: "agent-2", CommentaryIndex: 2},
 		},
 	}
@@ -663,7 +666,7 @@ func TestSummaryPanelInterleavesDetailStatusLogs(t *testing.T) {
 	text := messages[0].Text
 	firstThinking := strings.Index(text, "Thinking...")
 	firstBody := strings.Index(text, "Inspecting the request.")
-	tooling := strings.Index(text, "Using tools...")
+	tooling := strings.Index(text, "Ran")
 	toolBody := strings.Index(text, "rg -n status internal/daemon")
 	secondThinking := strings.LastIndex(text, "Thinking...")
 	secondBody := strings.Index(text, "Found the rendering branch.")
@@ -672,6 +675,30 @@ func TestSummaryPanelInterleavesDetailStatusLogs(t *testing.T) {
 	}
 	if !(firstThinking < firstBody && firstBody < tooling && tooling < toolBody && toolBody < secondThinking && secondThinking < secondBody) {
 		t.Fatalf("summary text order is wrong: %q", text)
+	}
+}
+
+func TestSummaryPanelShowsFileChangeAsEditedAction(t *testing.T) {
+	t.Parallel()
+
+	thread := model.Thread{ID: "thread-file-change-action", Title: "File change action", ProjectName: "Codex"}
+	snapshot := &appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-file-change-action",
+		LatestTurnStatus: "interrupted",
+		DetailItems: []model.DetailItem{
+			{ID: "file-1", Kind: model.DetailItemTool, ToolKind: "fileChange", Label: "File changed: internal/feishu/card.go", Status: "completed", FP: "file-1"},
+		},
+	}
+
+	service := newTestService(t)
+	messages := service.renderSummaryPanelMarkdown(context.Background(), thread, snapshot, summaryPanelEntries(snapshot), nil)
+	if len(messages) != 1 {
+		t.Fatalf("len(messages) = %d, want 1", len(messages))
+	}
+	text := messages[0].Text
+	if !strings.Contains(text, "Edited") || !strings.Contains(text, "internal/feishu/card.go") || strings.Contains(text, "File changed:") {
+		t.Fatalf("summary text = %q, want edited file action without raw prefix", text)
 	}
 }
 
@@ -693,7 +720,7 @@ func TestSummaryPanelAddsInterruptedProgressStatusLog(t *testing.T) {
 		t.Fatalf("len(messages) = %d, want 1", len(messages))
 	}
 	text := messages[0].Text
-	if !strings.Contains(text, "Processing...") || !strings.Contains(text, "Processing") {
+	if !strings.Contains(text, "Processing...") || !strings.Contains(messages[0].CodexStatus, "Processing") {
 		t.Fatalf("summary text = %q, want processing status log and status", text)
 	}
 	for _, forbidden := range []string{"已中断", "interrupted"} {
@@ -758,6 +785,10 @@ func TestSyncThreadPanelDoesNotUseDocumentDeliveryForToolOutput(t *testing.T) {
 		LatestToolStatus: "completed",
 		LatestToolOutput: "v22.22.2\n",
 		LatestToolFP:     "tool-fp-1",
+		DetailItems: []model.DetailItem{
+			{ID: "tool-1", Kind: model.DetailItemTool, ToolKind: "commandExecution", Label: "pwsh -Command node -v", Status: "completed", FP: "tool-fp-1"},
+			{ID: "tool-1:output", Kind: model.DetailItemOutput, Output: "v22.22.2\n", FP: "tool-output-fp-1"},
+		},
 	}
 	if err := service.store.UpsertThread(ctx, thread); err != nil {
 		t.Fatalf("UpsertThread failed: %v", err)
@@ -771,14 +802,11 @@ func TestSyncThreadPanelDoesNotUseDocumentDeliveryForToolOutput(t *testing.T) {
 	if len(sender.documents) != 0 {
 		t.Fatalf("documents = %#v, want no SendDocument path for tool output", sender.documents)
 	}
-	if len(sender.messages) != 3 {
-		t.Fatalf("message count = %d, want 3 trio messages only", len(sender.messages))
+	if len(sender.messages) != 1 {
+		t.Fatalf("message count = %d, want one Codex panel only", len(sender.messages))
 	}
-	if got := sender.messages[1].text; strings.HasPrefix(got, "<pre><code>[Tool]") || !strings.Contains(got, "[Shell:pwsh (PowerShell)]\n<pre><code class=\"language-powershell\">node -v</code></pre>") {
-		t.Fatalf("tool message = %q, want shell line and command-only HTML code block", got)
-	}
-	if got := sender.messages[2].text; strings.HasPrefix(got, "<pre><code>[Output]") || !strings.Contains(got, "<pre><code>v22.22.2</code></pre>") {
-		t.Fatalf("output message = %q, want plain header and output-only HTML code block", got)
+	if sender.messages[0].style != model.MessageStyleCodexPanel || !strings.Contains(sender.messages[0].text, "pwsh -Command node -v") {
+		t.Fatalf("message = %#v, want tool details folded into Codex panel", sender.messages[0])
 	}
 }
 
@@ -1227,6 +1255,103 @@ func TestRenderDesktopUserNoticeUsesDesktopStyleWithoutVisualHeader(t *testing.T
 	}
 }
 
+func TestRenderDesktopUserNoticeHidesImageAttachmentPaths(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	thread := model.Thread{
+		ID:          "thread-desktop-image-style",
+		Title:       "Desktop image style",
+		ProjectName: "Codex",
+	}
+	snapshot := &appserver.ThreadReadSnapshot{
+		Thread:       thread,
+		LatestTurnID: "turn-desktop-image-style",
+		LatestUserMessageText: "# Files mentioned by the user:\n\n" +
+			"## codex-clipboard-a1250494.png: /var/folders/8l/codex-clipboard-a1250494.png\n\n" +
+			"## My request for Codex:\n" +
+			"这个在飞书上显示的还不对\n" +
+			"[Image: /var/folders/8l/codex-clipboard-a1250494.png]",
+		LatestUserMessageImagePath: "/var/folders/8l/codex-clipboard-a1250494.png",
+		LatestUserMessageFP:        "user-image-style-fp",
+	}
+
+	messages := service.renderUserRequestNoticeCard(context.Background(), thread, snapshot, model.PanelSourceExplicit)
+
+	if len(messages) != 1 {
+		t.Fatalf("messages = %#v, want one", messages)
+	}
+	if messages[0].Style != model.MessageStyleDesktopUser {
+		t.Fatalf("style = %q, want desktop user style", messages[0].Style)
+	}
+	if messages[0].ImagePath != snapshot.LatestUserMessageImagePath {
+		t.Fatalf("image path = %q, want attached image path", messages[0].ImagePath)
+	}
+	for _, forbidden := range []string{"Files mentioned by the user", "My request for Codex", "codex-clipboard-a1250494.png:", "[Image:", "/var/folders/8l/"} {
+		if strings.Contains(messages[0].Text, forbidden) {
+			t.Fatalf("message text = %q, want no attachment metadata %q", messages[0].Text, forbidden)
+		}
+	}
+	if !strings.Contains(messages[0].Text, "这个在飞书上显示的还不对") {
+		t.Fatalf("message text = %q, want real user request", messages[0].Text)
+	}
+}
+
+func TestRenderDesktopUserNoticeImageOnlySendsImageWithoutPathText(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	thread := model.Thread{ID: "thread-desktop-image-only", Title: "Desktop image only", ProjectName: "Codex"}
+	snapshot := &appserver.ThreadReadSnapshot{
+		Thread:                     thread,
+		LatestTurnID:               "turn-desktop-image-only",
+		LatestUserMessageText:      "[Image: /tmp/codex-clipboard.png]",
+		LatestUserMessageImagePath: "/tmp/codex-clipboard.png",
+		LatestUserMessageFP:        "user-image-only-fp",
+	}
+
+	messages := service.renderUserRequestNoticeCard(context.Background(), thread, snapshot, model.PanelSourceExplicit)
+
+	if len(messages) != 1 {
+		t.Fatalf("messages = %#v, want one image message", messages)
+	}
+	if strings.TrimSpace(messages[0].Text) != "" {
+		t.Fatalf("message text = %q, want no image path text", messages[0].Text)
+	}
+	if messages[0].ImagePath != snapshot.LatestUserMessageImagePath {
+		t.Fatalf("image path = %q, want attached image path", messages[0].ImagePath)
+	}
+	if messages[0].Style != model.MessageStyleDesktopUser {
+		t.Fatalf("style = %q, want desktop user style", messages[0].Style)
+	}
+}
+
+func TestRenderDesktopUserNoticeHidesImageBridgePrompt(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	thread := model.Thread{ID: "thread-desktop-image-bridge", Title: "Desktop image bridge", ProjectName: "Codex"}
+	snapshot := &appserver.ThreadReadSnapshot{
+		Thread:                     thread,
+		LatestTurnID:               "turn-desktop-image-bridge",
+		LatestUserMessageText:      "请读取并分析这张图片。\n[Image: /tmp/feishu-image.jpg]",
+		LatestUserMessageImagePath: "/tmp/feishu-image.jpg",
+		LatestUserMessageFP:        "user-image-bridge-fp",
+	}
+
+	messages := service.renderUserRequestNoticeCard(context.Background(), thread, snapshot, model.PanelSourceExplicit)
+
+	if len(messages) != 1 {
+		t.Fatalf("messages = %#v, want one image message", messages)
+	}
+	if strings.TrimSpace(messages[0].Text) != "" {
+		t.Fatalf("message text = %q, want bridge prompt hidden", messages[0].Text)
+	}
+	if messages[0].ImagePath != snapshot.LatestUserMessageImagePath {
+		t.Fatalf("image path = %q, want attached image path", messages[0].ImagePath)
+	}
+}
+
 func TestFeishuThreadTopicSenderRoutesPanelMessagesIntoThread(t *testing.T) {
 	t.Parallel()
 
@@ -1562,8 +1687,11 @@ func TestFeishuInterruptedFinalAnswerRendersFinalCard(t *testing.T) {
 			t.Fatalf("final text contains %q: %q", forbidden, final.text)
 		}
 	}
-	if !strings.Contains(final.text, "已完成") && !strings.Contains(final.text, "Completed") {
-		t.Fatalf("final text = %q, want completed display status", final.text)
+	if !strings.Contains(final.text, "已处理") && !strings.Contains(final.text, "Processed") {
+		t.Fatalf("final text = %q, want processed display status", final.text)
+	}
+	if strings.Contains(final.text, "已完成") || strings.Contains(final.text, "Completed") {
+		t.Fatalf("final text = %q, want no raw completed status", final.text)
 	}
 }
 
@@ -1951,11 +2079,11 @@ func TestRenderSummaryPanelShowsActiveRunElapsedTimeAtBottom(t *testing.T) {
 	if !strings.Contains(text, "No agent messages yet.") {
 		t.Fatalf("rendered summary = %q, want empty commentary state", text)
 	}
-	if !strings.Contains(text, "Run active for: 30s") {
-		t.Fatalf("rendered summary = %q, want active run elapsed time", text)
+	if !strings.Contains(messages[0].CodexStatus, "Processing 30s") {
+		t.Fatalf("codex status = %q, want active run elapsed time", messages[0].CodexStatus)
 	}
-	if !strings.HasSuffix(strings.TrimSpace(text), "Run active for: 30s") {
-		t.Fatalf("rendered summary = %q, want run timing footer", text)
+	if strings.Contains(text, "Run active for:") {
+		t.Fatalf("rendered summary = %q, want no run timing footer in progress body", text)
 	}
 }
 
