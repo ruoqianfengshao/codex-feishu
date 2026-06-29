@@ -706,7 +706,6 @@ func (b *Bot) handleMessageEvent(ctx context.Context, event *larkim.P2MessageRec
 	openChatID := value(message.ChatId)
 	openMessageID := value(message.MessageId)
 	openUserID := senderOpenID(event.Event.Sender)
-	b.logInboundMessageEvent(message, openChatID, openMessageID, openUserID)
 	text := parseTextContent(value(message.MessageType), value(message.Content))
 	if text == "" {
 		var err error
@@ -977,26 +976,6 @@ func (b *Bot) logInboundMessage(message *larkim.EventMessage, chatID, messageID,
 		safeIDForLog(value(message.RootId)),
 		len([]rune(text)),
 		shortHashForLog(text),
-	)
-}
-
-func (b *Bot) logInboundMessageEvent(message *larkim.EventMessage, openChatID, openMessageID, openUserID string) {
-	if b == nil || b.logger == nil || message == nil {
-		return
-	}
-	content := value(message.Content)
-	b.logger.Printf(
-		"feishu inbound event: open_chat=%s open_message=%s open_user=%s chat_type=%s message_type=%s parent=%s root=%s thread=%s content_len=%d content_sha256=%s",
-		safeIDForLog(openChatID),
-		safeIDForLog(openMessageID),
-		safeIDForLog(openUserID),
-		strings.TrimSpace(value(message.ChatType)),
-		strings.TrimSpace(value(message.MessageType)),
-		safeIDForLog(value(message.ParentId)),
-		safeIDForLog(value(message.RootId)),
-		safeIDForLog(value(message.ThreadId)),
-		len([]rune(content)),
-		shortHashForLog(content),
 	)
 }
 

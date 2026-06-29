@@ -1511,7 +1511,7 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 	case "/start":
 		return s.workspaceOverview(ctx)
 	case "/help":
-		return &DirectResponse{Text: s.t(ctx, "命令：\n/start\n/help\n/chats [数量|搜索]\n/projects\n/new <提示词>\n/show <thread>\n/reply [--plan] <thread> <文本>\n/plan <文本>\n/plan <thread_id> <文本>\n/goal <目标>\n/goal clear\n/setting\n/status\n/repair\n/stop [thread]\n/approve <request_id>\n/deny <request_id>", "Commands:\n/start\n/help\n/chats [limit|search]\n/projects\n/new <prompt>\n/show <thread>\n/reply [--plan] <thread> <text>\n/plan <text>\n/plan <thread_id> <text>\n/goal <goal>\n/goal clear\n/setting\n/status\n/repair\n/stop [thread]\n/approve <request_id>\n/deny <request_id>")}, nil
+		return &DirectResponse{Text: s.t(ctx, "命令：\n/help\n/chats [数量|搜索]\n/projects\n/new <提示词>\n/reply [--plan] <thread> <文本>\n/plan <文本>\n/plan <thread_id> <文本>\n/goal <目标>\n/goal clear\n/setting\n/status\n/repair\n/stop [thread]", "Commands:\n/help\n/chats [limit|search]\n/projects\n/new <prompt>\n/reply [--plan] <thread> <text>\n/plan <text>\n/plan <thread_id> <text>\n/goal <goal>\n/goal clear\n/setting\n/status\n/repair\n/stop [thread]")}, nil
 	case "/status":
 		response, err := s.StatusSnapshot(ctx)
 		if err != nil {

@@ -4813,11 +4813,18 @@ func TestHelpHidesDefaultModeFallback(t *testing.T) {
 	if response == nil {
 		t.Fatal("handleCommand(/help) returned nil response")
 	}
-	if strings.Contains(response.Text, "/default") || strings.Contains(response.Text, "--default") {
-		t.Fatalf("/help text exposes hidden default fallback:\n%s", response.Text)
+	for _, hidden := range []string{"/default", "--default", "/start", "/show", "/approve", "/deny"} {
+		if strings.Contains(response.Text, hidden) {
+			t.Fatalf("/help text exposes hidden command %q:\n%s", hidden, response.Text)
+		}
 	}
 	if !strings.Contains(response.Text, "/plan") || !strings.Contains(response.Text, "/reply [--plan]") {
 		t.Fatalf("/help text = %q, want public plan/reply commands", response.Text)
+	}
+	for _, visible := range []string{"/chats", "/projects", "/new", "/goal", "/setting", "/status", "/repair", "/stop"} {
+		if !strings.Contains(response.Text, visible) {
+			t.Fatalf("/help text = %q, want visible command %s", response.Text, visible)
+		}
 	}
 }
 
@@ -5039,6 +5046,40 @@ func TestSummaryPanelGetThreadIDButtonSendsCopyableIDs(t *testing.T) {
 	}
 	if response.ThreadID != thread.ID || response.TurnID != "summary-turn-full-id" {
 		t.Fatalf("response route = thread %q turn %q, want full ids", response.ThreadID, response.TurnID)
+	}
+}
+
+func TestRunningSummaryPanelDoesNotShowSteerButton(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "summary-thread-no-steer",
+		Title:       "Summary no steer",
+		ProjectName: "Codex",
+		Status:      "active",
+	}
+	snapshot := &appserver.ThreadReadSnapshot{
+		Thread:             thread,
+		LatestTurnID:       "summary-turn-no-steer",
+		LatestTurnStatus:   "inProgress",
+		LatestProgressText: "Working",
+		LatestProgressFP:   "progress-fp",
+	}
+
+	_, buttons, _ := service.renderSummaryPanel(ctx, thread, snapshot, nil)
+	if token := callbackTokenForButton(buttons, "Steer"); token != "" {
+		t.Fatalf("summary buttons = %#v, want no Steer button", buttons)
+	}
+	if token := callbackTokenForButton(buttons, "引导"); token != "" {
+		t.Fatalf("summary buttons = %#v, want no 引导 button", buttons)
+	}
+	if token := callbackTokenForButton(buttons, "Stop"); token == "" {
+		t.Fatalf("summary buttons = %#v, want Stop button", buttons)
+	}
+	if token := callbackTokenForButton(buttons, "Show context"); token == "" {
+		t.Fatalf("summary buttons = %#v, want Show context button", buttons)
 	}
 }
 
