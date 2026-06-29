@@ -12,7 +12,7 @@ import (
 
 	"github.com/mideco-tech/codex-tg/internal/appserver"
 	"github.com/mideco-tech/codex-tg/internal/model"
-	"github.com/mideco-tech/codex-tg/internal/tgformat"
+	"github.com/mideco-tech/codex-tg/internal/msgformat"
 )
 
 const (
@@ -522,7 +522,7 @@ func (s *Service) sendUserRequestNotice(ctx context.Context, sender Sender, targ
 }
 
 func (s *Service) renderUserRequestNoticeCard(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, renderSourceMode string) []model.RenderedMessage {
-	messages := tgformat.RenderMarkdownWithHeader(s.visualHeader(ctx, s.t(ctx, "用户", "User"), thread, snapshot.LatestTurnID), snapshot.LatestUserMessageText)
+	messages := msgformat.RenderMarkdownWithHeader(s.visualHeader(ctx, s.t(ctx, "用户", "User"), thread, snapshot.LatestTurnID), snapshot.LatestUserMessageText)
 	if len(messages) > 0 && strings.TrimSpace(snapshot.LatestUserMessageImagePath) != "" {
 		messages[0].ImagePath = strings.TrimSpace(snapshot.LatestUserMessageImagePath)
 	}
@@ -739,11 +739,11 @@ func (s *Service) renderSummaryPanel(ctx context.Context, thread model.Thread, s
 		rendered := s.renderSummaryPanelMarkdownAt(ctx, thread, snapshot, entries, pending, now)
 		if len(rendered) <= 1 {
 			message := firstRenderedMessage(rendered)
-			return message, buttons, hashStrings(tgformat.HashRendered(message), flattenButtonSpecs(buttons))
+			return message, buttons, hashStrings(msgformat.HashRendered(message), flattenButtonSpecs(buttons))
 		}
 		if len(entries) == 0 {
 			message := firstRenderedMessage(rendered)
-			return message, buttons, hashStrings(tgformat.HashRendered(message), flattenButtonSpecs(buttons))
+			return message, buttons, hashStrings(msgformat.HashRendered(message), flattenButtonSpecs(buttons))
 		}
 		entries = entries[:len(entries)-1]
 	}
@@ -786,16 +786,16 @@ func (s *Service) renderSummaryPanelMarkdown(ctx context.Context, thread model.T
 func (s *Service) renderSummaryPanelMarkdownAt(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, entries []appserver.AgentMessageEntry, pending *model.PendingApproval, now time.Time) []model.RenderedMessage {
 	pending = pendingForSnapshot(pending, snapshot)
 	status := cardDisplayStatus(snapshot, thread)
-	segments := []tgformat.Segment{tgformat.Plain(strings.Join([]string{
+	segments := []msgformat.Segment{msgformat.Plain(strings.Join([]string{
 		s.visualHeader(ctx, s.t(ctx, "进展", "Progress"), thread, snapshot.LatestTurnID),
 		fmt.Sprintf("%s: %s", s.t(ctx, "状态", "Status"), readableProgressStatusLang(s.botLanguage(ctx), status)),
 	}, "\n"))}
 	if detailSegments, ok := s.summaryDetailTimelineSegments(ctx, snapshot); ok {
 		segments = append(segments, detailSegments...)
 	} else if statusLogText := s.interruptedStatusLogText(ctx, snapshot); statusLogText != "" {
-		segments = append(segments, tgformat.Plain("\n\n"), tgformat.Markdown(statusLogText))
+		segments = append(segments, msgformat.Plain("\n\n"), msgformat.Markdown(statusLogText))
 	} else if len(entries) == 0 {
-		segments = append(segments, tgformat.Plain(s.t(ctx, "\n\n还没有 agent 消息。", "\n\nNo agent messages yet.")))
+		segments = append(segments, msgformat.Plain(s.t(ctx, "\n\n还没有 agent 消息。", "\n\nNo agent messages yet.")))
 	} else {
 		displayEntries := chronologicalAgentEntries(entries)
 		for _, message := range displayEntries {
@@ -805,31 +805,31 @@ func (s *Service) renderSummaryPanelMarkdownAt(ctx context.Context, thread model
 			}
 			segments = append(segments,
 				summaryAgentPrefix(message),
-				tgformat.Markdown(text),
+				msgformat.Markdown(text),
 			)
 		}
 	}
 	if pending != nil {
 		switch pending.PromptKind {
 		case "approval":
-			segments = append(segments, tgformat.Plain(s.t(ctx, "\n\n[审批]\n", "\n\n[Approval]\n")), tgformat.Markdown(strings.TrimSpace(cleanNilLiteral(pending.Question))))
+			segments = append(segments, msgformat.Plain(s.t(ctx, "\n\n[审批]\n", "\n\n[Approval]\n")), msgformat.Markdown(strings.TrimSpace(cleanNilLiteral(pending.Question))))
 		case "user_input":
-			segments = append(segments, tgformat.Plain(s.t(ctx, "\n\n[问题]\n", "\n\n[Question]\n")), tgformat.Markdown(strings.TrimSpace(cleanNilLiteral(pending.Question))))
+			segments = append(segments, msgformat.Plain(s.t(ctx, "\n\n[问题]\n", "\n\n[Question]\n")), msgformat.Markdown(strings.TrimSpace(cleanNilLiteral(pending.Question))))
 		}
 	} else if snapshot != nil && snapshot.PlanPrompt != nil {
-		segments = append(segments, tgformat.Plain(s.t(ctx, "\n\n[Plan]\n等待输入。请回复 [Plan] 消息或使用 /reply。", "\n\n[Plan]\nWaiting for input. Reply to the [Plan] message or use /reply.")))
+		segments = append(segments, msgformat.Plain(s.t(ctx, "\n\n[Plan]\n等待输入。请回复 [Plan] 消息或使用 /reply。", "\n\n[Plan]\nWaiting for input. Reply to the [Plan] message or use /reply.")))
 	}
 	if line := s.runTimingFooter(ctx, snapshot, now); line != "" {
-		segments = append(segments, tgformat.Plain("\n\n"+line))
+		segments = append(segments, msgformat.Plain("\n\n"+line))
 	}
-	return tgformat.RenderSegments(segments, tgformat.TelegramMessageLimit)
+	return msgformat.RenderSegments(segments, msgformat.MessageLimit)
 }
 
-func (s *Service) summaryDetailTimelineSegments(ctx context.Context, snapshot *appserver.ThreadReadSnapshot) ([]tgformat.Segment, bool) {
+func (s *Service) summaryDetailTimelineSegments(ctx context.Context, snapshot *appserver.ThreadReadSnapshot) ([]msgformat.Segment, bool) {
 	if snapshot == nil || len(snapshot.DetailItems) == 0 {
 		return nil, false
 	}
-	segments := []tgformat.Segment{}
+	segments := []msgformat.Segment{}
 	for _, item := range snapshot.DetailItems {
 		switch item.Kind {
 		case model.DetailItemCommentary:
@@ -858,12 +858,12 @@ func (s *Service) summaryDetailTimelineSegments(ctx context.Context, snapshot *a
 	return nil, false
 }
 
-func appendStatusTimelineBlock(segments []tgformat.Segment, status, body string) []tgformat.Segment {
+func appendStatusTimelineBlock(segments []msgformat.Segment, status, body string) []msgformat.Segment {
 	return append(segments,
-		tgformat.Plain("\n\n"),
-		tgformat.Markdown(status),
-		tgformat.Plain("\n"),
-		tgformat.Markdown(body),
+		msgformat.Plain("\n\n"),
+		msgformat.Markdown(status),
+		msgformat.Plain("\n"),
+		msgformat.Markdown(body),
 	)
 }
 
@@ -979,7 +979,7 @@ func (s *Service) renderPlanPromptCard(ctx context.Context, thread model.Thread,
 	body := strings.TrimSpace(prompt.Question) + "\n\n" + fmt.Sprintf(s.t(ctx, "回复这条消息，或使用 /reply %s <文本>。", "Reply to this message or use /reply %s <text>."), thread.ID)
 	message := renderSingleMarkdownCard(header, body)
 	buttons := s.planPromptButtons(ctx, prompt)
-	return message, buttons, hashStrings(tgformat.HashRendered(message), flattenButtonSpecs(buttons))
+	return message, buttons, hashStrings(msgformat.HashRendered(message), flattenButtonSpecs(buttons))
 }
 
 func (s *Service) planPromptButtons(ctx context.Context, prompt *model.PlanPrompt) [][]model.ButtonSpec {
@@ -1421,13 +1421,13 @@ func summaryAgentLabel(entry appserver.AgentMessageEntry) string {
 	}
 }
 
-func summaryAgentPrefix(entry appserver.AgentMessageEntry) tgformat.Segment {
+func summaryAgentPrefix(entry appserver.AgentMessageEntry) msgformat.Segment {
 	phase := strings.ToLower(cleanPayloadString(entry.Phase))
 	switch phase {
 	case "", "message", "commentary":
-		return tgformat.Plain("\n\n")
+		return msgformat.Plain("\n\n")
 	default:
-		return tgformat.Plain(fmt.Sprintf("\n\n%s\n", summaryAgentLabel(entry)))
+		return msgformat.Plain(fmt.Sprintf("\n\n%s\n", summaryAgentLabel(entry)))
 	}
 }
 

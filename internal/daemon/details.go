@@ -9,7 +9,7 @@ import (
 
 	"github.com/mideco-tech/codex-tg/internal/appserver"
 	"github.com/mideco-tech/codex-tg/internal/model"
-	"github.com/mideco-tech/codex-tg/internal/tgformat"
+	"github.com/mideco-tech/codex-tg/internal/msgformat"
 )
 
 const (
@@ -107,7 +107,7 @@ func (s *Service) renderFinalCard(ctx context.Context, panelID int64, thread mod
 		body += line
 	}
 	message := renderSingleMarkdownCard(header, body)
-	return message, buttons, hashStrings(tgformat.HashRendered(message), flattenButtonSpecs(buttons))
+	return message, buttons, hashStrings(msgformat.HashRendered(message), flattenButtonSpecs(buttons))
 }
 
 func terminalCardTextAndFP(snapshot *appserver.ThreadReadSnapshot) (string, string) {
@@ -151,7 +151,7 @@ func renderSingleMarkdownCard(header, markdown string) model.RenderedMessage {
 		if truncated {
 			candidate = strings.TrimSpace(candidate) + "\n\n[Trimmed.]"
 		}
-		messages := tgformat.RenderMarkdownWithHeader(header, candidate)
+		messages := msgformat.RenderMarkdownWithHeader(header, candidate)
 		if len(messages) <= 1 {
 			return firstRenderedMessage(messages)
 		}
@@ -166,7 +166,7 @@ func renderSingleMarkdownCard(header, markdown string) model.RenderedMessage {
 		body = string(runes[:next])
 		truncated = true
 	}
-	text := trimOutputTail(strings.TrimSpace(header+"\n\n"+body+"\n\n[Trimmed.]"), tgformat.TelegramMessageLimit-32)
+	text := trimOutputTail(strings.TrimSpace(header+"\n\n"+body+"\n\n[Trimmed.]"), msgformat.MessageLimit-32)
 	return model.RenderedMessage{Text: text}
 }
 
@@ -290,7 +290,7 @@ func (s *Service) renderDetailsCard(ctx context.Context, panelID int64, thread m
 		totalPages = 1
 	}
 	state.Page = clampInt(state.Page, 0, totalPages-1)
-	segments := []tgformat.Segment{tgformat.Plain(strings.Join([]string{
+	segments := []msgformat.Segment{msgformat.Plain(strings.Join([]string{
 		s.visualHeader(ctx, s.t(ctx, "详情", "Details"), thread, snapshot.LatestTurnID),
 		fmt.Sprintf("%s: %s", s.t(ctx, "状态", "Status"), readableProgressStatusLang(s.botLanguage(ctx), cardDisplayStatus(snapshot, thread))),
 	}, "\n"))}
@@ -298,7 +298,7 @@ func (s *Service) renderDetailsCard(ctx context.Context, panelID int64, thread m
 	if state.ToolMode {
 		index := clampInt(state.CommentaryIndex, 1, maxInt(1, len(sections)))
 		if len(sections) == 0 {
-			segments = append(segments, tgformat.Plain(s.t(ctx, "\n\n这一轮没有详情条目。", "\n\nNo detail entries for this turn.")))
+			segments = append(segments, msgformat.Plain(s.t(ctx, "\n\n这一轮没有详情条目。", "\n\nNo detail entries for this turn.")))
 		} else {
 			section := sections[index-1]
 			segments = appendDetailSectionHeaderSegments(segments, section)
@@ -306,30 +306,30 @@ func (s *Service) renderDetailsCard(ctx context.Context, panelID int64, thread m
 		}
 	} else {
 		if len(sections) == 0 {
-			segments = append(segments, tgformat.Plain(s.t(ctx, "\n\n这一轮没有详情条目。", "\n\nNo detail entries for this turn.")))
+			segments = append(segments, msgformat.Plain(s.t(ctx, "\n\n这一轮没有详情条目。", "\n\nNo detail entries for this turn.")))
 		} else {
 			start := state.Page * detailsPageSize
 			end := minInt(start+detailsPageSize, len(sections))
 			for index := start; index < end; index++ {
 				segments = appendDetailSectionSummarySegments(segments, sections[index], detailsItemsForSection(snapshot, sections[index]))
 			}
-			segments = append(segments, tgformat.Plain(fmt.Sprintf(s.t(ctx, "\n\n第 %d/%d 页", "\n\nPage %d/%d"), state.Page+1, totalPages)))
+			segments = append(segments, msgformat.Plain(fmt.Sprintf(s.t(ctx, "\n\n第 %d/%d 页", "\n\nPage %d/%d"), state.Page+1, totalPages)))
 		}
 	}
-	message := firstRenderedMessage(tgformat.RenderSegments(segments, tgformat.TelegramMessageLimit))
+	message := firstRenderedMessage(msgformat.RenderSegments(segments, msgformat.MessageLimit))
 	buttons := s.detailsButtons(ctx, panelID, thread.ID, snapshot.LatestTurnID, state, len(sections))
-	return message, buttons, hashStrings(tgformat.HashRendered(message), flattenButtonSpecs(buttons))
+	return message, buttons, hashStrings(msgformat.HashRendered(message), flattenButtonSpecs(buttons))
 }
 
-func appendDetailSectionHeaderSegments(segments []tgformat.Segment, section detailSection) []tgformat.Segment {
-	segments = append(segments, tgformat.Plain("\n\n"+section.Title))
+func appendDetailSectionHeaderSegments(segments []msgformat.Segment, section detailSection) []msgformat.Segment {
+	segments = append(segments, msgformat.Plain("\n\n"+section.Title))
 	if text := strings.TrimSpace(cleanNilLiteral(section.Text)); text != "" {
-		segments = append(segments, tgformat.Plain("\n"), tgformat.Markdown(text))
+		segments = append(segments, msgformat.Plain("\n"), msgformat.Markdown(text))
 	}
 	return segments
 }
 
-func appendDetailSectionSummarySegments(segments []tgformat.Segment, section detailSection, items []model.DetailItem) []tgformat.Segment {
+func appendDetailSectionSummarySegments(segments []msgformat.Segment, section detailSection, items []model.DetailItem) []msgformat.Segment {
 	segments = appendDetailSectionHeaderSegments(segments, section)
 	if section.ToolOnly {
 		segments = appendToolDetailSegments(segments, items, detailsToolMaxBytes)
@@ -337,9 +337,9 @@ func appendDetailSectionSummarySegments(segments []tgformat.Segment, section det
 	return segments
 }
 
-func appendToolDetailSegments(segments []tgformat.Segment, items []model.DetailItem, quota int) []tgformat.Segment {
+func appendToolDetailSegments(segments []msgformat.Segment, items []model.DetailItem, quota int) []msgformat.Segment {
 	if len(items) == 0 {
-		return append(segments, tgformat.Plain("\n\nNo related tool/output entries for this commentary."))
+		return append(segments, msgformat.Plain("\n\nNo related tool/output entries for this commentary."))
 	}
 	perItem := quota / len(items)
 	if perItem < 300 {
@@ -352,12 +352,12 @@ func appendToolDetailSegments(segments []tgformat.Segment, items []model.DetailI
 			if label == "" {
 				label = strings.TrimSpace(cleanNilLiteral(item.Text))
 			}
-			segments = append(segments, tgformat.Plain("\n\n[Tool]\n"))
+			segments = append(segments, msgformat.Plain("\n\n[Tool]\n"))
 			if label != "" {
-				segments = append(segments, tgformat.Markdown("```\n"+trimHead(label, perItem)+"\n```"))
+				segments = append(segments, msgformat.Markdown("```\n"+trimHead(label, perItem)+"\n```"))
 			}
 			if status := strings.TrimSpace(item.Status); status != "" {
-				segments = append(segments, tgformat.Plain("\nStatus: "+status))
+				segments = append(segments, msgformat.Plain("\nStatus: "+status))
 			}
 		case model.DetailItemOutput:
 			output := strings.TrimSpace(cleanNilLiteral(item.Output))
@@ -365,7 +365,7 @@ func appendToolDetailSegments(segments []tgformat.Segment, items []model.DetailI
 				output = strings.TrimSpace(cleanNilLiteral(item.Text))
 			}
 			if output != "" {
-				segments = append(segments, tgformat.Plain("\n\n[Output]\n"), tgformat.Markdown("```\n"+trimOutputTail(output, perItem)+"\n```"))
+				segments = append(segments, msgformat.Plain("\n\n[Output]\n"), msgformat.Markdown("```\n"+trimOutputTail(output, perItem)+"\n```"))
 			}
 		}
 	}

@@ -54,16 +54,16 @@ Verification:
 
 ## Phase 4: Rendering
 
-- [ ] Remove Telegram Bot API concepts from render code.
-- [ ] Decide whether `internal/tgformat` is still needed.
-- [ ] If Markdown rendering is still needed for Feishu, rename `tgformat` to a neutral package.
-- [ ] If it is not needed, delete `internal/tgformat`.
-- [ ] Ensure Feishu-facing cards use Feishu JSON/card rendering paths.
+- [x] Remove Telegram Bot API concepts from render code.
+- [x] Decide whether `internal/tgformat` is still needed.
+- [x] If Markdown rendering is still needed for Feishu, rename `tgformat` to a neutral package.
+- [x] If it is not needed, delete `internal/tgformat`.
+- [x] Ensure Feishu-facing cards use Feishu JSON/card rendering paths.
 
 Verification:
 
-- [ ] `rg -n "tgformat|Telegram entity|Bot API|telegram" internal`
-- [ ] `go test ./internal/feishu ./internal/daemon`
+- [x] `rg -n "tgformat|Telegram entity|Bot API|telegramify|telegram" internal/daemon internal/feishu internal/model internal/msgformat go.mod go.sum`
+- [x] `go test ./internal/msgformat ./internal/daemon ./internal/feishu ./internal/model ./internal/storage`
 
 ## Phase 5: Tests
 

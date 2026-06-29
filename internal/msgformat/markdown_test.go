@@ -1,4 +1,4 @@
-package tgformat
+package msgformat
 
 import (
 	"strings"
