@@ -18,6 +18,8 @@ import (
 const (
 	threadSummaryLimit = 3
 	outputMessageLimit = 3900
+	summaryLogLimit    = msgformat.MessageLimit
+	summaryLogMaxItems = 30
 	steerTTL           = 10 * time.Minute
 )
 
@@ -824,7 +826,6 @@ func (s *Service) renderSummaryPanel(ctx context.Context, thread model.Thread, s
 	if !isTerminalStatus(cardDisplayStatus(snapshot, thread)) {
 		buttons = append(buttons, []model.ButtonSpec{
 			s.callbackButton(ctx, s.t(ctx, "停止", "Stop"), "stop_turn", thread.ID, snapshot.LatestTurnID, "", nil),
-			s.callbackButton(ctx, s.t(ctx, "查看上下文", "Show context"), "show_context", thread.ID, snapshot.LatestTurnID, "", nil),
 		})
 		if !compactFeishuTopicCard(ctx) {
 			buttons = append(buttons, []model.ButtonSpec{
@@ -832,6 +833,11 @@ func (s *Service) renderSummaryPanel(ctx context.Context, thread model.Thread, s
 				s.callbackButton(ctx, s.t(ctx, "获取线程 ID", "Get thread id"), "get_thread_id", thread.ID, snapshot.LatestTurnID, "", nil),
 			})
 		}
+	}
+	if s.summaryLogIsTruncated(ctx, snapshot) && isTerminalStatus(cardDisplayStatus(snapshot, thread)) {
+		buttons = append(buttons, []model.ButtonSpec{
+			s.callbackButton(ctx, s.t(ctx, "下载完整日志", "Download full log"), "full_log_file", thread.ID, snapshot.LatestTurnID, "", nil),
+		})
 	}
 	if pending != nil {
 		switch pending.PromptKind {
@@ -937,16 +943,29 @@ func (s *Service) renderSummaryPanelMarkdownAt(ctx context.Context, thread model
 	} else if snapshot != nil && snapshot.PlanPrompt != nil {
 		segments = append(segments, msgformat.Plain(s.t(ctx, "\n\n[Plan]\n等待输入。请回复 [Plan] 消息或使用 /reply。", "\n\n[Plan]\nWaiting for input. Reply to the [Plan] message or use /reply.")))
 	}
-	progress := strings.TrimSpace(firstRenderedMessage(msgformat.RenderSegments(progressSegments, msgformat.MessageLimit)).Text)
+	progress := ""
+	progressTruncated := false
+	if detailProgress, ok := s.summaryLogFromRecentDetails(ctx, snapshot); ok {
+		progress = detailProgress
+		progressTruncated = s.summaryLogIsTruncated(ctx, snapshot)
+	} else {
+		progressFull := strings.TrimSpace(firstRenderedMessage(msgformat.RenderSegments(progressSegments, maxInt(summaryLogLimit*8, summaryLogLimit))).Text)
+		progressTruncated = utf16LenLocal(progressFull) > summaryLogLimit
+		progress = s.summaryLogVisibleText(ctx, progressFull, snapshot)
+	}
 	finalText, _ := terminalCardTextAndFP(snapshot)
 	finalText = strings.TrimSpace(finalText)
 	if finalText != "" && isTerminalStatus(status) {
 		segments = append(segments, msgformat.Markdown(finalText))
 	}
 	displaySegments := []msgformat.Segment{msgformat.Markdown(statusText)}
-	if len(progressSegments) > 0 {
+	if progress != "" {
 		displaySegments = append(displaySegments, msgformat.Plain("\n\n"))
-		displaySegments = append(displaySegments, progressSegments...)
+		if progressTruncated {
+			displaySegments = append(displaySegments, msgformat.Markdown(progress))
+		} else {
+			displaySegments = append(displaySegments, progressSegments...)
+		}
 	}
 	if len(segments) > 0 {
 		displaySegments = append(displaySegments, msgformat.Plain("\n\n"))
@@ -1037,6 +1056,256 @@ func appendStatusTimelineBlock(segments []msgformat.Segment, status, body string
 		msgformat.Plain("\n"),
 		msgformat.Markdown(body),
 	)
+}
+
+func (s *Service) summaryLogVisibleText(ctx context.Context, full string, snapshot *appserver.ThreadReadSnapshot) string {
+	full = strings.TrimSpace(full)
+	if full == "" {
+		return full
+	}
+	totalItems := summaryLogItemCount(snapshot)
+	visible := full
+	truncated := false
+	if utf16LenLocal(visible) > summaryLogLimit {
+		visible = trimLogTailByRunes(visible, summaryLogLimit)
+		truncated = true
+	}
+	visibleItems := summaryLogVisibleItemCount(visible)
+	if visibleItems == 0 && totalItems > 0 {
+		visibleItems = minInt(totalItems, 1)
+	}
+	start := 1
+	if totalItems > 0 && visibleItems > 0 {
+		start = maxInt(1, totalItems-visibleItems+1)
+	}
+	lines := []string{}
+	if totalItems > 0 {
+		lines = append(lines, fmt.Sprintf(s.t(ctx, "过程日志 %d-%d / %d", "Process log %d-%d / %d"), start, totalItems, totalItems))
+	}
+	if truncated {
+		lines = append(lines, fmt.Sprintf(s.t(ctx, "显示最新片段（最后 %d 字符 / 共 %s）", "Showing latest excerpt (last %d chars / %s total)"), summaryLogLimit, humanBytes(len(full))))
+		lines = append(lines, s.t(ctx, "...前文已省略", "...earlier log omitted"))
+	}
+	lines = append(lines, visible)
+	return strings.TrimSpace(strings.Join(lines, "\n\n"))
+}
+
+type summaryLogEntry struct {
+	index    int
+	segments []msgformat.Segment
+}
+
+func (s *Service) summaryLogFromRecentDetails(ctx context.Context, snapshot *appserver.ThreadReadSnapshot) (string, bool) {
+	entries := s.summaryRecentDetailEntries(ctx, snapshot)
+	if len(entries) == 0 {
+		return "", false
+	}
+	totalItems := summaryLogItemCount(snapshot)
+	selected := entries
+	if len(selected) > summaryLogMaxItems {
+		selected = selected[len(selected)-summaryLogMaxItems:]
+	}
+	for len(selected) > 0 {
+		text := s.summaryRecentDetailText(ctx, selected, totalItems)
+		if utf16LenLocal(text) <= summaryLogLimit {
+			return text, true
+		}
+		selected = selected[1:]
+	}
+	return strings.TrimSpace(fmt.Sprintf(s.t(ctx, "过程日志过长，当前无可展示条目 / %d", "Process log too long; no displayable entries / %d"), totalItems)), true
+}
+
+func (s *Service) summaryRecentDetailEntries(ctx context.Context, snapshot *appserver.ThreadReadSnapshot) []summaryLogEntry {
+	if snapshot == nil || len(snapshot.DetailItems) == 0 {
+		return nil
+	}
+	entries := []summaryLogEntry{}
+	for _, item := range snapshot.DetailItems {
+		switch item.Kind {
+		case model.DetailItemCommentary:
+			text := strings.TrimSpace(cleanNilLiteral(item.Text))
+			if text == "" {
+				continue
+			}
+			status := s.t(ctx, "思考中...", "Thinking...")
+			entries = append(entries, summaryLogEntry{
+				index: len(entries) + 1,
+				segments: []msgformat.Segment{
+					msgformat.Markdown(status),
+					msgformat.Plain("\n"),
+					msgformat.Markdown(text),
+				},
+			})
+		case model.DetailItemTool:
+			text := summaryToolDetailText(item)
+			if text == "" {
+				continue
+			}
+			status := s.toolTimelineStatus(ctx, item)
+			entries = append(entries, summaryLogEntry{
+				index: len(entries) + 1,
+				segments: []msgformat.Segment{
+					msgformat.Markdown(status),
+					msgformat.Plain("\n"),
+					msgformat.Markdown(text),
+				},
+			})
+		case model.DetailItemOutput:
+			text := summaryOutputDetailText(item)
+			if text == "" {
+				continue
+			}
+			status := s.t(ctx, "工具调用中...", "Using tools...")
+			entries = append(entries, summaryLogEntry{
+				index: len(entries) + 1,
+				segments: []msgformat.Segment{
+					msgformat.Markdown(status),
+					msgformat.Plain("\n"),
+					msgformat.Markdown(text),
+				},
+			})
+		}
+	}
+	return entries
+}
+
+func (s *Service) summaryRecentDetailText(ctx context.Context, entries []summaryLogEntry, totalItems int) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	type renderedLogEntry struct {
+		index int
+		text  string
+	}
+	renderedEntries := []renderedLogEntry{}
+	for _, entry := range entries {
+		rendered := msgformat.RenderSegments(entry.segments, summaryLogLimit)
+		if len(rendered) != 1 {
+			continue
+		}
+		text := strings.TrimSpace(rendered[0].Text)
+		if text == "" || utf16LenLocal(text) > summaryLogLimit {
+			continue
+		}
+		renderedEntries = append(renderedEntries, renderedLogEntry{index: entry.index, text: text})
+	}
+	if len(renderedEntries) == 0 {
+		return ""
+	}
+	lines := []string{}
+	if totalItems > 0 {
+		lines = append(lines, fmt.Sprintf(s.t(ctx, "过程日志 %d-%d / %d", "Process log %d-%d / %d"), renderedEntries[0].index, renderedEntries[len(renderedEntries)-1].index, totalItems))
+	}
+	if totalItems > len(renderedEntries) || renderedEntries[0].index > 1 {
+		lines = append(lines, s.t(ctx, "...前文已省略", "...earlier log omitted"))
+	}
+	for _, entry := range renderedEntries {
+		lines = append(lines, entry.text)
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n\n"))
+}
+
+func (s *Service) summaryLogIsTruncated(ctx context.Context, snapshot *appserver.ThreadReadSnapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	if total := summaryLogItemCount(snapshot); total > summaryLogMaxItems {
+		return true
+	}
+	segments, ok := s.summaryDetailTimelineSegments(ctx, snapshot)
+	if !ok {
+		if text := s.interruptedStatusLogText(ctx, snapshot); text != "" {
+			segments = []msgformat.Segment{msgformat.Markdown(text)}
+		}
+	}
+	full := strings.TrimSpace(firstRenderedMessage(msgformat.RenderSegments(segments, maxInt(summaryLogLimit*8, summaryLogLimit))).Text)
+	return utf16LenLocal(full) > summaryLogLimit
+}
+
+func summaryLogItemCount(snapshot *appserver.ThreadReadSnapshot) int {
+	if snapshot == nil {
+		return 0
+	}
+	count := 0
+	for _, item := range snapshot.DetailItems {
+		switch item.Kind {
+		case model.DetailItemCommentary:
+			if strings.TrimSpace(cleanNilLiteral(item.Text)) != "" {
+				count++
+			}
+		case model.DetailItemTool:
+			if summaryToolDetailText(item) != "" {
+				count++
+			}
+		case model.DetailItemOutput:
+			if summaryOutputDetailText(item) != "" {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func summaryLogVisibleItemCount(text string) int {
+	count := 0
+	for _, marker := range []string{"思考中...", "已运行", "工具调用中...", "Thinking...", "Ran", "Using tools..."} {
+		count += strings.Count(text, marker)
+	}
+	return count
+}
+
+func trimLogTailByRunes(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || utf16LenLocal(value) <= limit {
+		return value
+	}
+	runes := []rune(value)
+	start := 0
+	units := 0
+	for index := len(runes) - 1; index >= 0; index-- {
+		next := units + runeUTF16LenLocal(runes[index])
+		if next > limit {
+			start = index + 1
+			break
+		}
+		units = next
+	}
+	tail := strings.TrimSpace(string(runes[start:]))
+	best := -1
+	for _, marker := range []string{"\n\n思考中...", "\n\n已运行", "\n\n工具调用中...", "\n\nThinking...", "\n\nRan", "\n\nUsing tools..."} {
+		if index := strings.Index(tail, marker); index >= 0 && (best < 0 || index < best) {
+			best = index
+		}
+	}
+	if best > 0 {
+		tail = strings.TrimSpace(tail[best:])
+	}
+	return tail
+}
+
+func utf16LenLocal(value string) int {
+	total := 0
+	for _, r := range value {
+		total += runeUTF16LenLocal(r)
+	}
+	return total
+}
+
+func runeUTF16LenLocal(r rune) int {
+	if r > 0xFFFF {
+		return 2
+	}
+	return 1
+}
+
+func humanBytes(size int) string {
+	if size < 1024 {
+		return fmt.Sprintf("%dB", size)
+	}
+	if size < 1024*1024 {
+		return fmt.Sprintf("%.1fKB", float64(size)/1024)
+	}
+	return fmt.Sprintf("%.1fMB", float64(size)/(1024*1024))
 }
 
 func summaryToolDetailText(item model.DetailItem) string {

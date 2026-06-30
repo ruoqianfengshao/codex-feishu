@@ -373,6 +373,8 @@ func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID,
 		return s.handleDetailsCallback(ctx, chatID, topicID, messageID, route, payload)
 	case "details_tools_file":
 		return s.sendDetailsToolsFile(ctx, chatID, topicID, messageID, route, payload)
+	case "full_log_file":
+		return s.sendPanelFullLogFile(ctx, chatID, topicID, messageID, route, payload, sourceMode)
 	case "turn_off_plan":
 		return s.handleTurnOffPlanCallback(ctx, chatID, topicID, messageID, route, payload)
 	case "workspace_overview":

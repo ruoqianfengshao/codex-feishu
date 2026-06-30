@@ -5078,8 +5078,8 @@ func TestRunningSummaryPanelDoesNotShowSteerButton(t *testing.T) {
 	if token := callbackTokenForButton(buttons, "Stop"); token == "" {
 		t.Fatalf("summary buttons = %#v, want Stop button", buttons)
 	}
-	if token := callbackTokenForButton(buttons, "Show context"); token == "" {
-		t.Fatalf("summary buttons = %#v, want Show context button", buttons)
+	if token := callbackTokenForButton(buttons, "Show context"); token != "" {
+		t.Fatalf("summary buttons = %#v, want no Show context button", buttons)
 	}
 }
 

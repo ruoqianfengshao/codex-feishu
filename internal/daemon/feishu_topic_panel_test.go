@@ -10,6 +10,7 @@ import (
 
 	"github.com/mideco-tech/codex-tg/internal/appserver"
 	"github.com/mideco-tech/codex-tg/internal/model"
+	"github.com/mideco-tech/codex-tg/internal/msgformat"
 )
 
 type recordedMessage struct {
@@ -678,6 +679,75 @@ func TestSummaryPanelInterleavesDetailStatusLogs(t *testing.T) {
 	}
 }
 
+func TestSummaryPanelLongDetailLogShowsRecentCompleteItems(t *testing.T) {
+	t.Parallel()
+
+	thread := model.Thread{ID: "thread-long-detail-log", Title: "Long detail log", ProjectName: "Codex"}
+	items := make([]model.DetailItem, 0, 1500)
+	for i := 1; i <= 1500; i++ {
+		items = append(items, model.DetailItem{
+			ID:              fmt.Sprintf("agent-%d", i),
+			Kind:            model.DetailItemCommentary,
+			Text:            fmt.Sprintf("progress item %04d", i),
+			FP:              fmt.Sprintf("fp-%d", i),
+			CommentaryIndex: i,
+		})
+	}
+	snapshot := &appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-long-detail-log",
+		LatestTurnStatus: "interrupted",
+		DetailItems:      items,
+	}
+
+	service := newTestService(t)
+	messages := service.renderSummaryPanelMarkdown(context.Background(), thread, snapshot, summaryPanelEntries(snapshot), nil)
+	if len(messages) != 1 {
+		t.Fatalf("len(messages) = %d, want 1", len(messages))
+	}
+	text := messages[0].Text
+	if !strings.Contains(text, "Process log 1471-1500 / 1500") {
+		t.Fatalf("summary text = %q, want recent log range", text)
+	}
+	if !strings.Contains(text, "progress item 1500") {
+		t.Fatalf("summary text = %q, want latest log item", text)
+	}
+	if strings.Contains(text, "progress item 0001") || strings.Contains(text, "progress item 1400") {
+		t.Fatalf("summary text = %q, want old log items omitted", text)
+	}
+	if strings.Contains(text, "progress item 150") && !strings.Contains(text, "progress item 1500") {
+		t.Fatalf("summary text = %q, want complete recent log items only", text)
+	}
+}
+
+func TestSummaryPanelDropsOversizedRecentDetailItem(t *testing.T) {
+	t.Parallel()
+
+	thread := model.Thread{ID: "thread-oversized-detail", Title: "Oversized detail", ProjectName: "Codex"}
+	snapshot := &appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-oversized-detail",
+		LatestTurnStatus: "interrupted",
+		DetailItems: []model.DetailItem{
+			{ID: "agent-1", Kind: model.DetailItemCommentary, Text: "kept recent item", FP: "agent-1", CommentaryIndex: 1},
+			{ID: "agent-2", Kind: model.DetailItemCommentary, Text: strings.Repeat("x", msgformat.MessageLimit+200), FP: "agent-2", CommentaryIndex: 2},
+		},
+	}
+
+	service := newTestService(t)
+	messages := service.renderSummaryPanelMarkdown(context.Background(), thread, snapshot, summaryPanelEntries(snapshot), nil)
+	if len(messages) != 1 {
+		t.Fatalf("len(messages) = %d, want 1", len(messages))
+	}
+	text := messages[0].Text
+	if !strings.Contains(text, "kept recent item") {
+		t.Fatalf("summary text = %q, want displayable recent item", text)
+	}
+	if strings.Contains(text, strings.Repeat("x", 100)) {
+		t.Fatalf("summary text = %q, want oversized item omitted entirely", text)
+	}
+}
+
 func TestSummaryPanelShowsFileChangeAsEditedAction(t *testing.T) {
 	t.Parallel()
 
@@ -980,6 +1050,104 @@ func TestFeishuTopicSyncSendsCodexDesktopUserNoticeAndFinalAfterFeishuTurn(t *te
 	}
 	if panel == nil || panel.LastFinalNoticeFP != "final-desktop-fp" {
 		t.Fatalf("panel = %#v, want desktop final fingerprint", panel)
+	}
+}
+
+func TestFeishuTopicCodexPanelProgressThenFinalEffectGuard(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingThreadTopicSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+
+	thread := model.Thread{
+		ID:          "thread-codex-panel-effect-guard",
+		Title:       "Panel effect guard",
+		ProjectName: "Codex",
+		CWD:         `/Users/you/Projects/Codex`,
+		UpdatedAt:   time.Now().UTC().Unix(),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
+
+	progressSnapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-panel-effect-guard",
+		LatestTurnStatus: "inProgress",
+		DetailItems: []model.DetailItem{
+			{ID: "commentary-1", Kind: model.DetailItemCommentary, Text: "Inspecting Feishu card rendering.", FP: "commentary-1", CommentaryIndex: 1},
+			{ID: "tool-1", Kind: model.DetailItemTool, ToolKind: "commandExecution", Label: "go test ./internal/feishu", Status: "completed", FP: "tool-1", CommentaryIndex: 1},
+			{ID: "commentary-2", Kind: model.DetailItemCommentary, Text: "Checking final card update.", FP: "commentary-2", CommentaryIndex: 2},
+		},
+	}, time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, progressSnapshot); err != nil {
+		t.Fatalf("UpsertSnapshot progress failed: %v", err)
+	}
+
+	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
+
+	if len(sender.messages) != 1 {
+		t.Fatalf("messages = %#v, want one progress panel", sender.messages)
+	}
+	progressPanel := lastCodexPanelMessage(t, sender.messages)
+	if !strings.Contains(progressPanel.codexStatus, "Processing") {
+		t.Fatalf("progress panel status = %q, want running status", progressPanel.codexStatus)
+	}
+	for _, want := range []string{"Thinking...", "Inspecting Feishu card rendering.", "Ran", "go test ./internal/feishu", "Checking final card update."} {
+		if !strings.Contains(progressPanel.codexProgressMarkdown, want) {
+			t.Fatalf("progress markdown missing %q:\n%s", want, progressPanel.codexProgressMarkdown)
+		}
+	}
+	for _, forbidden := range []string{"已中断", "interrupted"} {
+		if strings.Contains(progressPanel.codexStatus, forbidden) || strings.Contains(progressPanel.codexProgressMarkdown, forbidden) {
+			t.Fatalf("progress panel leaked %q: %#v", forbidden, progressPanel)
+		}
+	}
+	if token := buttonToken(progressPanel.buttons, "Stop"); token == "" {
+		t.Fatalf("progress buttons = %#v, want Stop", progressPanel.buttons)
+	}
+	for _, forbidden := range []string{"Show context", "查看上下文", "Steer", "引导"} {
+		if token := buttonToken(progressPanel.buttons, forbidden); token != "" {
+			t.Fatalf("progress buttons = %#v, want no %q", progressPanel.buttons, forbidden)
+		}
+	}
+
+	finalSnapshot := appserver.CompactSnapshot(&progressSnapshot, appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-panel-effect-guard",
+		LatestTurnStatus: "completed",
+		LatestFinalText:  "Final answer is ready.",
+		LatestFinalFP:    "final-panel-effect-guard",
+		DetailItems: []model.DetailItem{
+			{ID: "commentary-1", Kind: model.DetailItemCommentary, Text: "Inspecting Feishu card rendering.", FP: "commentary-1", CommentaryIndex: 1},
+			{ID: "tool-1", Kind: model.DetailItemTool, ToolKind: "commandExecution", Label: "go test ./internal/feishu", Status: "completed", FP: "tool-1", CommentaryIndex: 1},
+			{ID: "commentary-2", Kind: model.DetailItemCommentary, Text: "Checking final card update.", FP: "commentary-2", CommentaryIndex: 2},
+			{ID: "final-1", Kind: model.DetailItemFinal, Text: "Final answer is ready.", FP: "final-panel-effect-guard", CommentaryIndex: 2},
+		},
+	}, time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, finalSnapshot); err != nil {
+		t.Fatalf("UpsertSnapshot final failed: %v", err)
+	}
+	beforeFinalMessages := len(sender.messages)
+	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
+
+	if len(sender.messages) != beforeFinalMessages {
+		t.Fatalf("messages after final = %#v, want final folded into existing Codex panel", sender.messages[beforeFinalMessages:])
+	}
+	finalEdit := lastCodexPanelEdit(t, sender.edits)
+	if !strings.Contains(finalEdit.codexStatus, "Processed") || strings.Contains(finalEdit.codexStatus, "Processing") || !strings.Contains(finalEdit.codexFinalMarkdown, "Final answer is ready.") {
+		t.Fatalf("final edit = %#v, want processed status and final content", finalEdit)
+	}
+	if len(finalEdit.buttons) != 0 {
+		t.Fatalf("final buttons = %#v, want no running buttons after final", finalEdit.buttons)
+	}
+	for _, forbidden := range []string{"已中断", "interrupted"} {
+		if strings.Contains(finalEdit.codexStatus, forbidden) || strings.Contains(finalEdit.codexProgressMarkdown, forbidden) || strings.Contains(finalEdit.codexFinalMarkdown, forbidden) {
+			t.Fatalf("final edit leaked %q: %#v", forbidden, finalEdit)
+		}
 	}
 }
 
@@ -2454,11 +2622,10 @@ func TestFeishuTopicCardsHideShowAndThreadIDButtons(t *testing.T) {
 	}
 
 	_, summaryButtons, _ := service.renderSummaryPanel(ctx, thread, snapshot, nil)
-	if buttonToken(summaryButtons, "Show") != "" || buttonToken(summaryButtons, "Get thread id") != "" {
-		t.Fatalf("summary buttons = %#v, want no Show or Get thread id in Feishu topic card", summaryButtons)
-	}
-	if buttonToken(summaryButtons, "Show context") == "" {
-		t.Fatalf("summary buttons = %#v, want context button kept", summaryButtons)
+	for _, forbidden := range []string{"Show", "Get thread id", "Show context", "查看上下文"} {
+		if buttonToken(summaryButtons, forbidden) != "" {
+			t.Fatalf("summary buttons = %#v, want no %q in Feishu topic card", summaryButtons, forbidden)
+		}
 	}
 
 	finalSnapshot := *snapshot

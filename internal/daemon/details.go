@@ -422,6 +422,89 @@ func (s *Service) sendDetailsToolsFile(ctx context.Context, chatID, topicID, cal
 	return &DirectResponse{CallbackText: s.t(ctx, "工具文件已发送。", "Tools file sent.")}, nil
 }
 
+func (s *Service) sendPanelFullLogFile(ctx context.Context, chatID, topicID, callbackMessageID int64, route *model.CallbackRoute, payload map[string]any, sourceMode string) (*DirectResponse, error) {
+	_ = payload
+	threadID := ""
+	if route != nil {
+		threadID = strings.TrimSpace(route.ThreadID)
+	}
+	if threadID == "" {
+		return s.staleDetailsResponse(ctx), nil
+	}
+	thread, snapshot, err := s.loadThreadPanelSnapshot(ctx, threadID)
+	if err != nil || thread == nil || snapshot == nil {
+		return &DirectResponse{Text: s.t(ctx, "无法加载完整日志。请尝试 /repair。", "Could not load full log. Try /repair.")}, nil
+	}
+	if !isTerminalStatus(cardDisplayStatus(snapshot, *thread)) {
+		return &DirectResponse{CallbackText: s.t(ctx, "任务完成后才能下载完整日志。", "Full log is available after the task finishes.")}, nil
+	}
+	body := s.buildPanelFullLogMarkdown(ctx, *thread, snapshot)
+	if strings.TrimSpace(body) == "" {
+		return &DirectResponse{CallbackText: s.t(ctx, "没有可导出的日志。", "No log to export.")}, nil
+	}
+	s.mu.RLock()
+	sender := s.sender
+	s.mu.RUnlock()
+	if sender == nil {
+		return &DirectResponse{Text: s.t(ctx, "消息发送器尚未就绪。", "Message sender is not ready yet.")}, nil
+	}
+	fileName := fmt.Sprintf("%s-%s-full-log.md", sanitizeFileName(thread.ProjectName), sanitizeFileName(thread.ShortID()))
+	caption := s.visualHeader(ctx, s.t(ctx, "完整日志", "Full log"), *thread, snapshot.LatestTurnID)
+	options := silentSendOptions()
+	if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput && callbackMessageID != 0 {
+		options.FeishuReplyToMessageID = callbackMessageID
+		options.FeishuReplyInThread = true
+		options.FeishuCodexThreadID = thread.ID
+	}
+	if _, err := sender.SendDocumentData(ctx, chatID, topicID, fileName, []byte(body), caption, options); err != nil {
+		return &DirectResponse{Text: fmt.Sprintf(s.t(ctx, "无法发送完整日志：%v", "Could not send full log: %v"), err)}, nil
+	}
+	_ = route
+	return &DirectResponse{CallbackText: s.t(ctx, "完整日志已发送。", "Full log sent.")}, nil
+}
+
+func (s *Service) buildPanelFullLogMarkdown(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot) string {
+	lines := []string{
+		"# " + strings.TrimSpace(thread.Title),
+		"",
+		fmt.Sprintf("- %s: %s", s.t(ctx, "项目", "Project"), strings.TrimSpace(thread.ProjectName)),
+		fmt.Sprintf("- %s: %s", s.t(ctx, "会话", "Thread"), thread.ID),
+		fmt.Sprintf("- %s: %s", s.t(ctx, "轮次", "Turn"), strings.TrimSpace(snapshot.LatestTurnID)),
+		fmt.Sprintf("- %s: %s", s.t(ctx, "状态", "Status"), readableProgressStatusLang(s.botLanguage(ctx), cardDisplayStatus(snapshot, thread))),
+		fmt.Sprintf("- %s: %d", s.t(ctx, "过程日志条数", "Process log entries"), summaryLogItemCount(snapshot)),
+		"",
+		"## " + s.t(ctx, "过程日志", "Process log"),
+	}
+	for _, item := range snapshot.DetailItems {
+		switch item.Kind {
+		case model.DetailItemUser:
+			if text := strings.TrimSpace(cleanNilLiteral(item.Text)); text != "" {
+				lines = append(lines, "", "### "+s.t(ctx, "用户输入", "User input"), "", text)
+			}
+		case model.DetailItemCommentary:
+			if text := strings.TrimSpace(cleanNilLiteral(item.Text)); text != "" {
+				lines = append(lines, "", "### "+s.t(ctx, "思考中", "Thinking"), "", text)
+			}
+		case model.DetailItemTool:
+			if text := summaryToolDetailText(item); text != "" {
+				lines = append(lines, "", "### "+s.toolTimelineStatus(ctx, item), "", "```", text, "```")
+			}
+		case model.DetailItemOutput:
+			if text := summaryOutputDetailText(item); text != "" {
+				lines = append(lines, "", "### "+s.t(ctx, "工具输出", "Tool output"), "", "```", text, "```")
+			}
+		case model.DetailItemFinal:
+			if text := strings.TrimSpace(cleanNilLiteral(item.Text)); text != "" {
+				lines = append(lines, "", "## "+s.t(ctx, "最终回复", "Final answer"), "", text)
+			}
+		}
+	}
+	if finalText, _ := terminalCardTextAndFP(snapshot); strings.TrimSpace(finalText) != "" && !strings.Contains(strings.Join(lines, "\n"), finalText) {
+		lines = append(lines, "", "## "+s.t(ctx, "最终回复", "Final answer"), "", strings.TrimSpace(finalText))
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n")) + "\n"
+}
+
 func (s *Service) detailsPanelForCallback(ctx context.Context, chatID, topicID, callbackMessageID int64, route *model.CallbackRoute, payload map[string]any, requireMessageMatch bool) (*model.ThreadPanel, *DirectResponse, error) {
 	panelID := payloadInt64(payload, "panel_id")
 	if panelID == 0 {

@@ -255,6 +255,95 @@ func TestBuildCodexPanelCardUsesDocumentedCollapsiblePanelFields(t *testing.T) {
 	}
 }
 
+func TestBuildCodexPanelCardKeepsProgressAndFinalStructure(t *testing.T) {
+	t.Parallel()
+
+	card, err := buildRenderedCard(model.RenderedMessage{
+		Style:                 model.MessageStyleCodexPanel,
+		Text:                  "Running",
+		CodexStatus:           "已处理 44s",
+		CodexProgressMarkdown: "思考中...\n\n检查状态。\n\n工具调用中...\n\n读取日志。",
+		CodexFinalMarkdown:    "最终回复内容。",
+		CodexProgressExpanded: false,
+	}, [][]model.ButtonSpec{{
+		{Text: "Stop", CallbackData: "stop"},
+	}})
+	if err != nil {
+		t.Fatalf("buildRenderedCard failed: %v", err)
+	}
+	for _, forbidden := range []string{"来自 Codex", "background_style"} {
+		if strings.Contains(card, forbidden) {
+			t.Fatalf("card contains %q:\n%s", forbidden, card)
+		}
+	}
+
+	var decoded struct {
+		Header map[string]any `json:"header"`
+		Body   struct {
+			Elements []struct {
+				Tag      string `json:"tag"`
+				Expanded bool   `json:"expanded"`
+				Header   struct {
+					Title struct {
+						Content string `json:"content"`
+					} `json:"title"`
+				} `json:"header"`
+				Elements []struct {
+					Tag     string `json:"tag"`
+					Content string `json:"content"`
+				} `json:"elements"`
+				Content string `json:"content"`
+				Columns []struct {
+					Elements []struct {
+						Tag  string `json:"tag"`
+						Text struct {
+							Content string `json:"content"`
+						} `json:"text"`
+					} `json:"elements"`
+				} `json:"columns"`
+			} `json:"elements"`
+		} `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(card), &decoded); err != nil {
+		t.Fatalf("card JSON invalid: %v", err)
+	}
+	if decoded.Header != nil {
+		t.Fatalf("header = %#v, want Codex panel without a card heading", decoded.Header)
+	}
+	if len(decoded.Body.Elements) != 3 {
+		t.Fatalf("body elements = %#v, want progress panel, final markdown, action row", decoded.Body.Elements)
+	}
+	panel := decoded.Body.Elements[0]
+	if panel.Tag != "collapsible_panel" || panel.Expanded {
+		t.Fatalf("first element = %#v, want collapsed progress panel", panel)
+	}
+	if panel.Header.Title.Content != "已处理 44s" {
+		t.Fatalf("panel title = %q, want status text", panel.Header.Title.Content)
+	}
+	if len(panel.Elements) != 1 || !strings.Contains(panel.Elements[0].Content, "思考中") || !strings.Contains(panel.Elements[0].Content, "工具调用中") {
+		t.Fatalf("panel elements = %#v, want progress timeline inside collapsible panel", panel.Elements)
+	}
+	final := decoded.Body.Elements[1]
+	if final.Tag != "markdown" || !strings.Contains(final.Content, "最终回复内容") {
+		t.Fatalf("second element = %#v, want final markdown outside progress panel", final)
+	}
+	actions := decoded.Body.Elements[2]
+	if actions.Tag != "column_set" || len(actions.Columns) != 1 {
+		t.Fatalf("third element = %#v, want one running button column", actions)
+	}
+	var labels []string
+	for _, column := range actions.Columns {
+		for _, element := range column.Elements {
+			if element.Tag == "button" {
+				labels = append(labels, element.Text.Content)
+			}
+		}
+	}
+	if strings.Join(labels, ",") != "Stop" {
+		t.Fatalf("button labels = %#v, want Stop", labels)
+	}
+}
+
 func TestBuildSectionedCardKeepsButtonsAfterEachSection(t *testing.T) {
 	t.Parallel()
 
