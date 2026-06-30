@@ -2274,6 +2274,39 @@ func TestRenderSummaryPanelShowsActiveRunElapsedTimeAtBottom(t *testing.T) {
 	}
 }
 
+func TestRenderSummaryPanelShowsContextCompactionDivider(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	thread := model.Thread{
+		ID:          "thread-context-compaction",
+		Title:       "Context compaction",
+		ProjectName: "Codex",
+	}
+	snapshot := &appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-context-compaction",
+		LatestTurnStatus: "inProgress",
+		DetailItems: []model.DetailItem{
+			{Kind: model.DetailItemCommentary, Text: "Before compaction.", FP: "before-fp"},
+			{Kind: model.DetailItemCompaction, Text: "Compacted earlier context.", FP: "compact-fp"},
+			{Kind: model.DetailItemCommentary, Text: "After compaction.", FP: "after-fp"},
+		},
+	}
+
+	messages := service.renderSummaryPanelMarkdownAt(context.Background(), thread, snapshot, nil, nil, time.Now().UTC())
+	if len(messages) != 1 {
+		t.Fatalf("len(messages) = %d, want 1", len(messages))
+	}
+	text := messages[0].Text
+	if !strings.Contains(text, "---------- 上下文已自动压缩 ----------") && !strings.Contains(text, "---------- Context compacted ----------") {
+		t.Fatalf("rendered summary = %q, want context compaction divider", text)
+	}
+	if !strings.Contains(text, "Before compaction.") || !strings.Contains(text, "After compaction.") {
+		t.Fatalf("rendered summary = %q, want logs around compaction", text)
+	}
+}
+
 func TestRenderOutputPanelEscapesHTMLInsideCodeBlock(t *testing.T) {
 	t.Parallel()
 

@@ -997,6 +997,8 @@ func (s *Service) summaryDetailTimelineSegments(ctx context.Context, snapshot *a
 				continue
 			}
 			segments = appendStatusTimelineBlock(segments, s.t(ctx, "工具调用中...", "Using tools..."), text)
+		case model.DetailItemCompaction:
+			segments = appendContextCompactionDivider(segments, s.contextCompactionStatus(ctx))
 		}
 	}
 	if len(segments) == 0 && strings.TrimSpace(cleanNilLiteral(snapshot.LatestToolLabel)) != "" {
@@ -1033,6 +1035,21 @@ func appendStatusTimelineBlock(segments []msgformat.Segment, status, body string
 		msgformat.Plain("\n"),
 		msgformat.Markdown(body),
 	)
+}
+
+func (s *Service) contextCompactionStatus(ctx context.Context) string {
+	return s.t(ctx, "上下文已自动压缩", "Context compacted")
+}
+
+func appendContextCompactionDivider(segments []msgformat.Segment, status string) []msgformat.Segment {
+	return append(segments, contextCompactionDividerSegments(status)...)
+}
+
+func contextCompactionDividerSegments(status string) []msgformat.Segment {
+	return []msgformat.Segment{
+		msgformat.Plain("\n\n"),
+		msgformat.Markdown("---------- " + status + " ----------"),
+	}
 }
 
 func (s *Service) summaryLogVisibleText(ctx context.Context, full string, snapshot *appserver.ThreadReadSnapshot) string {
@@ -1140,6 +1157,11 @@ func (s *Service) summaryRecentDetailEntries(ctx context.Context, snapshot *apps
 					msgformat.Plain("\n"),
 					msgformat.Markdown(text),
 				},
+			})
+		case model.DetailItemCompaction:
+			entries = append(entries, summaryLogEntry{
+				index:    len(entries) + 1,
+				segments: contextCompactionDividerSegments(s.contextCompactionStatus(ctx)),
 			})
 		}
 	}

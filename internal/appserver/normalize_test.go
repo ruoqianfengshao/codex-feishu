@@ -700,6 +700,41 @@ func TestSnapshotFromThreadReadBuildsOrderedDetailsAndLinksToolsToCommentary(t *
 	}
 }
 
+func TestSnapshotFromThreadReadKeepsContextCompactionDetail(t *testing.T) {
+	t.Parallel()
+
+	snapshot := SnapshotFromThreadRead(map[string]any{
+		"id":     "thread-compaction",
+		"name":   "Compaction",
+		"cwd":    "/Users/example/project",
+		"status": "active",
+		"turns": []any{
+			map[string]any{
+				"id":     "turn-compaction",
+				"status": "inProgress",
+				"items": []any{
+					map[string]any{"id": "agent-1", "type": "agentMessage", "phase": "commentary", "text": "Before compaction."},
+					map[string]any{"id": "compact-1", "type": "agentMessage", "phase": "context_compaction", "text": "Compacted earlier context."},
+					map[string]any{"id": "agent-2", "type": "agentMessage", "phase": "commentary", "text": "After compaction."},
+				},
+			},
+		},
+	})
+
+	if len(snapshot.DetailItems) != 3 {
+		t.Fatalf("len(DetailItems) = %d, want 3: %#v", len(snapshot.DetailItems), snapshot.DetailItems)
+	}
+	if got, want := snapshot.DetailItems[1].Kind, model.DetailItemCompaction; got != want {
+		t.Fatalf("DetailItems[1].Kind = %q, want %q", got, want)
+	}
+	if got := snapshot.DetailItems[1].CommentaryIndex; got != 0 {
+		t.Fatalf("compaction CommentaryIndex = %d, want 0", got)
+	}
+	if got, want := snapshot.DetailItems[2].CommentaryIndex, 2; got != want {
+		t.Fatalf("post-compaction commentary index = %d, want %d", got, want)
+	}
+}
+
 func TestSnapshotFromThreadReadPreservesFileChangeToolKind(t *testing.T) {
 	t.Parallel()
 

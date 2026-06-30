@@ -20,6 +20,7 @@ const (
 	DetailItemPlan       = "plan"
 	DetailItemTool       = "tool"
 	DetailItemOutput     = "output"
+	DetailItemCompaction = "compaction"
 	DetailItemFinal      = "final"
 
 	DeliveryStatusPending    = "pending"

@@ -938,6 +938,16 @@ func collectDetailItemsFromItems(items []any, turnStatus string) []model.DetailI
 				continue
 			}
 			phase := normalizeAgentMessagePhase(item)
+			if isContextCompactionPhase(phase) {
+				out = append(out, model.DetailItem{
+					ID:    itemID,
+					Kind:  model.DetailItemCompaction,
+					Phase: phase,
+					Text:  text,
+					FP:    fingerprint("detail", itemType, itemID, phase, text),
+				})
+				continue
+			}
 			kind := model.DetailItemCommentary
 			if strings.EqualFold(phase, "final_answer") {
 				kind = model.DetailItemFinal
@@ -969,6 +979,14 @@ func collectDetailItemsFromItems(items []any, turnStatus string) []model.DetailI
 				Text:            text,
 				FP:              fingerprint("detail", itemType, itemID, text),
 				CommentaryIndex: commentaryIndex,
+			})
+		case "contextCompaction", "contextCompression", "compaction", "compact":
+			text := strings.TrimSpace(renderItemText(item))
+			out = append(out, model.DetailItem{
+				ID:   itemID,
+				Kind: model.DetailItemCompaction,
+				Text: text,
+				FP:   fingerprint("detail", itemType, itemID, text),
 			})
 		case "commandExecution", "fileChange", "dynamicToolCall", "mcpToolCall", "webSearch":
 			label := strings.TrimSpace(toolLabel(item))
@@ -1003,6 +1021,11 @@ func collectDetailItemsFromItems(items []any, turnStatus string) []model.DetailI
 
 func normalizeAgentMessagePhase(item map[string]any) string {
 	return strings.TrimSpace(stringValue(item["phase"], ""))
+}
+
+func isContextCompactionPhase(phase string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(phase))
+	return strings.Contains(normalized, "compact") || strings.Contains(normalized, "compression")
 }
 
 func liveToolDetailItems(snapshot ThreadReadSnapshot) []model.DetailItem {
