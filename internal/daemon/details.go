@@ -26,15 +26,17 @@ func (s *Service) maybeRenderFinalCard(ctx context.Context, sender Sender, targe
 		return nil
 	}
 
-	message, buttons, cardHash := s.renderSummaryPanel(ctx, thread, snapshot, nil)
-	s.logChatRenderedMessagesContainsNil(thread.ID, snapshot.LatestTurnID, "summary_final", panel.SummaryMessageID, []model.RenderedMessage{message})
-	if err := sender.EditRenderedMessage(ctx, panel.ChatID, panel.TopicID, panel.SummaryMessageID, message, buttons); err != nil {
+	message, buttons, cardHash := s.renderFinalCard(ctx, panel.ID, thread, snapshot)
+	s.logChatRenderedMessagesContainsNil(thread.ID, snapshot.LatestTurnID, "final", 0, []model.RenderedMessage{message})
+	ids, err := sender.SendRenderedMessages(ctx, panel.ChatID, panel.TopicID, []model.RenderedMessage{message}, buttons, silentSendOptions())
+	if err != nil {
 		return err
 	}
+	finalMessageID := lastMessageID(ids)
 	_ = s.store.PutMessageRoute(ctx, model.MessageRoute{
 		ChatID:    panel.ChatID,
 		TopicID:   panel.TopicID,
-		MessageID: panel.SummaryMessageID,
+		MessageID: finalMessageID,
 		ThreadID:  thread.ID,
 		TurnID:    snapshot.LatestTurnID,
 		EventID:   finalFP,
@@ -45,7 +47,6 @@ func (s *Service) maybeRenderFinalCard(ctx context.Context, sender Sender, targe
 	panel.LastFinalCardHash = cardHash
 	panel.LastFinalNoticeFP = finalFP
 	panel.DetailsViewJSON = model.MustJSON(model.DetailsViewState{})
-	panel.LastSummaryHash = cardHash
 	if err := s.store.UpdateThreadPanelFinalCard(ctx, panel.ID, panel.SummaryMessageID, panel.CurrentTurnID, panel.Status, panel.LastSummaryHash, panel.LastToolHash, panel.LastOutputHash, panel.LastFinalNoticeFP, panel.DetailsViewJSON, panel.LastFinalCardHash); err != nil {
 		return err
 	}
@@ -87,7 +88,7 @@ func (s *Service) renderFinalCard(ctx context.Context, panelID int64, thread mod
 	}
 	header := strings.Join([]string{
 		s.visualHeader(ctx, s.t(ctx, "最终回复", "Final"), thread, snapshot.LatestTurnID),
-		fmt.Sprintf("%s: %s", s.t(ctx, "状态", "Status"), readableProgressStatusLang(s.botLanguage(ctx), cardDisplayStatus(snapshot, thread))),
+		fmt.Sprintf("%s: %s", s.t(ctx, "状态", "Status"), s.t(ctx, "已处理", "Processed")),
 	}, "\n")
 	body, _ := terminalCardTextAndFP(snapshot)
 	body = strings.TrimSpace(body)

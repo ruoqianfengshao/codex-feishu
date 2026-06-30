@@ -155,6 +155,10 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 			return
 		}
 	}
+	if err := s.maybeRenderFinalCard(ctx, sender, target, panel, *thread, snapshot); err != nil {
+		s.setError(ctx, err)
+		return
+	}
 }
 
 func (s *Service) ensureThreadTopic(ctx context.Context, sender Sender, target model.ObserverTarget, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) (*model.FeishuThreadTopic, error) {
@@ -346,14 +350,6 @@ func (s *Service) createCurrentPanel(ctx context.Context, sender Sender, target 
 	summaryMessage, summaryButtons, summaryHash := s.renderSummaryPanel(ctx, thread, snapshot, nil)
 	toolText, toolHash, shouldSendTool := s.renderToolPanelIfNeeded(ctx, thread, snapshot)
 	outputText, outputHash, shouldSendOutput := s.renderOutputPanelIfNeeded(ctx, thread, snapshot)
-	finalNoticeFP := ""
-	finalCardHash := ""
-	if isTerminalStatus(cardDisplayStatus(snapshot, thread)) {
-		if _, fp := terminalCardTextAndFP(snapshot); strings.TrimSpace(fp) != "" {
-			finalNoticeFP = strings.TrimSpace(fp)
-			finalCardHash = summaryHash
-		}
-	}
 
 	s.logChatRenderedMessagesContainsNil(thread.ID, snapshot.LatestTurnID, "summary", 0, []model.RenderedMessage{summaryMessage})
 	summaryIDs, err := sender.SendRenderedMessages(ctx, target.ChatID, target.TopicID, []model.RenderedMessage{summaryMessage}, summaryButtons, silentSendOptions())
@@ -395,10 +391,8 @@ func (s *Service) createCurrentPanel(ctx context.Context, sender Sender, target 
 		LastSummaryHash:     summaryHash,
 		LastToolHash:        toolHash,
 		LastOutputHash:      outputHash,
-		LastFinalNoticeFP:   finalNoticeFP,
 		PlanPromptMessageID: planPromptMessageID,
 		LastPlanPromptFP:    planPromptFP,
-		LastFinalCardHash:   finalCardHash,
 	})
 	if err != nil {
 		return nil, err
@@ -809,14 +803,6 @@ func (s *Service) updateCurrentPanel(ctx context.Context, sender Sender, panel *
 
 	panel.CurrentTurnID = snapshot.LatestTurnID
 	panel.Status = snapshot.LatestTurnStatus
-	if isTerminalStatus(cardDisplayStatus(snapshot, thread)) {
-		if _, fp := terminalCardTextAndFP(snapshot); strings.TrimSpace(fp) != "" {
-			panel.LastFinalNoticeFP = strings.TrimSpace(fp)
-			panel.LastFinalCardHash = panel.LastSummaryHash
-			panel.DetailsViewJSON = model.MustJSON(model.DetailsViewState{})
-			return s.store.UpdateThreadPanelFinalCard(ctx, panel.ID, panel.SummaryMessageID, panel.CurrentTurnID, panel.Status, panel.LastSummaryHash, panel.LastToolHash, panel.LastOutputHash, panel.LastFinalNoticeFP, panel.DetailsViewJSON, panel.LastFinalCardHash)
-		}
-	}
 	return s.store.UpdateThreadPanelState(ctx, panel.ID, panel.CurrentTurnID, panel.Status, panel.LastSummaryHash, panel.LastToolHash, panel.LastOutputHash, panel.LastFinalNoticeFP)
 }
 
@@ -953,11 +939,6 @@ func (s *Service) renderSummaryPanelMarkdownAt(ctx context.Context, thread model
 		progressTruncated = utf16LenLocal(progressFull) > summaryLogLimit
 		progress = s.summaryLogVisibleText(ctx, progressFull, snapshot)
 	}
-	finalText, _ := terminalCardTextAndFP(snapshot)
-	finalText = strings.TrimSpace(finalText)
-	if finalText != "" && isTerminalStatus(status) {
-		segments = append(segments, msgformat.Markdown(finalText))
-	}
 	displaySegments := []msgformat.Segment{msgformat.Markdown(statusText)}
 	if progress != "" {
 		displaySegments = append(displaySegments, msgformat.Plain("\n\n"))
@@ -975,11 +956,7 @@ func (s *Service) renderSummaryPanelMarkdownAt(ctx context.Context, thread model
 	message.Style = model.MessageStyleCodexPanel
 	message.CodexStatus = statusText
 	message.CodexProgressMarkdown = progress
-	message.CodexFinalMarkdown = finalText
 	message.CodexProgressExpanded = !isTerminalStatus(status)
-	if finalText == "" || !isTerminalStatus(status) {
-		message.CodexFinalMarkdown = ""
-	}
 	return []model.RenderedMessage{message}
 }
 

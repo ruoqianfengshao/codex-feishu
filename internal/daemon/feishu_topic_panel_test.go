@@ -405,11 +405,12 @@ func TestSyncThreadPanelDoesNotDuplicateFinalAnswerOnRepeatedSync(t *testing.T) 
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceExplicit)
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceExplicit)
 
-	if len(finalMessages(sender.messages)) != 0 {
-		t.Fatalf("final messages = %#v, want final folded into Codex panel", finalMessages(sender.messages))
+	finals := finalMessages(sender.messages)
+	if len(finals) != 1 {
+		t.Fatalf("final messages = %#v, want one standalone final card", finals)
 	}
-	if len(sender.messages) != 1 {
-		t.Fatalf("message count = %d, want one Codex panel on first sync only; messages=%#v", len(sender.messages), sender.messages)
+	if len(sender.messages) != 2 {
+		t.Fatalf("message count = %d, want one Codex panel and one final card; messages=%#v", len(sender.messages), sender.messages)
 	}
 	panelMessage := lastCodexPanelMessage(t, sender.messages)
 	if !strings.Contains(panelMessage.text, "Processed") && !strings.Contains(panelMessage.text, "已处理") {
@@ -417,6 +418,12 @@ func TestSyncThreadPanelDoesNotDuplicateFinalAnswerOnRepeatedSync(t *testing.T) 
 	}
 	if strings.Contains(panelMessage.text, "Completed") || strings.Contains(panelMessage.text, "已完成") {
 		t.Fatalf("panel message = %#v, want no raw completed status", panelMessage)
+	}
+	if strings.Contains(panelMessage.text, "All work complete.") || panelMessage.codexFinalMarkdown != "" {
+		t.Fatalf("panel message = %#v, want no final content in progress panel", panelMessage)
+	}
+	if !strings.Contains(finals[0].text, "All work complete.") {
+		t.Fatalf("final card = %#v, want final content", finals[0])
 	}
 	if len(sender.documents) != 0 {
 		t.Fatalf("documents = %#v, want no tool documents for a completed turn without tool output", sender.documents)
@@ -473,15 +480,15 @@ func TestSyncThreadPanelFormatsFinalAnswerMarkdownWithEntities(t *testing.T) {
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, "explicit")
 
-	final := lastCodexPanelMessage(t, sender.messages)
+	final := lastFinalMessage(t, sender.messages)
 	if strings.Contains(final.text, "```") {
-		t.Fatalf("codex panel still contains raw markdown fence: %q", final.text)
+		t.Fatalf("final card still contains raw markdown fence: %q", final.text)
 	}
 	if !hasRecordedEntity(final.entities, "code", "") {
-		t.Fatalf("codex panel entities = %#v, want inline code entity", final.entities)
+		t.Fatalf("final card entities = %#v, want inline code entity", final.entities)
 	}
 	if !hasRecordedEntity(final.entities, "pre", "bash") {
-		t.Fatalf("codex panel entities = %#v, want bash pre entity", final.entities)
+		t.Fatalf("final card entities = %#v, want bash pre entity", final.entities)
 	}
 }
 
@@ -1034,15 +1041,15 @@ func TestFeishuTopicSyncSendsCodexDesktopUserNoticeAndFinalAfterFeishuTurn(t *te
 	beforeFinalEdits := len(sender.edits)
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
 
-	if len(sender.messages) != beforeFinalMessages {
-		t.Fatalf("messages = %#v, want final folded into existing Codex panel without a new message", sender.messages[beforeFinalMessages:])
+	if len(sender.messages) != beforeFinalMessages+1 {
+		t.Fatalf("messages = %#v, want standalone final card", sender.messages[beforeFinalMessages:])
 	}
 	if len(sender.edits) == beforeFinalEdits {
-		t.Fatalf("edits = %#v, want Codex panel edited with final", sender.edits)
+		t.Fatalf("edits = %#v, want progress panel edited to terminal state", sender.edits)
 	}
-	finalEdit := lastCodexPanelEdit(t, sender.edits[beforeFinalEdits:])
-	if !strings.Contains(finalEdit.codexFinalMarkdown, "Desktop turn done.") || len(finalEdit.buttons) != 0 {
-		t.Fatalf("final edit = %#v, want final content and no running buttons", finalEdit)
+	finalCard := lastFinalMessage(t, sender.messages[beforeFinalMessages:])
+	if !strings.Contains(finalCard.text, "Desktop turn done.") || len(finalCard.buttons) != 0 {
+		t.Fatalf("final card = %#v, want final content and no running buttons", finalCard)
 	}
 	panel, err = service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
 	if err != nil {
@@ -1134,18 +1141,22 @@ func TestFeishuTopicCodexPanelProgressThenFinalEffectGuard(t *testing.T) {
 	beforeFinalMessages := len(sender.messages)
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
 
-	if len(sender.messages) != beforeFinalMessages {
-		t.Fatalf("messages after final = %#v, want final folded into existing Codex panel", sender.messages[beforeFinalMessages:])
+	if len(sender.messages) != beforeFinalMessages+1 {
+		t.Fatalf("messages after final = %#v, want standalone final card", sender.messages[beforeFinalMessages:])
 	}
 	finalEdit := lastCodexPanelEdit(t, sender.edits)
-	if !strings.Contains(finalEdit.codexStatus, "Processed") || strings.Contains(finalEdit.codexStatus, "Processing") || !strings.Contains(finalEdit.codexFinalMarkdown, "Final answer is ready.") {
-		t.Fatalf("final edit = %#v, want processed status and final content", finalEdit)
+	if !strings.Contains(finalEdit.codexStatus, "Processed") || strings.Contains(finalEdit.codexStatus, "Processing") || finalEdit.codexFinalMarkdown != "" {
+		t.Fatalf("final edit = %#v, want processed progress panel without final content", finalEdit)
 	}
 	if len(finalEdit.buttons) != 0 {
 		t.Fatalf("final buttons = %#v, want no running buttons after final", finalEdit.buttons)
 	}
+	finalCard := lastFinalMessage(t, sender.messages[beforeFinalMessages:])
+	if !strings.Contains(finalCard.text, "Final answer is ready.") {
+		t.Fatalf("final card = %#v, want final content", finalCard)
+	}
 	for _, forbidden := range []string{"已中断", "interrupted"} {
-		if strings.Contains(finalEdit.codexStatus, forbidden) || strings.Contains(finalEdit.codexProgressMarkdown, forbidden) || strings.Contains(finalEdit.codexFinalMarkdown, forbidden) {
+		if strings.Contains(finalEdit.codexStatus, forbidden) || strings.Contains(finalEdit.codexProgressMarkdown, forbidden) || strings.Contains(finalCard.text, forbidden) {
 			t.Fatalf("final edit leaked %q: %#v", forbidden, finalEdit)
 		}
 	}
@@ -1843,12 +1854,16 @@ func TestFeishuInterruptedFinalAnswerRendersFinalCard(t *testing.T) {
 
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
 
-	if len(finalMessages(sender.messages)) != 0 {
-		t.Fatalf("final messages = %#v, want interrupted final folded into Codex panel", finalMessages(sender.messages))
+	if len(finalMessages(sender.messages)) != 1 {
+		t.Fatalf("final messages = %#v, want standalone interrupted final card", finalMessages(sender.messages))
 	}
-	final := lastCodexPanelMessage(t, sender.messages)
-	if !strings.Contains(final.codexFinalMarkdown, "Done after interrupted status.") {
-		t.Fatalf("final = %#v, want interrupted final in Codex panel", final)
+	progress := lastCodexPanelMessage(t, sender.messages)
+	if progress.codexFinalMarkdown != "" {
+		t.Fatalf("progress = %#v, want no interrupted final in Codex panel", progress)
+	}
+	final := lastFinalMessage(t, sender.messages)
+	if !strings.Contains(final.text, "Done after interrupted status.") {
+		t.Fatalf("final = %#v, want interrupted final card content", final)
 	}
 	for _, forbidden := range []string{"状态: 已中断", "Status: Interrupted", "状态: 运行中", "Status: Processing"} {
 		if strings.Contains(final.text, forbidden) {
@@ -2033,12 +2048,16 @@ func TestChatInputSyncAdoptsObserverPanelForSameTurn(t *testing.T) {
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, true, model.PanelSourceFeishuInput)
 
-	if len(finalMessages(sender.messages)) != 0 {
-		t.Fatalf("messages = %#v, want final folded into existing Codex panel", sender.messages)
+	if len(finalMessages(sender.messages)) != 1 {
+		t.Fatalf("messages = %#v, want standalone final card", sender.messages)
 	}
 	finalEdit := lastCodexPanelEdit(t, sender.edits)
-	if !strings.Contains(finalEdit.codexFinalMarkdown, "Test") || len(finalEdit.buttons) != 0 {
-		t.Fatalf("final edit = %#v, want final folded into Codex panel", finalEdit)
+	if finalEdit.codexFinalMarkdown != "" || len(finalEdit.buttons) != 0 {
+		t.Fatalf("final edit = %#v, want terminal progress panel without final", finalEdit)
+	}
+	finalCard := lastFinalMessage(t, sender.messages)
+	if !strings.Contains(finalCard.text, "Test") {
+		t.Fatalf("final card = %#v, want final content", finalCard)
 	}
 	if len(sender.deletes) != 2 || sender.deletes[0].messageID != 102 || sender.deletes[1].messageID != 103 {
 		t.Fatalf("deletes = %#v, want old tool/output messages deleted", sender.deletes)
@@ -2413,8 +2432,12 @@ func TestInterruptedPanelSendsFinalWhenSameTurnCompletes(t *testing.T) {
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
 
 	finalEdit := lastCodexPanelEdit(t, sender.edits)
-	if !strings.Contains(finalEdit.codexFinalMarkdown, "Recovered final.") || len(finalEdit.buttons) != 0 {
-		t.Fatalf("final edit = %#v, want recovered final and no running buttons", finalEdit)
+	if finalEdit.codexFinalMarkdown != "" || len(finalEdit.buttons) != 0 {
+		t.Fatalf("final edit = %#v, want terminal progress panel without final and no running buttons", finalEdit)
+	}
+	finalCard := lastFinalMessage(t, sender.messages)
+	if !strings.Contains(finalCard.text, "Recovered final.") {
+		t.Fatalf("final card = %#v, want recovered final", finalCard)
 	}
 	refreshed, err := service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
 	if err != nil {
@@ -2480,12 +2503,12 @@ func TestNewTerminalTurnAfterExistingPanelStillSendsFinal(t *testing.T) {
 
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
 
-	if len(finalMessages(sender.messages)) != 0 {
-		t.Fatalf("final messages = %#v, want final folded into Codex panel", finalMessages(sender.messages))
+	if len(finalMessages(sender.messages)) != 1 {
+		t.Fatalf("final messages = %#v, want standalone final card", finalMessages(sender.messages))
 	}
-	panelMessage := lastCodexPanelMessage(t, sender.messages)
-	if !strings.Contains(panelMessage.codexFinalMarkdown, "NEW FINAL") {
-		t.Fatalf("codex panel = %#v, want new final", panelMessage)
+	finalCard := lastFinalMessage(t, sender.messages)
+	if !strings.Contains(finalCard.text, "NEW FINAL") {
+		t.Fatalf("final card = %#v, want new final", finalCard)
 	}
 }
 
@@ -3188,12 +3211,16 @@ func TestTerminalSyncAdoptsActivePanelWithoutTurnID(t *testing.T) {
 
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
 
-	if len(finalMessages(sender.messages)) != 0 {
-		t.Fatalf("messages = %#v, want final folded into existing Codex panel", sender.messages)
+	if len(finalMessages(sender.messages)) != 1 {
+		t.Fatalf("messages = %#v, want standalone final card", sender.messages)
 	}
 	finalEdit := lastCodexPanelEdit(t, sender.edits)
-	if !strings.Contains(finalEdit.codexFinalMarkdown, "ADOPTED_OK") || len(finalEdit.buttons) != 0 {
-		t.Fatalf("final edit = %#v, want adopted final folded into Codex panel", finalEdit)
+	if finalEdit.codexFinalMarkdown != "" || len(finalEdit.buttons) != 0 {
+		t.Fatalf("final edit = %#v, want terminal progress panel without final", finalEdit)
+	}
+	finalCard := lastFinalMessage(t, sender.messages)
+	if !strings.Contains(finalCard.text, "ADOPTED_OK") {
+		t.Fatalf("final card = %#v, want adopted final", finalCard)
 	}
 	if len(sender.deletes) != 2 || sender.deletes[0].messageID != 102 || sender.deletes[1].messageID != 103 {
 		t.Fatalf("deletes = %#v, want existing tool/output delete and summary retained", sender.deletes)
