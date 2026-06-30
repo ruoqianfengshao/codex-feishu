@@ -1447,11 +1447,11 @@ func TestRenderDesktopUserNoticeHidesImageAttachmentPaths(t *testing.T) {
 		Thread:       thread,
 		LatestTurnID: "turn-desktop-image-style",
 		LatestUserMessageText: "# Files mentioned by the user:\n\n" +
-			"## codex-clipboard-a1250494.png: /var/folders/8l/codex-clipboard-a1250494.png\n\n" +
+			"## codex-clipboard-a1250494.png: /tmp/codex-clipboard-a1250494.png\n\n" +
 			"## My request for Codex:\n" +
 			"这个在飞书上显示的还不对\n" +
-			"[Image: /var/folders/8l/codex-clipboard-a1250494.png]",
-		LatestUserMessageImagePath: "/var/folders/8l/codex-clipboard-a1250494.png",
+			"[Image: /tmp/codex-clipboard-a1250494.png]",
+		LatestUserMessageImagePath: "/tmp/codex-clipboard-a1250494.png",
 		LatestUserMessageFP:        "user-image-style-fp",
 	}
 
@@ -1466,7 +1466,7 @@ func TestRenderDesktopUserNoticeHidesImageAttachmentPaths(t *testing.T) {
 	if messages[0].ImagePath != snapshot.LatestUserMessageImagePath {
 		t.Fatalf("image path = %q, want attached image path", messages[0].ImagePath)
 	}
-	for _, forbidden := range []string{"Files mentioned by the user", "My request for Codex", "codex-clipboard-a1250494.png:", "[Image:", "/var/folders/8l/"} {
+	for _, forbidden := range []string{"Files mentioned by the user", "My request for Codex", "codex-clipboard-a1250494.png:", "[Image:", "/tmp/codex-clipboard-a1250494.png"} {
 		if strings.Contains(messages[0].Text, forbidden) {
 			t.Fatalf("message text = %q, want no attachment metadata %q", messages[0].Text, forbidden)
 		}

@@ -12,7 +12,7 @@ Use this checklist after changes that affect Feishu commands, topic routing, ima
 Useful local checks:
 
 ```bash
-tail -f /Users/vico/.codex-tg/logs/daemon.out.log
+tail -f "$HOME/.codex-tg/logs/daemon.out.log"
 ```
 
 ## Command Surface

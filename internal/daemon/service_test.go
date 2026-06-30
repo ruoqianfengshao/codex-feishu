@@ -318,8 +318,8 @@ func TestThreadsCommandHidesInternalSubAgentThreads(t *testing.T) {
 	notLoadedIDTitle := model.Thread{
 		ID:            "019efe1a-c0e7-7722-adf5-f036e91d7ec1",
 		Title:         "019efe1a-c0e7-7722-adf5-f036e91d7ec1",
-		ProjectName:   "iam",
-		DirectoryName: "iam",
+		ProjectName:   "sample-app",
+		DirectoryName: "sample-app",
 		UpdatedAt:     60,
 		Status:        "notLoaded",
 		Raw:           json.RawMessage(`{"id":"019efe1a-c0e7-7722-adf5-f036e91d7ec1","name":null}`),
@@ -353,7 +353,7 @@ func TestThreadsCommandHidesInternalSubAgentThreads(t *testing.T) {
 	if strings.Contains(response.Text, "Archived work") || strings.Contains(response.Text, archived.ID) {
 		t.Fatalf("/chats text contains archived thread:\n%s", response.Text)
 	}
-	if strings.Contains(response.Text, "iam") || strings.Contains(response.Text, notLoadedIDTitle.ID) {
+	if strings.Contains(response.Text, "sample-app") || strings.Contains(response.Text, notLoadedIDTitle.ID) {
 		t.Fatalf("/chats text contains unavailable id-title notLoaded thread:\n%s", response.Text)
 	}
 	if !strings.Contains(response.Text, "codex-tg\nVisible work    1 分钟前") {
@@ -3504,7 +3504,7 @@ func TestFeishuImageInputUsesDesktopLocalImagePart(t *testing.T) {
 	service.desktopInputDispatcher = desktop
 	service.desktopOpener = func(ctx context.Context, threadID string) error { return nil }
 
-	text := "用户发送了一张图片，已保存到：/Users/vico/.codex-tg/data/feishu-attachments/7893bfdbd95a.jpg\n请读取并分析这张图片。"
+	text := "用户发送了一张图片，已保存到：/Users/example/.codex-tg/data/feishu-attachments/7893bfdbd95a.jpg\n请读取并分析这张图片。"
 	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", text, "", model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
@@ -3531,7 +3531,7 @@ func TestFeishuImageInputUsesDesktopLocalImagePart(t *testing.T) {
 	if got, want := input[1]["type"], "localImage"; got != want {
 		t.Fatalf("image part type = %v, want %q", got, want)
 	}
-	if got, want := input[1]["path"], "/Users/vico/.codex-tg/data/feishu-attachments/7893bfdbd95a.jpg"; got != want {
+	if got, want := input[1]["path"], "/Users/example/.codex-tg/data/feishu-attachments/7893bfdbd95a.jpg"; got != want {
 		t.Fatalf("image part path = %v, want %q", got, want)
 	}
 }
@@ -3563,7 +3563,7 @@ func TestFeishuImageReplyUsesDesktopLocalImagePart(t *testing.T) {
 	service.desktopInputDispatcher = desktop
 	service.desktopOpener = func(ctx context.Context, threadID string) error { return nil }
 
-	text := "The user sent an image saved at: /Users/vico/.codex-tg/data/feishu-attachments/reply.jpg\nPlease read and analyze this image."
+	text := "The user sent an image saved at: /Users/example/.codex-tg/data/feishu-attachments/reply.jpg\nPlease read and analyze this image."
 	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, thread.ActiveTurnID, text, "", model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
@@ -3587,7 +3587,7 @@ func TestFeishuImageReplyUsesDesktopLocalImagePart(t *testing.T) {
 	if got, want := input[1]["type"], "localImage"; got != want {
 		t.Fatalf("image part type = %v, want %q", got, want)
 	}
-	if got, want := input[1]["path"], "/Users/vico/.codex-tg/data/feishu-attachments/reply.jpg"; got != want {
+	if got, want := input[1]["path"], "/Users/example/.codex-tg/data/feishu-attachments/reply.jpg"; got != want {
 		t.Fatalf("image part path = %v, want %q", got, want)
 	}
 }

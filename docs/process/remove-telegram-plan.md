@@ -101,7 +101,7 @@ Verification:
 
 - [x] `rg -n "Telegram|telegram|tgformat|PanelSourceTelegram|telegram_origin|Bot API"` returns no runtime/product references outside this removal checklist and old database drop identifiers.
 - [x] `go test ./...` passes.
-- [x] `go build -buildvcs=false -o /Users/vico/.local/bin/ctr-go ./cmd/ctr-go` passes.
+- [x] `go build -buildvcs=false -o "$HOME/.local/bin/ctr-go" ./cmd/ctr-go` passes.
 - [ ] Restart local service.
 - [ ] Feishu live check: `/chats`.
 - [ ] Feishu live check: open an existing chat topic.

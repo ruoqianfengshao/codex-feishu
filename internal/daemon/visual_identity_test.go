@@ -93,7 +93,7 @@ func TestVisualHeaderShowsProjectSegmentForWorkspaceThread(t *testing.T) {
 		ID:          "thread-header-project",
 		Title:       "Implement Feishu bridge",
 		ProjectName: "codex-tg-controller",
-		CWD:         "/Users/vico/workspace/vico/codex-tg-controller",
+		CWD:         "/Users/example/workspace/codex-tg-controller",
 	}, "turn-header-project")
 
 	if !strings.Contains(header, "[codex-tg-contro...]") {
@@ -111,11 +111,11 @@ func TestVisualHeaderOmitsProjectSegmentForCodexChatThread(t *testing.T) {
 	header := service.visualHeader(context.Background(), "Final", model.Thread{
 		ID:          "thread-header-chat",
 		Title:       "019efe1a-c0e7-7722-adf5-f036e91d7ec1",
-		ProjectName: "iam",
-		CWD:         "/Users/vico/Documents/Codex/2026-06-25/iam",
+		ProjectName: "scratch",
+		CWD:         "/Users/example/Documents/Codex/2026-06-25/scratch",
 	}, "turn-header-chat")
 
-	if strings.Contains(header, "[iam]") {
+	if strings.Contains(header, "[scratch]") {
 		t.Fatalf("header = %q, want no Codex chat project segment", header)
 	}
 	if !strings.Contains(header, "[019efe1a-c0e7-7722-adf5-f03...]") || strings.Contains(header, "[T:") || strings.Contains(header, "[R:") || !strings.Contains(header, "[Final]") {
@@ -128,13 +128,13 @@ func TestVisualHeaderShowsSameNameWhenThreadIsRealWorkspace(t *testing.T) {
 
 	service := newTestService(t)
 	header := service.visualHeader(context.Background(), "Final", model.Thread{
-		ID:          "thread-header-real-iam",
+		ID:          "thread-header-real-sample",
 		Title:       "IAM workspace",
-		ProjectName: "iam",
-		CWD:         "/Users/vico/workspace/terminus/iam",
-	}, "turn-header-real-iam")
+		ProjectName: "sample-project",
+		CWD:         "/Users/example/workspace/sample-project",
+	}, "turn-header-real-sample")
 
-	if !strings.Contains(header, "[iam]") {
+	if !strings.Contains(header, "[sample-project]") {
 		t.Fatalf("header = %q, want project segment for real workspace", header)
 	}
 }
