@@ -1,5 +1,7 @@
 # codex-feishu: Feishu control for local Codex
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 `codex-feishu` is a local Go daemon for remotely controlling OpenAI Codex App
 Server from Feishu/Lark. It keeps Codex on your machine, maps opened Codex
 threads to Feishu topics, and routes replies, approvals, progress, final
@@ -40,7 +42,7 @@ On macOS, use the tarball from
 and install it into your user bin directory. This does not need `sudo`:
 
 ```bash
-VERSION="v0.6.2"
+VERSION="v0.6.4"
 ARCH="$(uname -m)"
 if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; fi
 mkdir -p "$HOME/.local/bin"
@@ -100,6 +102,7 @@ treat `health.ok == true` as the readiness gate. When it is false, read
 Use the Codex bot DM as the workspace:
 
 ```text
+/help
 /chats
 /projects
 /new <prompt>
@@ -114,9 +117,22 @@ Continue the conversation in the topic.
 `/new <prompt>` always creates a temporary Codex chat. Project-scoped new
 threads should be created from the project card.
 
+`/help` returns an interactive command card. In the bot DM it shows workspace
+commands and explains which commands belong inside Codex thread topics. Inside a
+topic it only shows topic-scoped commands such as `/plan`, `/goal`, and `/stop`.
+
+`/setting` opens a Feishu form for model, reasoning effort, and bot language.
+When no local override is saved, the model and reasoning dropdowns are
+pre-filled from the current Codex config.
+
+`/status` returns a dashboard-style Feishu card with KPI sections and a Feishu
+chart for thread mix statistics. Language switching is intentionally kept in
+`/setting`, not `/status`.
+
 Configure Feishu bot custom menu items manually in the Feishu/Lark developer
 console if you want input-box shortcuts. Recommended commands:
 
+- `/help`
 - `/chats`
 - `/projects`
 - `/new`

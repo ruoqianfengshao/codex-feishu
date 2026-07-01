@@ -34,7 +34,7 @@ is installing for you. The tarball installs into your user directory and does
 not need `sudo`:
 
 ```bash
-VERSION="v0.6.2"
+VERSION="v0.6.4"
 ARCH="$(uname -m)"
 if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; fi
 mkdir -p "$HOME/.local/bin"
@@ -65,6 +65,7 @@ go run ./cmd/ctr-go daemon run
 In the Codex bot DM:
 
 ```text
+/help
 /chats
 /projects
 /new <prompt>
@@ -79,11 +80,24 @@ Codex thread. Continue the conversation in that topic.
 `/new <prompt>` creates a temporary chat. Project-scoped new threads are only
 created from project cards.
 
+`/help` is interactive. In the bot DM it shows workspace commands; inside a
+Codex topic it shows only topic-scoped commands such as `/plan`, `/goal`, and
+`/stop`.
+
+`/setting` opens a Feishu form for model, reasoning effort, and bot language.
+When no local override is saved, model and reasoning values are pre-filled from
+the current Codex config.
+
+`/status` shows a dashboard-style Feishu card with KPI sections and a Feishu
+chart for thread mix statistics. Change language from `/setting`, not
+`/status`.
+
 ## 4. Optional Bot Menu
 
 Feishu bot custom menus are configured manually in the Feishu/Lark developer
 console. Recommended send-text menu commands:
 
+- `/help`
 - `/chats`
 - `/projects`
 - `/new`

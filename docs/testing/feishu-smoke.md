@@ -18,13 +18,26 @@ tail -f "$HOME/.codex-feishu/logs/daemon.out.log"
 ## Command Surface
 
 - `/help`
-  - Shows only supported MVP commands.
-  - Does not show removed commands such as `/threads`, `/workspace`, `/home`, `/newchat`, `/models`, `/lang`, or `/panelmode`.
+  - In the bot DM, shows an interactive command card for workspace commands.
+  - In a Codex topic, replies in that topic and shows only topic-scoped
+    commands such as `/plan`, `/goal`, and `/stop`.
+  - Does not show removed commands such as `/threads`, `/workspace`, `/home`,
+    `/newchat`, `/models`, `/lang`, `/panelmode`, or `/reply`.
 - `/status`
   - Shows a dashboard-style card.
-  - Shows language and topic mode.
-  - Shows project count, temporary chat count, active, archived, and deleted chat counts.
+  - Shows health KPIs, thread KPIs, Codex connection status, and Feishu topic
+    mode.
+  - Shows a Feishu chart component for project-vs-temporary thread mix.
+  - Does not show language switching controls; language is changed from
+    `/setting`.
   - Does not show current chat context as the main content.
+- `/setting`
+  - Opens a Feishu form, not a static text menu.
+  - Shows dropdowns for model, reasoning effort, and bot language.
+  - Pre-fills model and reasoning effort from the current Codex config when no
+    local override is saved.
+  - Confirming the form updates the card without sending a duplicate toast or
+    fallback message.
 - `/chats`
   - Shows active chats only.
   - Does not show archived or deleted chats.
