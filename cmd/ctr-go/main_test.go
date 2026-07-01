@@ -257,6 +257,9 @@ func TestRunFeishuSetupWritesConfigFromScanRegistration(t *testing.T) {
 	if !strings.Contains(output, "Setup link:") || strings.Contains(output, "█") {
 		t.Fatalf("setup output did not honor no-qr:\n%s", output)
 	}
+	if strings.Contains(output, "QR image:") || strings.Contains(output, "![Feishu setup QR]") {
+		t.Fatalf("setup output rendered QR despite no-qr:\n%s", output)
+	}
 	for _, want := range []string{"/start", "bot DM", "topic reply"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("setup output missing %q:\n%s", want, output)
@@ -280,6 +283,51 @@ func TestRunFeishuSetupWritesConfigFromScanRegistration(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("config missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestRunFeishuSetupRendersQRCodeImage(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.env")
+	binary := os.Args[0]
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm failed: %v", err)
+		}
+		switch r.Form.Get("action") {
+		case "begin":
+			_, _ = w.Write([]byte(`{"device_code":"device-1","verification_uri_complete":"` + serverURL(r) + `/scan?code=1","expires_in":60,"interval":1}`))
+		case "poll":
+			_, _ = w.Write([]byte(`{"client_id":"cli_app","client_secret":"feishu-secret-value","user_info":{"open_id":"ou_creator","tenant_brand":"feishu"}}`))
+		default:
+			t.Fatalf("unexpected action %q", r.Form.Get("action"))
+		}
+	}))
+	defer server.Close()
+
+	var out bytes.Buffer
+	err := runFeishuSetupWithOptions(feishuSetupOptions{
+		ConfigPath:     configPath,
+		Domain:         server.URL,
+		DefaultCWD:     dir,
+		CodexChatsRoot: filepath.Join(dir, "Codex"),
+		CodexBin:       binary,
+		RequestTimeout: time.Minute,
+	}, strings.NewReader(""), &out)
+	if err != nil {
+		t.Fatalf("feishu setup failed: %v", err)
+	}
+	output := out.String()
+	if !strings.Contains(output, "QR image:") || !strings.Contains(output, "![Feishu setup QR]") || !strings.Contains(output, "█") {
+		t.Fatalf("setup output missing QR renderings:\n%s", output)
+	}
+	path := filepath.Join(os.TempDir(), "codex-feishu-setup-qr.png")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile QR image failed: %v", err)
+	}
+	if len(data) < 8 || string(data[:8]) != "\x89PNG\r\n\x1a\n" {
+		t.Fatalf("QR image is not PNG, first bytes=%q", data[:minInt(len(data), 8)])
 	}
 }
 
@@ -412,4 +460,11 @@ func writeDoctorFakeCodex(t *testing.T, root, body string) string {
 		t.Fatalf("WriteFile(fake-codex) failed: %v", err)
 	}
 	return path
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

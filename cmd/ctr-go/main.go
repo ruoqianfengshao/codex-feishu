@@ -21,6 +21,7 @@ import (
 	"time"
 
 	qrterminal "github.com/mdp/qrterminal/v3"
+	"rsc.io/qr"
 
 	"github.com/ruoqianfengshao/codex-feishu/internal/config"
 	"github.com/ruoqianfengshao/codex-feishu/internal/daemon"
@@ -200,6 +201,12 @@ func runFeishuSetupWithOptions(opts feishuSetupOptions, in io.Reader, out io.Wri
 				_, _ = fmt.Fprintf(out, "Expires in: %s\n", info.ExpireIn.Round(time.Second))
 			}
 			if !opts.NoQR {
+				if path, err := writeSetupQRCodePNG(info.URL); err == nil {
+					_, _ = fmt.Fprintf(out, "QR image: %s\n", path)
+					_, _ = fmt.Fprintf(out, "![Feishu setup QR](%s)\n", path)
+				} else {
+					_, _ = fmt.Fprintf(out, "Could not write QR image: %v\n", err)
+				}
 				_, _ = fmt.Fprintln(out)
 				qrterminal.GenerateHalfBlock(info.URL, qrterminal.M, out)
 			}
@@ -246,6 +253,18 @@ func runFeishuSetupWithOptions(opts feishuSetupOptions, in io.Reader, out io.Wri
 	_, _ = fmt.Fprintln(out, "  ctr-go daemon run")
 	printFeishuWorkspaceNextSteps(out, "  ")
 	return nil
+}
+
+func writeSetupQRCodePNG(setupURL string) (string, error) {
+	code, err := qr.Encode(setupURL, qr.M)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(os.TempDir(), "codex-feishu-setup-qr.png")
+	if err := os.WriteFile(path, code.PNG(), 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func feishuSetupConfigValues(opts feishuSetupOptions, existing map[string]string, result feishu.RegistrationResult) (map[string]string, error) {
