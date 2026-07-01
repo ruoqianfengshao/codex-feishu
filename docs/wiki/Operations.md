@@ -10,6 +10,16 @@ ctr-go status
 ctr-go repair
 ```
 
+`ctr-go doctor` is the AI-friendly preflight check. It prints JSON with:
+
+- `health.ok`: true only when blocking checks pass.
+- `health.checks[]`: stable check ids, status, message, remediation, and details.
+- `health.next_actions`: concise remediation steps suitable for another agent.
+
+Use `health.checks` before reading logs. The check starts a temporary Codex
+app-server, verifies basic Codex RPCs, validates Feishu credentials, and reports
+recent persisted daemon errors without sending messages to Feishu.
+
 After Feishu-facing code changes:
 
 1. Rebuild the binary.

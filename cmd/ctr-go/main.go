@@ -468,6 +468,8 @@ func runDoctor(cfg config.Config, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	state := normalizeStringMap(doctor["daemon_state"])
+	doctor["health"] = runHealthChecks(ctx, cfg, state)
 	encoded, err := json.MarshalIndent(doctor, "", "  ")
 	if err != nil {
 		return err

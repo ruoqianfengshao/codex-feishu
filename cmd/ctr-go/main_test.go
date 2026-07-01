@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log"
 	"net/http"
@@ -332,4 +333,83 @@ func TestStatusAndDoctorDoNotLeakConfigFileSecret(t *testing.T) {
 			t.Fatalf("%v leaked secret:\n%s", command, out.String())
 		}
 	}
+}
+
+func TestRunHealthChecksReportsActionableCodexBinaryFailure(t *testing.T) {
+	cfg := config.Config{
+		CodexBin:       filepath.Join(t.TempDir(), "missing-codex"),
+		DefaultCWD:     t.TempDir(),
+		CodexChatsRoot: t.TempDir(),
+		RequestTimeout: time.Second,
+	}
+	report := runHealthChecks(context.Background(), cfg, nil)
+	if report.OK {
+		t.Fatal("health report OK = true, want false")
+	}
+	check := findHealthCheck(report.Checks, "codex.binary")
+	if check == nil {
+		t.Fatalf("codex.binary check missing: %#v", report.Checks)
+	}
+	if check.Status != healthFail {
+		t.Fatalf("codex.binary status = %q, want fail", check.Status)
+	}
+	if !strings.Contains(check.Remediation, "CTR_GO_CODEX_BIN") {
+		t.Fatalf("codex.binary remediation = %q, want CTR_GO_CODEX_BIN guidance", check.Remediation)
+	}
+}
+
+func TestRunHealthChecksAcceptsFakeCodexAppServer(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake app-server shell script is Unix-only")
+	}
+	root := t.TempDir()
+	script := writeDoctorFakeCodex(t, root, `#!/bin/sh
+set -eu
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":1,"result":{}}\n' ;;
+    *'"method":"initialized"'*) ;;
+    *'"method":"thread/list"'*) printf '{"jsonrpc":"2.0","id":2,"result":{"threads":[]}}\n' ;;
+    *'"method":"model/list"'*) printf '{"jsonrpc":"2.0","id":3,"result":{"models":[{"id":"gpt-test","isDefault":true}]}}\n' ;;
+  esac
+done
+`)
+	cfg := config.Config{
+		CodexBin:        script,
+		AppServerListen: "stdio://",
+		DefaultCWD:      root,
+		CodexChatsRoot:  root,
+		RequestTimeout:  5 * time.Second,
+	}
+	report := runHealthChecks(context.Background(), cfg, map[string]string{"appserver.live.last_error": ""})
+	appServer := findHealthCheck(report.Checks, "codex.app_server")
+	if appServer == nil || appServer.Status != healthPass {
+		t.Fatalf("codex.app_server = %#v, want pass", appServer)
+	}
+	threadList := findHealthCheck(report.Checks, "codex.thread_list")
+	if threadList == nil || threadList.Status != healthPass {
+		t.Fatalf("codex.thread_list = %#v, want pass", threadList)
+	}
+	modelList := findHealthCheck(report.Checks, "codex.model_list")
+	if modelList == nil || modelList.Status != healthPass {
+		t.Fatalf("codex.model_list = %#v, want pass", modelList)
+	}
+}
+
+func findHealthCheck(checks []healthCheck, id string) *healthCheck {
+	for i := range checks {
+		if checks[i].ID == id {
+			return &checks[i]
+		}
+	}
+	return nil
+}
+
+func writeDoctorFakeCodex(t *testing.T, root, body string) string {
+	t.Helper()
+	path := filepath.Join(root, "fake-codex")
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatalf("WriteFile(fake-codex) failed: %v", err)
+	}
+	return path
 }

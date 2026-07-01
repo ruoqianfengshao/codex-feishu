@@ -63,6 +63,10 @@ The Feishu app must have the bot enabled, WebSocket event subscription enabled,
 message receive events subscribed, and interactive card callbacks enabled. It
 also needs the message and file permissions required for the target chats.
 
+`ctr-go doctor` emits a JSON health report under `health`. AI installers should
+treat `health.ok == true` as the readiness gate. When it is false, read
+`health.checks[].remediation` and `health.next_actions` before changing config.
+
 ## Daily Use
 
 Use the Codex bot DM as the workspace:
@@ -172,6 +176,17 @@ go build -buildvcs=false ./...
 
 For Feishu-facing changes, also rebuild, restart the service, and validate the
 changed path in Feishu.
+
+For installation validation on another machine:
+
+```powershell
+ctr-go doctor
+ctr-go service status
+```
+
+Check `doctor.health.checks` first. It probes the Codex binary, Codex
+app-server initialization, basic Codex RPCs, Feishu app credentials, and recent
+daemon errors without sending test messages to Feishu.
 
 ## Documentation
 
