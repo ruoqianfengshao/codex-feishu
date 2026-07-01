@@ -21,19 +21,12 @@ jobs:
       - name: Build release artifacts
         run: scripts/build-release.sh
       - name: Upload artifacts to GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          notes_file="docs/release/${TAG_NAME}.md"
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" dist/* --clobber
-          elif [ -f "$notes_file" ]; then
-            gh release create "$TAG_NAME" dist/* --title "$TAG_NAME" --notes-file "$notes_file"
-          else
-            gh release create "$TAG_NAME" dist/* --title "$TAG_NAME" --generate-notes
-          fi
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: docs/release/${{ github.ref_name }}.md
+          files: dist/*
   macos-pkg:
     needs: build
     strategy:
@@ -57,7 +50,7 @@ jobs:
           MACOS_PKG_ARCHES: ${{ matrix.arch }}
         run: scripts/build-macos-pkg.sh
       - name: Upload macOS pkg
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ github.ref_name }}
-        run: gh release upload "$TAG_NAME" dist/*.pkg --clobber
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: dist/*.pkg

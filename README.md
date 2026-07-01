@@ -40,7 +40,7 @@ On macOS, use the tarball from
 and install it into your user bin directory. This does not need `sudo`:
 
 ```bash
-VERSION="v0.6.1"
+VERSION="v0.6.2"
 ARCH="$(uname -m)"
 if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; fi
 mkdir -p "$HOME/.local/bin"
