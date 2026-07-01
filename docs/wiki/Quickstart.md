@@ -29,9 +29,24 @@ permissions.
 
 ## 2. Install And Run
 
-On macOS:
+On macOS, prefer the release tarball over the `.pkg` installer when an AI agent
+is installing for you. The tarball installs into your user directory and does
+not need `sudo`:
 
-```powershell
+```bash
+VERSION="v0.6.1"
+ARCH="$(uname -m)"
+if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; fi
+mkdir -p "$HOME/.local/bin"
+curl -L -o /tmp/ctr-go.tar.gz \
+  "https://github.com/ruoqianfengshao/codex-feishu/releases/latest/download/ctr-go_${VERSION}_darwin_${ARCH}.tar.gz"
+tar -xzf /tmp/ctr-go.tar.gz -C "$HOME/.local/bin" ctr-go
+"$HOME/.local/bin/ctr-go" version
+```
+
+Then configure and start the user LaunchAgent:
+
+```bash
 ctr-go service install --start --start-at-login
 ctr-go feishu setup
 ctr-go doctor

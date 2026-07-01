@@ -35,18 +35,33 @@ Prerequisites:
 - OpenAI Codex CLI with `codex app-server`.
 - Feishu/Lark access that can create or authorize an enterprise self-built app.
 
-On macOS, install the latest package from
-[GitHub Releases](https://github.com/ruoqianfengshao/codex-feishu/releases/latest),
-then run:
+On macOS, use the tarball from
+[GitHub Releases](https://github.com/ruoqianfengshao/codex-feishu/releases/latest)
+and install it into your user bin directory. This does not need `sudo`:
 
-```powershell
+```bash
+VERSION="v0.6.1"
+ARCH="$(uname -m)"
+if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; fi
+mkdir -p "$HOME/.local/bin"
+curl -L -o /tmp/ctr-go.tar.gz \
+  "https://github.com/ruoqianfengshao/codex-feishu/releases/latest/download/ctr-go_${VERSION}_darwin_${ARCH}.tar.gz"
+tar -xzf /tmp/ctr-go.tar.gz -C "$HOME/.local/bin" ctr-go
+"$HOME/.local/bin/ctr-go" version
+```
+
+Make sure `$HOME/.local/bin` is on `PATH`, or call the binary by absolute path.
+
+Then configure and start the user LaunchAgent:
+
+```bash
 ctr-go service install --start --start-at-login
 ctr-go feishu setup
 ctr-go doctor
 ```
 
-The installer and service are named for `codex-feishu`, but the installed CLI is
-`ctr-go`.
+The service is installed as a user LaunchAgent and does not require `sudo`.
+The installed CLI is still named `ctr-go`.
 
 For a source build:
 
