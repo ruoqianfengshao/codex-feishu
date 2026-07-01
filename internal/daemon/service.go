@@ -3358,7 +3358,7 @@ func (s *Service) resolveRouteFromSource(ctx context.Context, chatID, topicID in
 		return model.RouteDecision{ThreadID: strings.TrimSpace(explicitThreadID), Source: model.RouteSourceExplicit}, nil
 	}
 	if replyToMessageID != 0 {
-		route, err := s.store.ResolveMessageRoute(ctx, chatID, topicID, replyToMessageID)
+		route, err := s.resolveMessageRouteFromSource(ctx, chatID, topicID, replyToMessageID, sourceMode)
 		if err != nil {
 			return model.RouteDecision{}, err
 		}
@@ -3374,7 +3374,7 @@ func (s *Service) resolveRouteFromSource(ctx context.Context, chatID, topicID in
 		return model.RouteDecision{ThreadID: steerState.ThreadID, Source: model.RouteSourceSteer}, nil
 	}
 	if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
-		panel, err := s.store.GetLatestCurrentPanelForChat(ctx, chatID, topicID)
+		panel, err := s.latestCurrentPanelFromSource(ctx, chatID, topicID, sourceMode)
 		if err != nil {
 			return model.RouteDecision{}, err
 		}
@@ -3383,6 +3383,22 @@ func (s *Service) resolveRouteFromSource(ctx context.Context, chatID, topicID in
 		}
 	}
 	return model.RouteDecision{Source: model.RouteSourceNone}, nil
+}
+
+func (s *Service) resolveMessageRouteFromSource(ctx context.Context, chatID, topicID, messageID int64, sourceMode string) (*model.MessageRoute, error) {
+	route, err := s.store.ResolveMessageRoute(ctx, chatID, topicID, messageID)
+	if err != nil || route != nil || topicID == 0 || normalizeInputSourceMode(sourceMode) != model.PanelSourceFeishuInput {
+		return route, err
+	}
+	return s.store.ResolveMessageRoute(ctx, chatID, 0, messageID)
+}
+
+func (s *Service) latestCurrentPanelFromSource(ctx context.Context, chatID, topicID int64, sourceMode string) (*model.ThreadPanel, error) {
+	panel, err := s.store.GetLatestCurrentPanelForChat(ctx, chatID, topicID)
+	if err != nil || panel != nil || topicID == 0 || normalizeInputSourceMode(sourceMode) != model.PanelSourceFeishuInput {
+		return panel, err
+	}
+	return s.store.GetLatestCurrentPanelForChat(ctx, chatID, 0)
 }
 
 func (s *Service) respondUserInputRequest(ctx context.Context, requestID, text string) (*DirectResponse, error) {

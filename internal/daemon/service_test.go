@@ -64,6 +64,51 @@ func TestResolveRoutePrecedenceExplicitThenReplyThenNone(t *testing.T) {
 	}
 }
 
+func TestResolveRouteFallsBackToRootlessFeishuTopicRoutes(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+
+	if err := service.store.PutMessageRoute(ctx, model.MessageRoute{
+		ChatID:    123456789,
+		TopicID:   0,
+		MessageID: 99,
+		ThreadID:  "reply-thread",
+		TurnID:    "reply-turn",
+		CreatedAt: model.NowString(),
+	}); err != nil {
+		t.Fatalf("PutMessageRoute failed: %v", err)
+	}
+	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:        123456789,
+		TopicID:       0,
+		ProjectName:   "project",
+		ThreadID:      "panel-thread",
+		SourceMode:    model.PanelSourceFeishuInput,
+		CurrentTurnID: "panel-turn",
+		Status:        "completed",
+	}); err != nil {
+		t.Fatalf("CreateThreadPanel failed: %v", err)
+	}
+
+	reply, err := service.resolveRouteFromSource(ctx, 123456789, 555, "", 99, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("resolveRoute(reply fallback) failed: %v", err)
+	}
+	if reply.ThreadID != "reply-thread" || reply.TurnID != "reply-turn" || reply.Source != model.RouteSourceReply {
+		t.Fatalf("reply route = %#v, want legacy topic_id=0 reply route", reply)
+	}
+
+	panel, err := service.resolveRouteFromSource(ctx, 123456789, 555, "", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("resolveRoute(panel fallback) failed: %v", err)
+	}
+	if panel.ThreadID != "panel-thread" || panel.Source != model.RouteSourcePanel {
+		t.Fatalf("panel route = %#v, want legacy topic_id=0 panel route", panel)
+	}
+}
+
 func TestResolveRouteFromFeishuPlainTextUsesLatestCurrentPanelOnly(t *testing.T) {
 	t.Parallel()
 
