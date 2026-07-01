@@ -23,6 +23,93 @@ func buildCard(text string, buttons [][]model.ButtonSpec) (string, error) {
 	}})
 }
 
+func buildSettingsFormCard(form model.SettingsForm) (string, error) {
+	elements := []map[string]any{
+		markdownElementV2("**" + form.Title + "**"),
+		settingsSelectElement(form.ModelLabel, "model", form.ModelValue, form.ModelOptions),
+		settingsSelectElement(form.ReasoningLabel, "reasoning", form.ReasoningValue, form.ReasoningOptions),
+		settingsSelectElement(form.LanguageLabel, "language", form.LanguageValue, form.LanguageOptions),
+		map[string]any{
+			"tag":         "button",
+			"action_type": "form_submit",
+			"text": map[string]any{
+				"tag":     "plain_text",
+				"content": form.SubmitText,
+			},
+			"type": "primary",
+			"value": map[string]any{
+				"callback_data": form.SubmitToken,
+			},
+		},
+	}
+	card := map[string]any{
+		"schema": "2.0",
+		"config": map[string]any{
+			"width_mode": "fill",
+		},
+		"body": map[string]any{
+			"direction":        "vertical",
+			"padding":          "12px 12px 12px 12px",
+			"vertical_spacing": "8px",
+			"elements": []map[string]any{{
+				"tag":      "form",
+				"name":     "settings",
+				"elements": elements,
+			}},
+		},
+	}
+	data, err := json.Marshal(card)
+	if err != nil {
+		return "", err
+	}
+	out := string(data)
+	if err := checkCardSize(out); err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+func settingsSelectElement(label, name, value string, options []model.SelectOption) map[string]any {
+	if len(options) == 0 {
+		options = []model.SelectOption{{Text: "Auto", Value: ""}}
+	}
+	return map[string]any{
+		"tag":            "select_static",
+		"name":           name,
+		"placeholder":    plainTextElementV2(label),
+		"initial_option": selectedSettingsOption(value, options).Value,
+		"options":        settingsSelectOptions(options),
+	}
+}
+
+func settingsSelectOptions(options []model.SelectOption) []map[string]any {
+	out := make([]map[string]any, 0, len(options))
+	for _, option := range options {
+		out = append(out, settingsSelectOption(option))
+	}
+	return out
+}
+
+func settingsSelectOption(option model.SelectOption) map[string]any {
+	text := strings.TrimSpace(option.Text)
+	if text == "" {
+		text = " "
+	}
+	return map[string]any{
+		"text":  plainTextElementV2(text),
+		"value": option.Value,
+	}
+}
+
+func selectedSettingsOption(value string, options []model.SelectOption) model.SelectOption {
+	for _, option := range options {
+		if option.Value == value {
+			return option
+		}
+	}
+	return options[0]
+}
+
 func buildRenderedCard(message model.RenderedMessage, buttons [][]model.ButtonSpec) (string, error) {
 	if strings.TrimSpace(message.ImageKey) != "" {
 		return buildRenderedCardWithImage(message, buttons)
@@ -161,7 +248,7 @@ func buildSectionedCardWithStyle(sections []model.MessageSection, style string) 
 	if len(sections) == 0 {
 		sections = []model.MessageSection{{Text: " "}}
 	}
-	if sectionedCardHasRows(sections) {
+	if sectionedCardHasRowsOrCharts(sections) {
 		return buildSectionedCardV2(sections, style)
 	}
 	return buildSectionedCardV1WithStyle(sections, style)
@@ -214,9 +301,18 @@ func buildSectionedCardV1WithStyle(sections []model.MessageSection, style string
 	return out, nil
 }
 
-func sectionedCardHasRows(sections []model.MessageSection) bool {
+func sectionedCardHasRowsOrCharts(sections []model.MessageSection) bool {
 	for _, section := range sections {
-		if len(section.Rows) > 0 {
+		if len(section.Rows) > 0 || section.Chart != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func sectionedCardHasCharts(sections []model.MessageSection) bool {
+	for _, section := range sections {
+		if section.Chart != nil {
 			return true
 		}
 	}
@@ -246,6 +342,9 @@ func buildSectionedCardV2(sections []model.MessageSection, style string) (string
 				}
 			}
 			elements = append(elements, rowElementsV2(section.Rows)...)
+			if section.Chart != nil {
+				elements = append(elements, chartElementV2(*section.Chart))
+			}
 			elements = append(elements, buttonElementsV2(section.Buttons)...)
 		}
 	}
@@ -372,6 +471,24 @@ func imageElementV2(imageKey string) map[string]any {
 	}
 }
 
+func chartElementV2(chart model.MessageChart) map[string]any {
+	element := map[string]any{
+		"tag":        "chart",
+		"chart_spec": chart.Spec,
+		"preview":    true,
+	}
+	if value := strings.TrimSpace(chart.ElementID); value != "" {
+		element["element_id"] = value
+	}
+	if value := strings.TrimSpace(chart.AspectRatio); value != "" {
+		element["aspect_ratio"] = value
+	}
+	if value := strings.TrimSpace(chart.ColorTheme); value != "" {
+		element["color_theme"] = value
+	}
+	return element
+}
+
 func markdownElementWithMargin(text, margin string) map[string]any {
 	element := markdownElement(text)
 	if strings.TrimSpace(margin) != "" {
@@ -421,6 +538,9 @@ func dashboardCardElements(sections []model.MessageSection) []map[string]any {
 	}
 	for _, section := range sections {
 		elements = append(elements, dashboardKPISectionElements(section)...)
+		if section.Chart != nil {
+			elements = append(elements, chartElementV2(*section.Chart))
+		}
 		elements = append(elements, buttonElementsV2(section.Buttons)...)
 	}
 	return elements

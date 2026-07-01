@@ -303,11 +303,32 @@ type ButtonSpec struct {
 	CallbackData string `json:"callback_data,omitempty"`
 }
 
+type SelectOption struct {
+	Text  string `json:"text"`
+	Value string `json:"value"`
+}
+
+type SettingsForm struct {
+	Title            string         `json:"title"`
+	SubmitText       string         `json:"submit_text"`
+	SubmitToken      string         `json:"submit_token"`
+	ModelLabel       string         `json:"model_label"`
+	ModelValue       string         `json:"model_value"`
+	ModelOptions     []SelectOption `json:"model_options"`
+	ReasoningLabel   string         `json:"reasoning_label"`
+	ReasoningValue   string         `json:"reasoning_value"`
+	ReasoningOptions []SelectOption `json:"reasoning_options"`
+	LanguageLabel    string         `json:"language_label"`
+	LanguageValue    string         `json:"language_value"`
+	LanguageOptions  []SelectOption `json:"language_options"`
+}
+
 type MessageSection struct {
 	Text    string              `json:"text,omitempty"`
 	Heading bool                `json:"heading,omitempty"`
 	Divider bool                `json:"divider,omitempty"`
 	Rows    []MessageSectionRow `json:"rows,omitempty"`
+	Chart   *MessageChart       `json:"chart,omitempty"`
 	Buttons [][]ButtonSpec      `json:"buttons,omitempty"`
 }
 
@@ -315,6 +336,13 @@ type MessageSectionRow struct {
 	Title    string     `json:"title,omitempty"`
 	Trailing string     `json:"trailing,omitempty"`
 	Button   ButtonSpec `json:"button,omitempty"`
+}
+
+type MessageChart struct {
+	ElementID   string         `json:"element_id,omitempty"`
+	AspectRatio string         `json:"aspect_ratio,omitempty"`
+	ColorTheme  string         `json:"color_theme,omitempty"`
+	Spec        map[string]any `json:"spec,omitempty"`
 }
 
 type MessageEntity struct {

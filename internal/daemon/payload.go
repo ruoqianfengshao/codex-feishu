@@ -43,6 +43,14 @@ func payloadMapString(values map[string]any, key string) string {
 	return payloadString(values[key])
 }
 
+func payloadMap(values map[string]any, key string) map[string]any {
+	if values == nil {
+		return nil
+	}
+	typed, _ := values[key].(map[string]any)
+	return typed
+}
+
 func firstPayloadString(values map[string]any, keys ...string) string {
 	for _, key := range keys {
 		if value := payloadMapString(values, key); value != "" {

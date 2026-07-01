@@ -24,6 +24,10 @@ import (
 
 type Session = control.RuntimeSession
 
+type configReader interface {
+	ConfigRead(ctx context.Context, cwd string, includeLayers bool) (map[string]any, error)
+}
+
 type Sender interface {
 	SendMessage(ctx context.Context, chatID, topicID int64, text string, buttons [][]model.ButtonSpec, options model.SendOptions) (int64, error)
 	SendRenderedMessages(ctx context.Context, chatID, topicID int64, messages []model.RenderedMessage, buttons [][]model.ButtonSpec, options model.SendOptions) ([]int64, error)
@@ -42,14 +46,18 @@ type ThreadTopicTargetResolver interface {
 }
 
 type DirectResponse struct {
-	Text         string
-	Sections     []model.MessageSection
-	CallbackText string
-	Buttons      [][]model.ButtonSpec
-	ThreadID     string
-	TurnID       string
-	ItemID       string
-	EventID      string
+	Text            string
+	Sections        []model.MessageSection
+	SettingsForm    *model.SettingsForm
+	CallbackText    string
+	SilentCallback  bool
+	Buttons         [][]model.ButtonSpec
+	Options         model.SendOptions
+	DeliveryTopicID int64
+	ThreadID        string
+	TurnID          string
+	ItemID          string
+	EventID         string
 }
 
 func silentSendOptions() model.SendOptions {
@@ -266,42 +274,108 @@ func (s *Service) StatusSnapshot(ctx context.Context) (*DirectResponse, error) {
 	startedAt := s.startedAt
 	lastError := s.lastError
 	s.mu.RUnlock()
-	systemRows := []model.MessageSectionRow{
-		{Title: localized(lang, "核心", "Core"), Trailing: readyLabelLang(lang, ready)},
-		{Title: localized(lang, "运行时长", "Uptime"), Trailing: uptimeLabel(startedAt, s.now())},
+	workspaceCount := len(catalog.Workspaces)
+	chatCount := len(catalog.Chats)
+	connectedCount := 0
+	if liveConnected {
+		connectedCount++
 	}
-	startedRows := []model.MessageSectionRow{
-		{Title: localized(lang, "启动时间", "Started"), Trailing: startedAtLabel(startedAt)},
+	if pollConnected {
+		connectedCount++
+	}
+	healthRows := []model.MessageSectionRow{
+		{Title: localized(lang, "核心状态", "Core status"), Trailing: readyLabelLang(lang, ready)},
+		{Title: localized(lang, "运行时长", "Uptime"), Trailing: uptimeLabel(startedAt, s.now())},
+		{Title: localized(lang, "连接", "Connections"), Trailing: fmt.Sprintf("%d/2", connectedCount)},
+		{Title: localized(lang, "发送队列", "Queue"), Trailing: fmt.Sprintf("%d", backlog)},
 	}
 	if strings.TrimSpace(lastError) != "" {
-		systemRows = append(systemRows, model.MessageSectionRow{Title: localized(lang, "最近错误", "Last error"), Trailing: trimPreview(lastError)})
+		healthRows = append(healthRows, model.MessageSectionRow{Title: localized(lang, "最近错误", "Last error"), Trailing: trimPreview(lastError)})
+	}
+	codexRows := []model.MessageSectionRow{
+		{Title: localized(lang, "实时会话", "Live session"), Trailing: onlineLabelLang(lang, liveConnected)},
+		{Title: localized(lang, "轮询会话", "Poll session"), Trailing: onlineLabelLang(lang, pollConnected)},
+		{Title: localized(lang, "桌面输入", "Desktop input"), Trailing: onOffLabelLang(lang, s.cfg.OpenCodexDesktopOnFeishu)},
+		{Title: localized(lang, "启动时间", "Started"), Trailing: startedAtLabel(startedAt)},
 	}
 	sections := []model.MessageSection{
-		{Text: localized(lang, "系统", "System"), Heading: true, Rows: systemRows},
-		{Text: localized(lang, "启动", "Startup"), Heading: true, Divider: true, Rows: startedRows},
-		{Text: "Codex", Heading: true, Divider: true, Rows: []model.MessageSectionRow{
-			{Title: localized(lang, "实时会话", "Live session"), Trailing: onlineLabelLang(lang, liveConnected)},
-			{Title: localized(lang, "轮询会话", "Poll session"), Trailing: onlineLabelLang(lang, pollConnected)},
-			{Title: localized(lang, "桌面输入", "Desktop input"), Trailing: onOffLabelLang(lang, s.cfg.OpenCodexDesktopOnFeishu)},
-		}},
+		{Text: localized(lang, "健康", "Health"), Heading: true, Rows: healthRows},
 		{Text: localized(lang, "会话", "Threads"), Heading: true, Divider: true, Rows: []model.MessageSectionRow{
 			{Title: localized(lang, "缓存会话", "Cached threads"), Trailing: fmt.Sprintf("%d", threadCount)},
-			{Title: localized(lang, "项目数量", "Projects"), Trailing: fmt.Sprintf("%d", len(catalog.Workspaces))},
-			{Title: localized(lang, "临时会话", "Chats"), Trailing: fmt.Sprintf("%d", len(catalog.Chats))},
+			{Title: localized(lang, "项目", "Projects"), Trailing: fmt.Sprintf("%d", workspaceCount)},
+			{Title: localized(lang, "临时", "Chats"), Trailing: fmt.Sprintf("%d", chatCount)},
 			{Title: localized(lang, "跟踪会话", "Tracked threads"), Trailing: fmt.Sprintf("%d", threadCount)},
-			{Title: localized(lang, "发送队列", "Delivery backlog"), Trailing: fmt.Sprintf("%d", backlog)},
 		}},
-		{Text: "飞书", Heading: true, Divider: true, Rows: []model.MessageSectionRow{
-			{Title: localized(lang, "语言", "Language"), Trailing: languageLabel(lang)},
+		{Text: localized(lang, "会话构成", "Thread mix"), Heading: true, Divider: true, Rows: statusThreadMixRows(lang, workspaceCount, chatCount), Chart: statusThreadMixChart(lang, workspaceCount, chatCount)},
+		{Text: "Codex", Heading: true, Divider: true, Rows: codexRows},
+		{Text: "Feishu", Heading: true, Divider: true, Rows: []model.MessageSectionRow{
 			{Title: localized(lang, "话题模式", "Topic mode"), Trailing: localized(lang, "单聊话题", "P2P topic")},
-		}, Buttons: [][]model.ButtonSpec{
-			{
-				s.callbackButton(ctx, selectedButtonLabel("中文", lang == botLanguageChinese), "settings_language_set", "status", "", "", map[string]any{"value": botLanguageChinese, "return": "status"}),
-				s.callbackButton(ctx, selectedButtonLabel("English", lang == botLanguageEnglish), "settings_language_set", "status", "", "", map[string]any{"value": botLanguageEnglish, "return": "status"}),
-			},
 		}},
 	}
 	return &DirectResponse{Text: localized(lang, "Codex 状态总览", "Codex Remote Status"), Sections: sections}, nil
+}
+
+func statusThreadMixRows(lang string, workspaces, chats int) []model.MessageSectionRow {
+	total := workspaces + chats
+	return []model.MessageSectionRow{
+		statusBarRow(localized(lang, "项目", "Projects"), workspaces, total),
+		statusBarRow(localized(lang, "临时", "Chats"), chats, total),
+	}
+}
+
+func statusBarRow(label string, value, total int) model.MessageSectionRow {
+	return model.MessageSectionRow{
+		Title:    fmt.Sprintf("%s · %d · %s", label, value, percentLabel(value, total)),
+		Trailing: percentLabel(value, total),
+	}
+}
+
+func statusThreadMixChart(lang string, workspaces, chats int) *model.MessageChart {
+	values := []map[string]any{
+		{"type": localized(lang, "项目", "Projects"), "value": workspaces},
+		{"type": localized(lang, "临时", "Chats"), "value": chats},
+	}
+	if workspaces+chats == 0 {
+		values = []map[string]any{{"type": localized(lang, "暂无会话", "No threads"), "value": 1}}
+	}
+	return &model.MessageChart{
+		ElementID:   "thread_mix",
+		AspectRatio: "4:3",
+		ColorTheme:  "brand",
+		Spec: map[string]any{
+			"type": "pie",
+			"title": map[string]any{
+				"text": localized(lang, "会话构成", "Thread mix"),
+			},
+			"data": map[string]any{
+				"values": values,
+			},
+			"valueField":    "value",
+			"categoryField": "type",
+			"outerRadius":   0.9,
+			"innerRadius":   0.45,
+			"label": map[string]any{
+				"visible": true,
+			},
+			"legends": map[string]any{
+				"visible": true,
+				"orient":  "bottom",
+			},
+			"padding": map[string]any{
+				"left":   10,
+				"right":  10,
+				"top":    8,
+				"bottom": 8,
+			},
+		},
+	}
+}
+
+func percentLabel(value, total int) string {
+	if total <= 0 {
+		return "0%"
+	}
+	return fmt.Sprintf("%d%%", value*100/total)
 }
 
 func readyLabel(ready bool) string {
@@ -354,6 +428,10 @@ func (s *Service) HandleMessageFromSource(ctx context.Context, chatID, topicID, 
 }
 
 func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID, messageID, userID int64, token, sourceMode string) (*DirectResponse, error) {
+	return s.HandleCallbackPayloadFromSource(ctx, chatID, topicID, messageID, userID, token, nil, sourceMode)
+}
+
+func (s *Service) HandleCallbackPayloadFromSource(ctx context.Context, chatID, topicID, messageID, userID int64, token string, actionPayload map[string]any, sourceMode string) (*DirectResponse, error) {
 	if !s.IsAllowed(userID, chatID) {
 		return nil, nil
 	}
@@ -367,6 +445,15 @@ func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID,
 	var payload map[string]any
 	if route.PayloadJSON != "" {
 		_ = json.Unmarshal([]byte(route.PayloadJSON), &payload)
+	}
+	for key, value := range actionPayload {
+		if key == "callback_data" {
+			continue
+		}
+		if payload == nil {
+			payload = map[string]any{}
+		}
+		payload[key] = value
 	}
 	switch route.Action {
 	case "details_open", "details_prev", "details_next", "details_back", "details_tool_toggle":
@@ -392,6 +479,12 @@ func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID,
 		}
 		response.CallbackText = s.t(ctx, "状态", "Status")
 		return response, nil
+	case "help_command":
+		command := payloadMapString(payload, "command")
+		if command == "" {
+			return &DirectResponse{CallbackText: s.t(ctx, "命令已过期。", "Command is stale."), Text: s.t(ctx, "这个命令按钮已过期。请重新发送 /help。", "This command button is stale. Send /help again.")}, nil
+		}
+		return s.handleCommandFromSource(ctx, chatID, topicID, command, topicID, sourceMode)
 	case "settings_overview":
 		return s.editOrSendSettingsResponse(ctx, chatID, topicID, messageID, "Settings", s.codexSettingsOverview)
 	case "settings_model_menu":
@@ -406,6 +499,8 @@ func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID,
 		return s.setCodexReasoningEffort(ctx, chatID, topicID, messageID, payload)
 	case "settings_language_set":
 		return s.setBotLanguage(ctx, chatID, topicID, messageID, payload)
+	case "settings_submit":
+		return s.submitSettingsForm(ctx, chatID, topicID, messageID, payload)
 	case "projects_page":
 		return s.projectsPage(ctx, chatID, topicID, messageID, payload)
 	case "projects_close":
@@ -1515,7 +1610,7 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 	case "/start":
 		return s.workspaceOverview(ctx)
 	case "/help":
-		return &DirectResponse{Text: s.t(ctx, "命令：\n/help\n/chats [数量|搜索]\n/projects\n/new <提示词>\n/reply [--plan] <thread> <文本>\n/plan <文本>\n/plan <thread_id> <文本>\n/goal <目标>\n/goal clear\n/setting\n/status\n/repair\n/stop [thread]", "Commands:\n/help\n/chats [limit|search]\n/projects\n/new <prompt>\n/reply [--plan] <thread> <text>\n/plan <text>\n/plan <thread_id> <text>\n/goal <goal>\n/goal clear\n/setting\n/status\n/repair\n/stop [thread]")}, nil
+		return s.helpCommand(ctx, topicID), nil
 	case "/status":
 		response, err := s.StatusSnapshot(ctx)
 		if err != nil {
@@ -1647,11 +1742,96 @@ func (s *Service) workspaceRoutingHint(ctx context.Context) *DirectResponse {
 	return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons}
 }
 
+func (s *Service) helpCommand(ctx context.Context, topicID int64) *DirectResponse {
+	if topicID != 0 {
+		return s.topicHelpCommand(ctx, topicID)
+	}
+	return s.workspaceHelpCommand(ctx)
+}
+
+func (s *Service) workspaceHelpCommand(ctx context.Context) *DirectResponse {
+	lang := s.botLanguage(ctx)
+	sections := []model.MessageSection{
+		{Text: localized(lang, "常用入口", "Common entry points"), Heading: true},
+		{Rows: []model.MessageSectionRow{
+			s.helpCommandRow(ctx, lang, "/help", "/help", localized(lang, "查看可用命令", "Show available commands")),
+			s.helpCommandRow(ctx, lang, "/chats [数量|搜索]", "/chats", localized(lang, "打开最近会话", "Open recent chats")),
+			s.helpCommandRow(ctx, lang, "/projects", "/projects", localized(lang, "按项目选择会话", "Choose chats by project")),
+		}},
+		{Text: localized(lang, "发起与继续", "Start and continue"), Heading: true},
+		{Rows: []model.MessageSectionRow{
+			s.helpCommandRow(ctx, lang, "/new <提示词>", "/new", localized(lang, "新建 Codex 会话", "Start a new Codex chat")),
+		}},
+		{Text: localized(lang, "下面这些命令需要进入某个 Codex 会话话题后使用。", "Use these commands inside a Codex chat topic."), Heading: false},
+		{Text: s.helpInfoText(lang, []helpInfo{
+			{Command: "/plan <文本>", Zh: "用 Plan 模式继续当前会话", En: "Continue the current chat in Plan mode"},
+			{Command: "/goal <目标>", Zh: "设置当前会话目标", En: "Set the current chat goal"},
+			{Command: "/goal clear", Zh: "清除当前会话目标", En: "Clear the current chat goal"},
+			{Command: "/stop", Zh: "停止当前会话", En: "Stop the current chat"},
+		})},
+		{Text: localized(lang, "配置与维护", "Settings and maintenance"), Heading: true},
+		{Rows: []model.MessageSectionRow{
+			s.helpCommandRow(ctx, lang, "/setting", "/setting", localized(lang, "调整模型、推理强度和语言", "Adjust model, reasoning, and language")),
+			s.helpCommandRow(ctx, lang, "/status", "/status", localized(lang, "查看服务状态", "Show service status")),
+			s.helpCommandRow(ctx, lang, "/repair", "/repair", localized(lang, "重建 App-server 会话", "Recreate app-server sessions")),
+		}},
+	}
+	return &DirectResponse{
+		Text:     localized(lang, "Codex Feishu 命令", "Codex Feishu commands"),
+		Sections: sections,
+	}
+}
+
+func (s *Service) topicHelpCommand(ctx context.Context, topicID int64) *DirectResponse {
+	lang := s.botLanguage(ctx)
+	sections := []model.MessageSection{
+		{Text: localized(lang, "当前会话可用命令", "Commands for this chat"), Heading: true},
+		{Text: localized(lang, "直接发送文本：继续当前 Codex 会话。", "Plain text: continue the current Codex chat.")},
+		{Rows: []model.MessageSectionRow{
+			s.helpCommandRow(ctx, lang, "/plan <文本>", "/plan", localized(lang, "用 Plan 模式继续当前会话", "Continue the current chat in Plan mode")),
+			s.helpCommandRow(ctx, lang, "/goal <目标>", "/goal", localized(lang, "设置当前会话目标", "Set the current chat goal")),
+			s.helpCommandRow(ctx, lang, "/goal clear", "/goal clear", localized(lang, "清除当前会话目标", "Clear the current chat goal")),
+			s.helpCommandRow(ctx, lang, "/stop", "/stop", localized(lang, "停止当前会话", "Stop the current chat")),
+		}},
+		{Text: localized(lang, "全局命令请回到机器人单聊中使用 /help。", "Use /help in the bot chat for global commands."), Heading: false},
+	}
+	return &DirectResponse{
+		Text:     localized(lang, "Codex 会话命令", "Codex chat commands"),
+		Sections: sections,
+		Options: model.SendOptions{
+			FeishuReplyToMessageID: topicID,
+			FeishuReplyInThread:    true,
+		},
+		DeliveryTopicID: topicID,
+	}
+}
+
+func (s *Service) helpCommandRow(ctx context.Context, lang, title, command, description string) model.MessageSectionRow {
+	return model.MessageSectionRow{
+		Title:    title,
+		Trailing: description,
+		Button:   s.callbackButton(ctx, localized(lang, "执行", "Run"), "help_command", "", "", "", map[string]any{"command": command}),
+	}
+}
+
+type helpInfo struct {
+	Command string
+	Zh      string
+	En      string
+}
+
+func (s *Service) helpInfoText(lang string, items []helpInfo) string {
+	lines := make([]string, 0, len(items))
+	for _, item := range items {
+		lines = append(lines, fmt.Sprintf("`%s`：%s", item.Command, localized(lang, item.Zh, item.En)))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (s *Service) workspaceOverview(ctx context.Context) (*DirectResponse, error) {
 	threadCount, _ := s.store.CountThreads(ctx)
 	backlog, _ := s.store.DeliveryQueueBacklog(ctx)
-	modelValue, _ := s.store.GetState(ctx, codexModelStateKey)
-	reasoningValue, _ := s.store.GetState(ctx, codexReasoningStateKey)
+	modelValue, reasoningValue, _ := s.currentSettingsValues(ctx)
 	lang := s.botLanguage(ctx)
 	lines := s.workspaceLines(lang, threadCount, backlog, modelValue, reasoningValue)
 	buttons := [][]model.ButtonSpec{
@@ -1691,28 +1871,24 @@ func (s *Service) workspaceLines(lang string, threadCount, backlog int, modelVal
 }
 
 func (s *Service) codexSettingsOverview(ctx context.Context) (*DirectResponse, error) {
-	modelValue, _ := s.store.GetState(ctx, codexModelStateKey)
-	reasoningValue, _ := s.store.GetState(ctx, codexReasoningStateKey)
-	languageValue := s.botLanguage(ctx)
-	lang := s.botLanguage(ctx)
-	lines := []string{
-		localized(lang, "Codex 设置", "Codex settings"),
-		fmt.Sprintf("%s: %s", localized(lang, "模型", "Model"), settingValueLabel(modelValue, localized(lang, "自动", "Auto"))),
-		fmt.Sprintf("%s: %s", localized(lang, "推理强度", "Reasoning effort"), settingValueLabel(reasoningValue, localized(lang, "自动", "Auto"))),
-		fmt.Sprintf("%s: %s", localized(lang, "语言", "Language"), languageLabel(languageValue)),
-		"",
-		localized(lang, "用于从聊天适配器启动的 Codex 回合。", "Used for Codex turns started from chat adapters."),
+	modelValue, reasoningValue, languageValue := s.currentSettingsValues(ctx)
+	lang := languageValue
+	form := &model.SettingsForm{
+		Title:            localized(lang, "Codex 设置", "Codex settings"),
+		SubmitText:       localized(lang, "确认生效", "Apply settings"),
+		SubmitToken:      s.callbackButton(ctx, localized(lang, "确认生效", "Apply settings"), "settings_submit", "settings", "", "", nil).CallbackData,
+		ModelLabel:       localized(lang, "模型", "Model"),
+		ModelValue:       modelValue,
+		ModelOptions:     s.settingsModelOptions(ctx, lang, modelValue),
+		ReasoningLabel:   localized(lang, "推理强度", "Reasoning effort"),
+		ReasoningValue:   reasoningValue,
+		ReasoningOptions: s.settingsReasoningOptions(ctx, lang, modelValue, reasoningValue),
+		LanguageLabel:    localized(lang, "语言", "Language"),
+		LanguageValue:    languageValue,
+		LanguageOptions:  settingsLanguageOptions(),
 	}
-	buttons := [][]model.ButtonSpec{
-		{
-			s.callbackButton(ctx, localized(lang, "模型", "Model"), "settings_model_menu", "settings", "", "", nil),
-			s.callbackButton(ctx, localized(lang, "推理", "Reasoning"), "settings_reasoning_menu", "settings", "", "", nil),
-		},
-		{
-			s.callbackButton(ctx, localized(lang, "语言", "Language"), "settings_language_menu", "settings", "", "", nil),
-		},
-	}
-	return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons}, nil
+	text := strings.Join(s.settingsSummaryLines(lang, modelValue, reasoningValue, languageValue, ""), "\n")
+	return &DirectResponse{Text: text, SettingsForm: form}, nil
 }
 
 func (s *Service) codexModelMenu(ctx context.Context) (*DirectResponse, error) {
@@ -1853,21 +2029,95 @@ func (s *Service) setBotLanguage(ctx context.Context, chatID, topicID, messageID
 }
 
 func (s *Service) codexSettingsSaved(ctx context.Context, status string) (*DirectResponse, error) {
+	modelValue, reasoningValue, languageValue := s.currentSettingsValues(ctx)
+	lang := languageValue
+	lines := s.settingsSummaryLines(lang, modelValue, reasoningValue, languageValue, status)
+	return &DirectResponse{Text: strings.Join(lines, "\n")}, nil
+}
+
+func (s *Service) currentSettingsValues(ctx context.Context) (string, string, string) {
 	modelValue, _ := s.store.GetState(ctx, codexModelStateKey)
 	reasoningValue, _ := s.store.GetState(ctx, codexReasoningStateKey)
-	languageValue := s.botLanguage(ctx)
-	lang := languageValue
-	lines := []string{
-		localized(lang, "Codex 设置", "Codex settings"),
-		fmt.Sprintf("%s: %s", localized(lang, "模型", "Model"), settingValueLabel(modelValue, localized(lang, "自动", "Auto"))),
-		fmt.Sprintf("%s: %s", localized(lang, "推理强度", "Reasoning effort"), settingValueLabel(reasoningValue, localized(lang, "自动", "Auto"))),
-		fmt.Sprintf("%s: %s", localized(lang, "语言", "Language"), languageLabel(languageValue)),
+	if modelValue == "" || reasoningValue == "" {
+		codexModel, codexReasoning := s.codexConfigDefaults(ctx)
+		if modelValue == "" {
+			modelValue = codexModel
+		}
+		if reasoningValue == "" {
+			reasoningValue = codexReasoning
+		}
 	}
-	if strings.TrimSpace(status) != "" {
-		lines = append(lines, "", status)
+	return modelValue, reasoningValue, s.botLanguage(ctx)
+}
+
+func (s *Service) codexConfigDefaults(ctx context.Context) (string, string) {
+	reader, ok := s.settingsClient().(configReader)
+	if !ok || reader == nil {
+		return "", ""
 	}
-	lines = append(lines, localized(lang, "使用 /setting 可以再次修改。", "Use /setting to change this again."))
-	return &DirectResponse{Text: strings.Join(lines, "\n")}, nil
+	requestCtx, cancel := context.WithTimeout(ctx, s.cfg.RequestTimeout)
+	defer cancel()
+	payload, err := reader.ConfigRead(requestCtx, "", true)
+	if err != nil {
+		return "", ""
+	}
+	modelValue := configPayloadString(payload, "model", "default_model", "defaultModel")
+	reasoningValue := normalizeReasoningEffort(configPayloadString(payload, "reasoning_effort", "reasoningEffort", "default_reasoning_effort", "defaultReasoningEffort"))
+	return modelValue, reasoningValue
+}
+
+func configPayloadString(payload map[string]any, keys ...string) string {
+	return configPayloadStringDepth(payload, 0, keys...)
+}
+
+func configPayloadStringDepth(payload map[string]any, depth int, keys ...string) string {
+	if payload == nil || depth > 6 {
+		return ""
+	}
+	if value := firstPayloadString(payload, keys...); value != "" {
+		return value
+	}
+	for _, key := range []string{"data", "config", "settings", "defaults", "effective", "profile"} {
+		if value := configPayloadStringDepth(payloadMap(payload, key), depth+1, keys...); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func (s *Service) submitSettingsForm(ctx context.Context, chatID, topicID, messageID int64, payload map[string]any) (*DirectResponse, error) {
+	lang := s.botLanguage(ctx)
+	values := payloadMap(payload, "form_value")
+	modelValue := payloadMapString(values, "model")
+	reasoningValue := normalizeReasoningEffort(payloadMapString(values, "reasoning"))
+	languageValue := normalizeBotLanguage(payloadMapString(values, "language"))
+	if languageValue == "" {
+		languageValue = lang
+	}
+	if modelValue != "" {
+		models, err := s.codexModels(ctx)
+		if err != nil {
+			return &DirectResponse{Text: fmt.Sprintf(localized(lang, "无法校验 Codex 模型：%v", "Could not validate Codex model: %v"), err)}, nil
+		}
+		if _, ok := selectedModelOption(models, modelValue); !ok {
+			return &DirectResponse{CallbackText: localized(lang, "模型选项已过期。", "Model option is stale."), Text: localized(lang, "这个模型已不可用。请重新发送 /setting。", "This model is not available anymore. Send /setting again.")}, nil
+		}
+	}
+	if reasoningValue != "" && !containsString(allReasoningEfforts(), reasoningValue) {
+		return &DirectResponse{CallbackText: localized(lang, "推理选项已过期。", "Reasoning option is stale."), Text: localized(lang, "不支持这个推理强度。请重新发送 /setting。", "This reasoning effort is not supported. Send /setting again.")}, nil
+	}
+	if err := s.store.SetState(ctx, codexModelStateKey, modelValue); err != nil {
+		return nil, err
+	}
+	if err := s.store.SetState(ctx, codexReasoningStateKey, reasoningValue); err != nil {
+		return nil, err
+	}
+	if err := s.store.SetState(ctx, botLanguageStateKey, languageValue); err != nil {
+		return nil, err
+	}
+	return s.editOrSendSettingsResponse(ctx, chatID, topicID, messageID, localized(languageValue, "设置已生效。", "Settings applied."), func(context.Context) (*DirectResponse, error) {
+		return s.codexSettingsSaved(ctx, localized(languageValue, "设置已生效。", "Settings applied."))
+	})
 }
 
 func (s *Service) editOrSendSettingsResponse(ctx context.Context, chatID, topicID, messageID int64, callbackText string, renderer func(context.Context) (*DirectResponse, error)) (*DirectResponse, error) {
@@ -1884,10 +2134,65 @@ func (s *Service) editOrSendSettingsResponse(ctx context.Context, chatID, topicI
 	s.mu.RUnlock()
 	if sender != nil && messageID != 0 && strings.TrimSpace(response.Text) != "" {
 		if err := sender.EditMessage(ctx, chatID, topicID, messageID, response.Text, response.Buttons); err == nil {
-			return &DirectResponse{CallbackText: callbackText}, nil
+			return &DirectResponse{CallbackText: callbackText, SilentCallback: true}, nil
 		}
 	}
 	return response, nil
+}
+
+func (s *Service) settingsSummaryLines(lang, modelValue, reasoningValue, languageValue, status string) []string {
+	lines := []string{
+		localized(lang, "Codex 设置", "Codex settings"),
+		fmt.Sprintf("%s: %s", localized(lang, "模型", "Model"), settingValueLabel(modelValue, localized(lang, "自动", "Auto"))),
+		fmt.Sprintf("%s: %s", localized(lang, "推理强度", "Reasoning effort"), settingValueLabel(reasoningValue, localized(lang, "自动", "Auto"))),
+		fmt.Sprintf("%s: %s", localized(lang, "语言", "Language"), languageLabel(languageValue)),
+	}
+	if strings.TrimSpace(status) != "" {
+		lines = append(lines, "", status)
+		lines = append(lines, localized(lang, "使用 /setting 可以再次修改。", "Use /setting to change this again."))
+	} else {
+		lines = append(lines, "", localized(lang, "用于从聊天适配器启动的 Codex 回合。", "Used for Codex turns started from chat adapters."))
+	}
+	return lines
+}
+
+func (s *Service) settingsModelOptions(ctx context.Context, lang, current string) []model.SelectOption {
+	options := []model.SelectOption{{Text: selectedButtonLabel(localized(lang, "自动", "Auto"), current == ""), Value: ""}}
+	models, err := s.codexModels(ctx)
+	if err != nil {
+		return options
+	}
+	for _, option := range models {
+		if strings.TrimSpace(option.ID) == "" {
+			continue
+		}
+		options = append(options, model.SelectOption{
+			Text:  selectedButtonLabel(shortButtonLabel(option.ID), option.ID == current),
+			Value: option.ID,
+		})
+	}
+	return options
+}
+
+func (s *Service) settingsReasoningOptions(ctx context.Context, lang, modelValue, current string) []model.SelectOption {
+	efforts := allReasoningEfforts()
+	if models, err := s.codexModels(ctx); err == nil {
+		if selected, ok := selectedModelOption(models, modelValue); ok && len(selected.SupportedReasoningEffort) > 0 {
+			efforts = selected.SupportedReasoningEffort
+		}
+	}
+	options := []model.SelectOption{{Text: selectedButtonLabel(localized(lang, "自动", "Auto"), current == ""), Value: ""}}
+	for _, effort := range efforts {
+		options = append(options, model.SelectOption{Text: selectedButtonLabel(effort, effort == current), Value: effort})
+	}
+	return options
+}
+
+func settingsLanguageOptions() []model.SelectOption {
+	return []model.SelectOption{
+		{Text: "中文", Value: botLanguageChinese},
+		{Text: "English", Value: botLanguageEnglish},
+	}
 }
 
 func (s *Service) codexModels(ctx context.Context) ([]appserver.ModelOption, error) {

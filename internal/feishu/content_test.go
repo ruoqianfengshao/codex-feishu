@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 
 	"github.com/ruoqianfengshao/codex-feishu/internal/appserver"
@@ -47,6 +51,53 @@ func TestBuildCardIncludesButtonCallbackData(t *testing.T) {
 	var decoded map[string]any
 	if err := json.Unmarshal([]byte(card), &decoded); err != nil {
 		t.Fatalf("card JSON invalid: %v", err)
+	}
+}
+
+func TestBuildSettingsFormCard(t *testing.T) {
+	t.Parallel()
+
+	card, err := buildSettingsFormCard(model.SettingsForm{
+		Title:          "Codex settings",
+		SubmitText:     "Apply settings",
+		SubmitToken:    "submit-token",
+		ModelLabel:     "Model",
+		ModelValue:     "gpt-5",
+		ModelOptions:   []model.SelectOption{{Text: "Auto", Value: ""}, {Text: "gpt-5", Value: "gpt-5"}},
+		ReasoningLabel: "Reasoning effort",
+		ReasoningValue: "low",
+		ReasoningOptions: []model.SelectOption{
+			{Text: "Auto", Value: ""},
+			{Text: "low", Value: "low"},
+		},
+		LanguageLabel:   "Language",
+		LanguageValue:   "en",
+		LanguageOptions: []model.SelectOption{{Text: "中文", Value: "zh"}, {Text: "English", Value: "en"}},
+	})
+	if err != nil {
+		t.Fatalf("buildSettingsFormCard failed: %v", err)
+	}
+	for _, want := range []string{`"tag":"form"`, `"tag":"select_static"`, `"name":"model"`, `"name":"reasoning"`, `"name":"language"`, `"action_type":"form_submit"`, `"callback_data":"submit-token"`} {
+		if !strings.Contains(card, want) {
+			t.Fatalf("settings form card missing %s:\n%s", want, card)
+		}
+	}
+	if err := json.Unmarshal([]byte(card), &map[string]any{}); err != nil {
+		t.Fatalf("card JSON invalid: %v", err)
+	}
+	var decoded struct {
+		Body struct {
+			Elements []struct {
+				Elements []map[string]any `json:"elements"`
+			} `json:"elements"`
+		} `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(card), &decoded); err != nil {
+		t.Fatalf("card JSON invalid: %v", err)
+	}
+	modelSelect := decoded.Body.Elements[0].Elements[1]
+	if got, ok := modelSelect["initial_option"].(string); !ok || got != "gpt-5" {
+		t.Fatalf("initial_option = %#v, want string gpt-5", modelSelect["initial_option"])
 	}
 }
 
@@ -560,6 +611,79 @@ func TestBuildSectionedCardRendersMetricRowsAsDashboardV2(t *testing.T) {
 	}
 }
 
+func TestBuildSectionedCardRendersChartComponentV2(t *testing.T) {
+	t.Parallel()
+
+	card, err := buildSectionedCard([]model.MessageSection{
+		{
+			Text:    "Thread mix",
+			Heading: true,
+			Rows: []model.MessageSectionRow{
+				{Title: "Projects", Trailing: "60%"},
+				{Title: "Chats", Trailing: "40%"},
+			},
+			Chart: &model.MessageChart{
+				ElementID:   "thread_mix",
+				AspectRatio: "4:3",
+				ColorTheme:  "brand",
+				Spec: map[string]any{
+					"type": "pie",
+					"data": map[string]any{
+						"values": []map[string]any{
+							{"type": "Projects", "value": 3},
+							{"type": "Chats", "value": 2},
+						},
+					},
+					"valueField":    "value",
+					"categoryField": "type",
+				},
+			},
+		},
+		{
+			Text:    "Codex",
+			Heading: true,
+			Rows: []model.MessageSectionRow{
+				{Title: "Live session", Trailing: "Online"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildSectionedCard failed: %v", err)
+	}
+	var decoded struct {
+		Schema string `json:"schema"`
+		Body   struct {
+			Elements []struct {
+				Tag         string         `json:"tag"`
+				ElementID   string         `json:"element_id"`
+				AspectRatio string         `json:"aspect_ratio"`
+				ColorTheme  string         `json:"color_theme"`
+				ChartSpec   map[string]any `json:"chart_spec"`
+			} `json:"elements"`
+		} `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(card), &decoded); err != nil {
+		t.Fatalf("card JSON invalid: %v", err)
+	}
+	if decoded.Schema != "2.0" {
+		t.Fatalf("schema = %q, want JSON 2.0 card", decoded.Schema)
+	}
+	chartIndex := -1
+	for index := range decoded.Body.Elements {
+		if decoded.Body.Elements[index].Tag == "chart" {
+			chartIndex = index
+			break
+		}
+	}
+	if chartIndex < 0 {
+		t.Fatalf("elements = %#v, want chart component", decoded.Body.Elements)
+	}
+	chart := decoded.Body.Elements[chartIndex]
+	if chart.ElementID != "thread_mix" || chart.AspectRatio != "4:3" || chart.ColorTheme != "brand" || chart.ChartSpec["type"] != "pie" {
+		t.Fatalf("chart = %#v, want configured pie chart", chart)
+	}
+}
+
 func TestBuildSectionedCardAddsDividerBeforeLaterHeadingSections(t *testing.T) {
 	t.Parallel()
 
@@ -588,6 +712,31 @@ func TestBuildSectionedCardAddsDividerBeforeLaterHeadingSections(t *testing.T) {
 	}
 	if decoded.Elements[3].Content != "**<font size=\"x-large\">project-b</font>**" {
 		t.Fatalf("project-b title = %q, want x-large bold markdown", decoded.Elements[3].Content)
+	}
+}
+
+func TestBuildSectionedCardKeepsHelpTextOutOfMetricRows(t *testing.T) {
+	t.Parallel()
+
+	card, err := buildSectionedCard([]model.MessageSection{
+		{Text: "Common entry points", Heading: true},
+		{Rows: []model.MessageSectionRow{
+			{Title: "/projects", Trailing: "Choose chats by project", Button: model.ButtonSpec{Text: "Run", CallbackData: "cb_projects"}},
+		}},
+		{Text: "`/plan <text>`: use inside a Codex chat topic"},
+		{Text: "Settings", Heading: true},
+		{Rows: []model.MessageSectionRow{
+			{Title: "/status", Trailing: "Show service status", Button: model.ButtonSpec{Text: "Run", CallbackData: "cb_status"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildSectionedCard failed: %v", err)
+	}
+	if got := strings.Count(card, `"tag":"interactive_container"`); got != 2 {
+		t.Fatalf("interactive containers = %d, want 2:\n%s", got, card)
+	}
+	if strings.Contains(card, `"background_style":"cus-2"`) {
+		t.Fatalf("card rendered metric/dashboard rows unexpectedly:\n%s", card)
 	}
 }
 
@@ -1405,6 +1554,82 @@ func TestEditMessageUsesMarkdownCardWithoutButtons(t *testing.T) {
 	}
 }
 
+func TestSettingsCardActionReturnsNoToastAfterEdit(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "data", "state.sqlite")
+	cfg := config.Config{
+		Paths: config.Paths{
+			Home:    root,
+			DataDir: filepath.Join(root, "data"),
+			LogDir:  filepath.Join(root, "logs"),
+			DBPath:  dbPath,
+		},
+	}
+	service, err := daemon.New(cfg)
+	if err != nil {
+		t.Fatalf("daemon.New failed: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("storage.Open failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.SetState(ctx, feishuBotLanguageKey, "en"); err != nil {
+		t.Fatalf("SetState(language) failed: %v", err)
+	}
+	api := &fakeAPIClient{chatModes: map[string]string{"oc_chat": "p2p"}}
+	bot := &Bot{store: store, api: api, service: service, logger: log.New(io.Discard, "", 0)}
+	service.SetSender(bot)
+	chatID, err := store.ResolveExternalID(ctx, namespaceChat, "oc_chat")
+	if err != nil {
+		t.Fatalf("ResolveExternalID(chat) failed: %v", err)
+	}
+	userID, err := store.ResolveExternalID(ctx, namespaceUser, "ou_user")
+	if err != nil {
+		t.Fatalf("ResolveExternalID(user) failed: %v", err)
+	}
+	if chatID == 0 || userID == 0 {
+		t.Fatalf("chatID=%d userID=%d, want resolved IDs", chatID, userID)
+	}
+	response, err := service.HandleMessageFromSource(ctx, chatID, 0, userID, "/setting", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("HandleMessageFromSource(/setting) failed: %v", err)
+	}
+	if response.SettingsForm == nil || response.SettingsForm.SubmitToken == "" {
+		t.Fatalf("settings response = %#v, want settings form", response)
+	}
+	cardResponse, err := bot.handleCardAction(ctx, &callback.CardActionTriggerEvent{
+		Event: &callback.CardActionTriggerRequest{
+			Context:  &callback.Context{OpenChatID: "oc_chat", OpenMessageID: "om_settings"},
+			Operator: &callback.Operator{OpenID: "ou_user"},
+			Action: &callback.CallBackAction{
+				Value: map[string]interface{}{"callback_data": response.SettingsForm.SubmitToken},
+				FormValue: map[string]interface{}{
+					"model":     "",
+					"reasoning": "low",
+					"language":  "en",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handleCardAction failed: %v", err)
+	}
+	if cardResponse != nil {
+		t.Fatalf("card response = %#v, want no toast after settings edit", cardResponse)
+	}
+	if api.patchCardCalls != 1 || !strings.Contains(api.lastCard, "Settings applied.") || !strings.Contains(api.lastCard, "Reasoning effort: low") {
+		t.Fatalf("patched card calls=%d card=%s, want applied settings summary", api.patchCardCalls, api.lastCard)
+	}
+	if api.sendCalls != 0 {
+		t.Fatalf("sendCalls = %d, want no fallback message", api.sendCalls)
+	}
+}
+
 func TestDeleteMessageIsNoopToAvoidFeishuRecallNotice(t *testing.T) {
 	t.Parallel()
 
@@ -1521,6 +1746,74 @@ func TestReplyToMessageIDResolvesFeishuThreadTopicRootWithoutMention(t *testing.
 	}
 	if got != rootMessageID {
 		t.Fatalf("replyToMessageID = %d, want topic root %d", got, rootMessageID)
+	}
+}
+
+func TestTopicHelpRepliesInThread(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	service, err := daemon.New(config.Config{
+		Paths: config.Paths{
+			Home:    t.TempDir(),
+			DataDir: t.TempDir(),
+			LogDir:  t.TempDir(),
+			DBPath:  t.TempDir() + "/service.sqlite",
+		},
+	})
+	if err != nil {
+		t.Fatalf("daemon.New failed: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	store := service.Store()
+	chatID, err := store.ResolveExternalID(ctx, namespaceChat, "oc_topic_group")
+	if err != nil {
+		t.Fatalf("ResolveExternalID(chat) failed: %v", err)
+	}
+	rootMessageID, err := store.ResolveExternalID(ctx, namespaceMessage, "om_root")
+	if err != nil {
+		t.Fatalf("ResolveExternalID(root) failed: %v", err)
+	}
+	if err := store.PutFeishuMessageMap(ctx, rootMessageID, "om_root", chatID, "oc_topic_group"); err != nil {
+		t.Fatalf("PutFeishuMessageMap(root) failed: %v", err)
+	}
+	if err := store.UpsertFeishuThreadTopic(ctx, model.FeishuThreadTopic{
+		ChatID:            chatID,
+		OpenChatID:        "oc_topic_group",
+		ThreadID:          "thread-topic",
+		RootMessageID:     rootMessageID,
+		RootOpenMessageID: "om_root",
+		FeishuThreadID:    "omt_topic",
+	}); err != nil {
+		t.Fatalf("UpsertFeishuThreadTopic failed: %v", err)
+	}
+	api := &fakeAPIClient{}
+	bot := &Bot{store: store, service: service, api: api}
+	event := newTextMessageEvent("oc_topic_group", "om_help", "ou_user", "/help")
+	event.Event.Message.RootId = ptrString("om_root")
+	event.Event.Message.ThreadId = ptrString("omt_topic")
+
+	if err := bot.handleMessageEvent(ctx, event); err != nil {
+		t.Fatalf("handleMessageEvent failed: %v", err)
+	}
+	if api.replyCalls != 1 || api.sendCalls != 0 {
+		t.Fatalf("replyCalls=%d sendCalls=%d, want one thread reply", api.replyCalls, api.sendCalls)
+	}
+	if api.lastOpenMessageID != "om_root" || !api.lastReplyInThread {
+		t.Fatalf("reply target=%q inThread=%v, want om_root true", api.lastOpenMessageID, api.lastReplyInThread)
+	}
+	if api.lastMsgType != "interactive" {
+		t.Fatalf("msgType = %q, want interactive", api.lastMsgType)
+	}
+	for _, want := range []string{"/plan", "/goal", "/stop"} {
+		if !strings.Contains(api.lastContent, want) {
+			t.Fatalf("topic help card missing %q:\n%s", want, api.lastContent)
+		}
+	}
+	for _, hidden := range []string{"/projects", "/new"} {
+		if strings.Contains(api.lastContent, hidden) {
+			t.Fatalf("topic help card exposes workspace command %q:\n%s", hidden, api.lastContent)
+		}
 	}
 }
 

@@ -546,48 +546,46 @@ func TestStatusCommandReturnsWorkspaceStatsCard(t *testing.T) {
 	if response == nil || response.Text != "Codex 状态总览" {
 		t.Fatalf("/status response = %#v, want status card response", response)
 	}
-	if got, want := sectionTitles(response.Sections), []string{"系统", "启动", "Codex", "会话", "飞书"}; !equalStrings(got, want) {
+	if got, want := sectionTitles(response.Sections), []string{"健康", "会话", "会话构成", "Codex", "Feishu"}; !equalStrings(got, want) {
 		t.Fatalf("/status sections = %#v, want %#v", got, want)
 	}
 	if strings.Contains(response.Text, "Mode:") || strings.Contains(response.Text, "Thread ID:") || strings.Contains(response.Text, "status-thread") {
 		t.Fatalf("/status text = %q, should not include current chat context", response.Text)
 	}
 	assertSectionRows(t, response.Sections[0], map[string]string{
-		"核心":   "未就绪",
+		"核心状态": "未就绪",
 		"运行时长": "1h 02m",
-	})
-	assertSectionRows(t, response.Sections[1], map[string]string{
-		"启动时间": "2026-06-28 09:00:00",
-	})
-	assertSectionRows(t, response.Sections[3], map[string]string{
-		"缓存会话": "2",
-		"项目数量": "1",
-		"临时会话": "1",
-		"跟踪会话": "2",
+		"连接":   "0/2",
 		"发送队列": "0",
 	})
+	assertSectionRows(t, response.Sections[1], map[string]string{
+		"缓存会话": "2",
+		"项目":   "1",
+		"临时":   "1",
+		"跟踪会话": "2",
+	})
+	assertSectionRows(t, response.Sections[2], map[string]string{
+		"项目 · 1 · 50%": "50%",
+		"临时 · 1 · 50%": "50%",
+	})
+	if response.Sections[2].Chart == nil || response.Sections[2].Chart.Spec["type"] != "pie" {
+		t.Fatalf("thread mix chart = %#v, want pie chart", response.Sections[2].Chart)
+	}
+	assertSectionRows(t, response.Sections[3], map[string]string{
+		"实时会话": "离线",
+		"轮询会话": "离线",
+		"桌面输入": "关闭",
+		"启动时间": "2026-06-28 09:00:00",
+	})
 	assertSectionRows(t, response.Sections[4], map[string]string{
-		"语言":   "中文",
 		"话题模式": "单聊话题",
 	})
-	if got := len(response.Sections[4].Rows); got != 2 {
-		t.Fatalf("Feishu rows = %d, want language/topic only", got)
+	if got := len(response.Sections[4].Rows); got != 1 {
+		t.Fatalf("Feishu rows = %d, want topic mode only", got)
 	}
-	if token := callbackTokenForButton(response.Sections[4].Buttons, "English"); token == "" {
-		t.Fatalf("Feishu buttons = %#v, want English language switch", response.Sections[4].Buttons)
+	if len(response.Sections[4].Buttons) != 0 {
+		t.Fatalf("Feishu buttons = %#v, want no language switch in /status", response.Sections[4].Buttons)
 	}
-	token := callbackTokenForButton(response.Sections[4].Buttons, "English")
-	switched, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 902, 123456789, token, model.PanelSourceFeishuInput)
-	if err != nil {
-		t.Fatalf("HandleCallback(status language switch) failed: %v", err)
-	}
-	if switched == nil || switched.Text != "Codex Remote Status" || switched.CallbackText != "Language saved." {
-		t.Fatalf("status language switch response = %#v, want refreshed English status", switched)
-	}
-	assertSectionRows(t, switched.Sections[4], map[string]string{
-		"Language":   "English",
-		"Topic mode": "P2P topic",
-	})
 }
 
 func TestPlainTextWithoutRouteReturnsWorkspaceHint(t *testing.T) {
@@ -623,6 +621,44 @@ func TestPlainTextWithoutRouteReturnsWorkspaceHint(t *testing.T) {
 	}
 	if callbackResponse == nil || !strings.Contains(callbackResponse.Text, "Codex Workspace") {
 		t.Fatalf("callback response = %#v, want workspace overview", callbackResponse)
+	}
+}
+
+func TestSettingsMenuEditUsesSilentCallback(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/setting", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handleCommand(/setting) failed: %v", err)
+	}
+	if response.SettingsForm == nil || response.SettingsForm.SubmitToken == "" {
+		t.Fatalf("settings response = %#v, want form with submit token", response)
+	}
+	callbackResponse, err := service.HandleCallbackPayloadFromSource(ctx, 123456789, 0, 902, 123456789, response.SettingsForm.SubmitToken, map[string]any{
+		"form_value": map[string]any{
+			"model":     "",
+			"reasoning": "low",
+			"language":  botLanguageEnglish,
+		},
+	}, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("HandleCallback(settings submit) failed: %v", err)
+	}
+	if callbackResponse == nil || !callbackResponse.SilentCallback || callbackResponse.CallbackText != "Settings applied." {
+		t.Fatalf("callback response = %#v, want silent settings callback", callbackResponse)
+	}
+	if callbackResponse.Text != "" {
+		t.Fatalf("callback text = %q, want no direct delivery after edit", callbackResponse.Text)
+	}
+	if len(sender.edits) != 1 || !strings.Contains(sender.edits[0].text, "Settings applied.") || !strings.Contains(sender.edits[0].text, "Reasoning effort: low") {
+		t.Fatalf("edits = %#v, want applied settings edit", sender.edits)
+	}
+	if len(sender.messages) != 0 {
+		t.Fatalf("messages = %#v, want no fallback message", sender.messages)
 	}
 }
 
@@ -4830,19 +4866,140 @@ func TestHelpHidesDefaultModeFallback(t *testing.T) {
 	if response == nil {
 		t.Fatal("handleCommand(/help) returned nil response")
 	}
+	helpText := helpResponseText(response)
 	for _, hidden := range []string{"/default", "--default", "/start", "/show", "/approve", "/deny"} {
-		if strings.Contains(response.Text, hidden) {
-			t.Fatalf("/help text exposes hidden command %q:\n%s", hidden, response.Text)
+		if strings.Contains(helpText, hidden) {
+			t.Fatalf("/help exposes hidden command %q:\n%s", hidden, helpText)
 		}
 	}
-	if !strings.Contains(response.Text, "/plan") || !strings.Contains(response.Text, "/reply [--plan]") {
-		t.Fatalf("/help text = %q, want public plan/reply commands", response.Text)
+	if !strings.Contains(helpText, "/plan") {
+		t.Fatalf("/help text = %q, want public plan command", helpText)
 	}
 	for _, visible := range []string{"/chats", "/projects", "/new", "/goal", "/setting", "/status", "/repair", "/stop"} {
-		if !strings.Contains(response.Text, visible) {
-			t.Fatalf("/help text = %q, want visible command %s", response.Text, visible)
+		if !strings.Contains(helpText, visible) {
+			t.Fatalf("/help text = %q, want visible command %s", helpText, visible)
 		}
 	}
+	if strings.Contains(helpText, "/reply") {
+		t.Fatalf("/help text = %q, want no /reply command", helpText)
+	}
+	if len(response.Sections) == 0 {
+		t.Fatalf("/help sections are empty, want interactive command collection")
+	}
+	for _, descriptions := range [][]string{
+		{"打开最近会话", "Open recent chats"},
+		{"新建 Codex 会话", "Start a new Codex chat"},
+		{"调整模型", "Adjust model"},
+	} {
+		if !containsAny(helpText, descriptions) {
+			t.Fatalf("/help text = %q, want one of descriptions %#v", helpText, descriptions)
+		}
+	}
+	if countInteractiveRows(response.Sections) < 7 {
+		t.Fatalf("/help sections = %#v, want workspace command rows with callback buttons", response.Sections)
+	}
+	if callbackTokenForHelpCommand(response.Sections, "/plan <文本>") != "" || callbackTokenForHelpCommand(response.Sections, "/goal <目标>") != "" || callbackTokenForHelpCommand(response.Sections, "/stop") != "" {
+		t.Fatalf("/help sections = %#v, want topic-only commands to be non-interactive in workspace help", response.Sections)
+	}
+	statusToken := callbackTokenForHelpCommand(response.Sections, "/status")
+	if statusToken == "" {
+		t.Fatalf("/help sections = %#v, want /status row callback", response.Sections)
+	}
+	statusResponse, err := service.HandleCallbackFromSource(context.Background(), 123456789, 0, 42, 123456789, statusToken, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("/status help callback failed: %v", err)
+	}
+	if statusResponse == nil || !strings.Contains(helpResponseText(statusResponse), "Status") {
+		t.Fatalf("/status help callback response = %#v, want status response", statusResponse)
+	}
+}
+
+func TestTopicHelpOnlyShowsChatCommands(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	response, err := service.handleCommandFromSource(ctx, 123456789, 9001, "/help", 9001, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handleCommand(/help) failed: %v", err)
+	}
+	if response == nil {
+		t.Fatal("handleCommand(/help) returned nil response")
+	}
+	helpText := helpResponseText(response)
+	for _, visible := range []string{"/plan", "/goal", "/goal clear", "/stop"} {
+		if !strings.Contains(helpText, visible) {
+			t.Fatalf("topic /help text = %q, want visible command %s", helpText, visible)
+		}
+	}
+	if strings.Contains(helpText, "/reply") {
+		t.Fatalf("topic /help text = %q, want no /reply command", helpText)
+	}
+	for _, hidden := range []string{"/chats", "/projects", "/new", "/setting", "/repair"} {
+		if strings.Contains(helpText, hidden) {
+			t.Fatalf("topic /help exposes workspace command %q:\n%s", hidden, helpText)
+		}
+	}
+	if callbackTokenForHelpCommand(response.Sections, "/plan <文本>") == "" || callbackTokenForHelpCommand(response.Sections, "/goal <目标>") == "" || callbackTokenForHelpCommand(response.Sections, "/stop") == "" {
+		t.Fatalf("topic /help sections = %#v, want topic command callbacks", response.Sections)
+	}
+	if response.Options.FeishuReplyToMessageID != 9001 || !response.Options.FeishuReplyInThread || response.DeliveryTopicID != 9001 {
+		t.Fatalf("topic /help response options = %#v delivery=%d, want reply in topic 9001", response.Options, response.DeliveryTopicID)
+	}
+}
+
+func helpResponseText(response *DirectResponse) string {
+	var parts []string
+	parts = append(parts, response.Text)
+	for _, section := range response.Sections {
+		parts = append(parts, section.Text)
+		for _, row := range section.Rows {
+			parts = append(parts, row.Title, row.Trailing, row.Button.Text)
+		}
+		for _, buttonRow := range section.Buttons {
+			for _, button := range buttonRow {
+				parts = append(parts, button.Text)
+			}
+		}
+	}
+	for _, buttonRow := range response.Buttons {
+		for _, button := range buttonRow {
+			parts = append(parts, button.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func countInteractiveRows(sections []model.MessageSection) int {
+	count := 0
+	for _, section := range sections {
+		for _, row := range section.Rows {
+			if row.Button.CallbackData != "" {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func callbackTokenForHelpCommand(sections []model.MessageSection, title string) string {
+	for _, section := range sections {
+		for _, row := range section.Rows {
+			if row.Title == title {
+				return row.Button.CallbackData
+			}
+		}
+	}
+	return ""
+}
+
+func containsAny(text string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestStopSetsDefaultOverrideForActiveThread(t *testing.T) {
@@ -5451,61 +5608,13 @@ func TestPlanCommandClearsStaleDefaultOverride(t *testing.T) {
 	}
 }
 
-func TestModelMenuPersistsSelectedModel(t *testing.T) {
+func TestSettingsFormPersistsSelectedValues(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
+	sender := &recordingSender{}
+	service.SetSender(sender)
 	ctx := context.Background()
-	stub := &stubSession{models: []appserver.ModelOption{
-		{ID: "gpt-default", IsDefault: true, SupportedReasoningEffort: []string{"low", "medium"}},
-		{ID: "gpt-menu", SupportedReasoningEffort: []string{"minimal", "low"}},
-	}}
-	service.live = stub
-	service.liveConnected = true
-
-	settings, err := service.handleCommandFromSource(ctx, 123456789, 0, "/setting", 0, model.PanelSourceFeishuInput)
-	if err != nil {
-		t.Fatalf("handleCommand(/setting) failed: %v", err)
-	}
-	menuToken := callbackTokenForButton(settings.Buttons, "Model")
-	if menuToken == "" {
-		t.Fatalf("settings buttons = %#v, want model menu", settings.Buttons)
-	}
-	response, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 899, 123456789, menuToken, model.PanelSourceFeishuInput)
-	if err != nil {
-		t.Fatalf("HandleCallback(model menu) failed: %v", err)
-	}
-	token := callbackTokenForButton(response.Buttons, "gpt-menu")
-	if token == "" {
-		t.Fatalf("model menu buttons = %#v, want gpt-menu", response.Buttons)
-	}
-	callbackResponse, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 900, 123456789, token, model.PanelSourceFeishuInput)
-	if err != nil {
-		t.Fatalf("HandleCallback(model select) failed: %v", err)
-	}
-	if callbackResponse == nil || !strings.Contains(callbackResponse.Text, "Model saved.") {
-		t.Fatalf("callback response = %#v, want saved settings summary", callbackResponse)
-	}
-	if len(callbackResponse.Buttons) != 0 {
-		t.Fatalf("callback buttons = %#v, want choice buttons removed after selection", callbackResponse.Buttons)
-	}
-	value, err := service.store.GetState(ctx, codexModelStateKey)
-	if err != nil {
-		t.Fatalf("GetState(model) failed: %v", err)
-	}
-	if value != "gpt-menu" {
-		t.Fatalf("stored model = %q, want gpt-menu", value)
-	}
-}
-
-func TestReasoningMenuUsesSelectedModelEfforts(t *testing.T) {
-	t.Parallel()
-
-	service := newTestService(t)
-	ctx := context.Background()
-	if err := service.store.SetState(ctx, codexModelStateKey, "gpt-menu"); err != nil {
-		t.Fatalf("SetState(model) failed: %v", err)
-	}
 	stub := &stubSession{models: []appserver.ModelOption{
 		{ID: "gpt-default", IsDefault: true, SupportedReasoningEffort: []string{"low", "medium", "high"}},
 		{ID: "gpt-menu", SupportedReasoningEffort: []string{"minimal", "low"}},
@@ -5517,74 +5626,45 @@ func TestReasoningMenuUsesSelectedModelEfforts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleCommand(/setting) failed: %v", err)
 	}
-	menuToken := callbackTokenForButton(settings.Buttons, "Reasoning")
-	if menuToken == "" {
-		t.Fatalf("settings buttons = %#v, want reasoning menu", settings.Buttons)
+	if settings.SettingsForm == nil {
+		t.Fatalf("settings response = %#v, want settings form", settings)
 	}
-	response, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 900, 123456789, menuToken, model.PanelSourceFeishuInput)
+	if !selectOptionsContain(settings.SettingsForm.ModelOptions, "gpt-menu") {
+		t.Fatalf("model options = %#v, want gpt-menu", settings.SettingsForm.ModelOptions)
+	}
+	if !selectOptionsContain(settings.SettingsForm.ReasoningOptions, "high") {
+		t.Fatalf("reasoning options = %#v, want default model reasoning options", settings.SettingsForm.ReasoningOptions)
+	}
+	callbackResponse, err := service.HandleCallbackPayloadFromSource(ctx, 123456789, 0, 900, 123456789, settings.SettingsForm.SubmitToken, map[string]any{
+		"form_value": map[string]any{
+			"model":     "gpt-menu",
+			"reasoning": "minimal",
+			"language":  botLanguageEnglish,
+		},
+	}, model.PanelSourceFeishuInput)
 	if err != nil {
-		t.Fatalf("HandleCallback(reasoning menu) failed: %v", err)
+		t.Fatalf("HandleCallback(settings submit) failed: %v", err)
 	}
-	if callbackTokenForButton(response.Buttons, "minimal") == "" {
-		t.Fatalf("reasoning buttons = %#v, want minimal option", response.Buttons)
+	if callbackResponse == nil || !callbackResponse.SilentCallback || callbackResponse.CallbackText != "Settings applied." {
+		t.Fatalf("callback response = %#v, want silent applied callback", callbackResponse)
 	}
-	if callbackTokenForButton(response.Buttons, "high") != "" {
-		t.Fatalf("reasoning buttons = %#v, want no high option for selected model", response.Buttons)
+	if len(sender.edits) != 1 || !strings.Contains(sender.edits[0].text, "Model: gpt-menu") || !strings.Contains(sender.edits[0].text, "Reasoning effort: minimal") || !strings.Contains(sender.edits[0].text, "Language: English") {
+		t.Fatalf("edits = %#v, want applied settings summary", sender.edits)
 	}
-	token := callbackTokenForButton(response.Buttons, "minimal")
-	callbackResponse, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 901, 123456789, token, model.PanelSourceFeishuInput)
+	modelValue, err := service.store.GetState(ctx, codexModelStateKey)
 	if err != nil {
-		t.Fatalf("HandleCallback(reasoning select) failed: %v", err)
+		t.Fatalf("GetState(model) failed: %v", err)
 	}
-	if callbackResponse == nil || !strings.Contains(callbackResponse.Text, "Reasoning effort saved.") {
-		t.Fatalf("callback response = %#v, want saved settings summary", callbackResponse)
-	}
-	if len(callbackResponse.Buttons) != 0 {
-		t.Fatalf("callback buttons = %#v, want choice buttons removed after selection", callbackResponse.Buttons)
-	}
-	value, err := service.store.GetState(ctx, codexReasoningStateKey)
+	reasoningValue, err := service.store.GetState(ctx, codexReasoningStateKey)
 	if err != nil {
 		t.Fatalf("GetState(reasoning) failed: %v", err)
 	}
-	if value != "minimal" {
-		t.Fatalf("stored reasoning = %q, want minimal", value)
-	}
-}
-
-func TestLanguageMenuPersistsSelectedLanguage(t *testing.T) {
-	t.Parallel()
-
-	service := newTestService(t)
-	ctx := context.Background()
-	settings, err := service.handleCommandFromSource(ctx, 123456789, 0, "/setting", 0, model.PanelSourceFeishuInput)
-	if err != nil {
-		t.Fatalf("handleCommand(/setting) failed: %v", err)
-	}
-	menuToken := callbackTokenForButton(settings.Buttons, "Language")
-	if menuToken == "" {
-		t.Fatalf("settings buttons = %#v, want language menu", settings.Buttons)
-	}
-	response, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 901, 123456789, menuToken, model.PanelSourceFeishuInput)
-	if err != nil {
-		t.Fatalf("HandleCallback(language menu) failed: %v", err)
-	}
-	token := callbackTokenForButton(response.Buttons, "English")
-	if token == "" {
-		t.Fatalf("language menu buttons = %#v, want English", response.Buttons)
-	}
-	callbackResponse, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 902, 123456789, token, model.PanelSourceFeishuInput)
-	if err != nil {
-		t.Fatalf("HandleCallback(language select) failed: %v", err)
-	}
-	if callbackResponse == nil || !strings.Contains(callbackResponse.Text, "Language saved.") || !strings.Contains(callbackResponse.Text, "Language: English") {
-		t.Fatalf("callback response = %#v, want saved settings summary", callbackResponse)
-	}
-	value, err := service.store.GetState(ctx, botLanguageStateKey)
+	languageValue, err := service.store.GetState(ctx, botLanguageStateKey)
 	if err != nil {
 		t.Fatalf("GetState(language) failed: %v", err)
 	}
-	if value != botLanguageEnglish {
-		t.Fatalf("stored language = %q, want en", value)
+	if modelValue != "gpt-menu" || reasoningValue != "minimal" || languageValue != botLanguageEnglish {
+		t.Fatalf("stored values model=%q reasoning=%q language=%q, want gpt-menu/minimal/en", modelValue, reasoningValue, languageValue)
 	}
 	workspace, err := service.handleCommandFromSource(ctx, 123456789, 0, "/start", 0, model.PanelSourceFeishuInput)
 	if err != nil {
@@ -5592,6 +5672,49 @@ func TestLanguageMenuPersistsSelectedLanguage(t *testing.T) {
 	}
 	if workspace == nil || !strings.Contains(workspace.Text, "Codex Workspace") {
 		t.Fatalf("workspace = %#v, want English text after language selection", workspace)
+	}
+}
+
+func TestSettingsFormPrefillsCodexConfig(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	stub := &stubSession{
+		models: []appserver.ModelOption{
+			{ID: "gpt-default", IsDefault: true, SupportedReasoningEffort: []string{"low", "medium", "high"}},
+			{ID: "gpt-codex", SupportedReasoningEffort: []string{"minimal", "high"}},
+		},
+		configReadResult: map[string]any{
+			"data": map[string]any{
+				"config": map[string]any{
+					"model":            "gpt-codex",
+					"reasoning_effort": "high",
+				},
+			},
+		},
+	}
+	service.live = stub
+	service.liveConnected = true
+
+	settings, err := service.handleCommandFromSource(ctx, 123456789, 0, "/setting", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handleCommand(/setting) failed: %v", err)
+	}
+	if settings.SettingsForm == nil {
+		t.Fatalf("settings response = %#v, want settings form", settings)
+	}
+	if settings.SettingsForm.ModelValue != "gpt-codex" || settings.SettingsForm.ReasoningValue != "high" {
+		t.Fatalf("settings form values model=%q reasoning=%q, want gpt-codex/high", settings.SettingsForm.ModelValue, settings.SettingsForm.ReasoningValue)
+	}
+	if !strings.Contains(settings.Text, "Model: gpt-codex") || !strings.Contains(settings.Text, "Reasoning effort: high") {
+		t.Fatalf("settings text = %q, want codex config summary", settings.Text)
+	}
+	if !selectOptionsContain(settings.SettingsForm.ModelOptions, "gpt-codex") {
+		t.Fatalf("model options = %#v, want gpt-codex", settings.SettingsForm.ModelOptions)
+	}
+	if stub.configReadCalls != 1 {
+		t.Fatalf("configReadCalls = %d, want 1", stub.configReadCalls)
 	}
 }
 
@@ -5849,6 +5972,15 @@ func callbackTokenForButton(rows [][]model.ButtonSpec, label string) string {
 	return ""
 }
 
+func selectOptionsContain(options []model.SelectOption, value string) bool {
+	for _, option := range options {
+		if option.Value == value {
+			return true
+		}
+	}
+	return false
+}
+
 func sectionTitles(sections []model.MessageSection) []string {
 	out := make([]string, 0, len(sections))
 	for _, section := range sections {
@@ -6000,6 +6132,9 @@ type stubSession struct {
 	threadReads         map[string]map[string]any
 	threadListResult    map[string]any
 	threadListCalls     int
+	configReadResult    map[string]any
+	configReadCalls     int
+	configReadErr       error
 	models              []appserver.ModelOption
 	collaborationModes  []appserver.CollaborationModeOption
 	threadReadErr       error
@@ -6129,6 +6264,13 @@ func (s *stubSession) ThreadStart(ctx context.Context, cwd string) (map[string]a
 		return nil, s.threadStartErr
 	}
 	return s.threadStartResult, nil
+}
+func (s *stubSession) ConfigRead(ctx context.Context, cwd string, includeLayers bool) (map[string]any, error) {
+	s.configReadCalls++
+	if s.configReadErr != nil {
+		return nil, s.configReadErr
+	}
+	return s.configReadResult, nil
 }
 func (s *stubSession) ThreadGoalSet(ctx context.Context, threadID, goal string) (map[string]any, error) {
 	s.goalSetCalls = append(s.goalSetCalls, goalCall{threadID: threadID, goal: goal})

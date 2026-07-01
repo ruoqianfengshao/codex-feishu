@@ -608,12 +608,16 @@ func (b *Bot) withUploadedRenderedImage(ctx context.Context, message model.Rende
 }
 
 func (b *Bot) sendSectionedCard(ctx context.Context, chatID int64, sections []model.MessageSection) (int64, error) {
+	return b.sendSectionedCardWithOptions(ctx, chatID, sections, model.SendOptions{})
+}
+
+func (b *Bot) sendSectionedCardWithOptions(ctx context.Context, chatID int64, sections []model.MessageSection, options model.SendOptions) (int64, error) {
 	card, err := buildSectionedCard(sections)
 	if err != nil {
 		return 0, err
 	}
-	messageID, err := b.send(ctx, chatID, "interactive", card)
-	if err == nil || !sectionedCardHasRows(sections) {
+	messageID, err := b.sendWithOptions(ctx, chatID, "interactive", card, options)
+	if err == nil || !sectionedCardHasRowsOrCharts(sections) || sectionedCardHasCharts(sections) {
 		return messageID, err
 	}
 	b.logger.Printf("feishu json 2.0 card send failed, falling back to legacy card: %v", err)
@@ -621,7 +625,7 @@ func (b *Bot) sendSectionedCard(ctx context.Context, chatID int64, sections []mo
 	if fallbackErr != nil {
 		return 0, errors.Join(err, fallbackErr)
 	}
-	return b.send(ctx, chatID, "interactive", fallbackCard)
+	return b.sendWithOptions(ctx, chatID, "interactive", fallbackCard, options)
 }
 
 func (b *Bot) send(ctx context.Context, chatID int64, msgType, content string) (int64, error) {
@@ -740,6 +744,7 @@ func (b *Bot) handleMessageEvent(ctx context.Context, event *larkim.P2MessageRec
 		return err
 	}
 	replyTo, _ := b.replyToMessageID(ctx, message)
+	topicID := replyTo
 	b.logInboundMessage(message, chatID, messageID, userID, replyTo, text)
 	claimKey := feishuInboundClaimKey(openMessageID)
 	claimed, err := b.store.SetStateIfAbsent(ctx, claimKey, fmt.Sprintf("chat=%d message=%d", chatID, messageID))
@@ -756,7 +761,7 @@ func (b *Bot) handleMessageEvent(ctx context.Context, event *larkim.P2MessageRec
 	if replyTo == 0 && isFeishuGroupMessage(message) && !isFeishuCommand(text) {
 		return nil
 	}
-	response, err := b.service.HandleMessageFromSource(ctx, chatID, 0, userID, text, replyTo, model.PanelSourceFeishuInput)
+	response, err := b.service.HandleMessageFromSource(ctx, chatID, topicID, userID, text, replyTo, model.PanelSourceFeishuInput)
 	if err != nil {
 		_ = b.store.DeleteState(ctx, claimKey)
 		return b.sendFailureMessage(ctx, chatID, b.t(ctx, "本地 Go bridge 处理请求失败。请试试 /repair 或 /status。", "Request failed inside the local Go bridge. Try /repair or /status."))
@@ -887,16 +892,22 @@ func (b *Bot) handleCardAction(ctx context.Context, event *callback.CardActionTr
 		return toast(b.t(ctx, "无权操作。", "Not allowed.")), nil
 	}
 	data := ""
+	actionPayload := map[string]any(nil)
 	if event.Event.Action != nil {
-		data = callbackDataFromValue(event.Event.Action.Value)
+		actionPayload = callbackPayloadFromAction(event.Event.Action)
+		data = callbackDataFromValue(actionPayload)
 	}
-	response, err := b.service.HandleCallbackFromSource(ctx, chatID, 0, messageID, userID, data, model.PanelSourceFeishuInput)
+	topicID := b.callbackTopicID(ctx, chatID, messageID)
+	response, err := b.service.HandleCallbackPayloadFromSource(ctx, chatID, topicID, messageID, userID, data, actionPayload, model.PanelSourceFeishuInput)
 	if err != nil {
 		_ = b.sendFailureMessage(ctx, chatID, b.t(ctx, "本地 Go bridge 处理请求失败。请试试 /repair 或 /status。", "Request failed inside the local Go bridge. Try /repair or /status."))
 		return toast(b.t(ctx, "请求失败。", "Request failed.")), nil
 	}
 	if err := b.deliverDirectResponse(ctx, chatID, response); err != nil {
 		return nil, err
+	}
+	if response != nil && response.SilentCallback {
+		return nil, nil
 	}
 	if response != nil && strings.TrimSpace(response.CallbackText) != "" {
 		return toast(response.CallbackText), nil
@@ -929,6 +940,19 @@ func (b *Bot) replyToMessageID(ctx context.Context, message *larkim.EventMessage
 		return id, nil
 	}
 	return 0, nil
+}
+
+func (b *Bot) callbackTopicID(ctx context.Context, chatID, messageID int64) int64 {
+	if messageID == 0 {
+		return 0
+	}
+	for _, topicID := range []int64{0, messageID} {
+		route, err := b.store.ResolveMessageRoute(ctx, chatID, topicID, messageID)
+		if err == nil && route != nil && route.TopicID != 0 {
+			return route.TopicID
+		}
+	}
+	return 0
 }
 
 func (b *Bot) feishuThreadTopicFromMessage(ctx context.Context, openChatID string, message *larkim.EventMessage) (*model.FeishuThreadTopic, error) {
@@ -1125,18 +1149,18 @@ func normalizeChatMode(mode string) string {
 }
 
 func (b *Bot) deliverDirectResponse(ctx context.Context, chatID int64, response *daemon.DirectResponse) error {
-	if response == nil || strings.TrimSpace(response.Text) == "" {
+	if response == nil || (strings.TrimSpace(response.Text) == "" && response.SettingsForm == nil) {
 		return nil
 	}
 	messageID, err := b.sendDirectResponse(ctx, chatID, response)
 	if err != nil {
 		return err
 	}
-	return b.service.RegisterDirectDelivery(ctx, chatID, 0, messageID, response)
+	return b.service.RegisterDirectDelivery(ctx, chatID, response.DeliveryTopicID, messageID, response)
 }
 
 func (b *Bot) deliverOpenIDDirectResponse(ctx context.Context, openUserID string, chatID int64, response *daemon.DirectResponse) error {
-	if response == nil || strings.TrimSpace(response.Text) == "" {
+	if response == nil || (strings.TrimSpace(response.Text) == "" && response.SettingsForm == nil) {
 		return nil
 	}
 	messageID, err := b.sendOpenIDDirectResponse(ctx, openUserID, response)
@@ -1147,13 +1171,29 @@ func (b *Bot) deliverOpenIDDirectResponse(ctx context.Context, openUserID string
 }
 
 func (b *Bot) sendDirectResponse(ctx context.Context, chatID int64, response *daemon.DirectResponse) (int64, error) {
-	if len(response.Sections) == 0 {
-		return b.SendMessage(ctx, chatID, 0, response.Text, response.Buttons, model.SendOptions{Silent: true})
+	if response.SettingsForm != nil {
+		card, err := buildSettingsFormCard(*response.SettingsForm)
+		if err != nil {
+			return 0, err
+		}
+		return b.sendWithOptions(ctx, chatID, "interactive", card, response.Options)
 	}
-	return b.sendSectionedCard(ctx, chatID, response.Sections)
+	if len(response.Sections) == 0 {
+		options := response.Options
+		options.Silent = true
+		return b.SendMessage(ctx, chatID, response.DeliveryTopicID, response.Text, response.Buttons, options)
+	}
+	return b.sendSectionedCardWithOptions(ctx, chatID, response.Sections, response.Options)
 }
 
 func (b *Bot) sendOpenIDDirectResponse(ctx context.Context, openUserID string, response *daemon.DirectResponse) (int64, error) {
+	if response.SettingsForm != nil {
+		card, err := buildSettingsFormCard(*response.SettingsForm)
+		if err != nil {
+			return 0, err
+		}
+		return b.sendOpenIDInteractive(ctx, openUserID, card)
+	}
 	if len(response.Sections) == 0 {
 		return b.sendOpenIDMessage(ctx, openUserID, response.Text, response.Buttons)
 	}
@@ -1232,6 +1272,10 @@ func (b *Bot) sendOpenIDSectionedCard(ctx context.Context, openUserID string, se
 	if err != nil {
 		return 0, err
 	}
+	return b.sendOpenIDInteractive(ctx, openUserID, content)
+}
+
+func (b *Bot) sendOpenIDInteractive(ctx context.Context, openUserID, content string) (int64, error) {
 	sendCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	sent, err := b.api.SendToOpenID(sendCtx, openUserID, "interactive", content)
 	cancel()
@@ -1342,6 +1386,24 @@ func toast(text string) *callback.CardActionTriggerResponse {
 	return &callback.CardActionTriggerResponse{
 		Toast: &callback.Toast{Type: "info", Content: text},
 	}
+}
+
+func callbackPayloadFromAction(action *callback.CallBackAction) map[string]any {
+	if action == nil {
+		return nil
+	}
+	payload := map[string]any{}
+	for key, value := range action.Value {
+		payload[key] = value
+	}
+	if len(action.FormValue) > 0 {
+		formValue := map[string]any{}
+		for key, value := range action.FormValue {
+			formValue[key] = value
+		}
+		payload["form_value"] = formValue
+	}
+	return payload
 }
 
 func (b *Bot) t(ctx context.Context, zh, en string) string {

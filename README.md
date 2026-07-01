@@ -134,7 +134,6 @@ Feishu bot commands:
 - `/projects`
 - `/new <prompt>`
 - `/show <thread>`
-- `/reply [--plan] <thread> <text>`
 - `/plan <text>`
 - `/plan <thread_id> <text>`
 - `/goal <goal>`
