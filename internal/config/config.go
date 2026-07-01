@@ -145,7 +145,7 @@ func fromSource(source envSource) Config {
 		LogEnabled:                  source.bool("CTR_GO_LOG_ENABLED", true),
 		DiagnosticLogs:              source.bool("CTR_GO_DIAGNOSTIC_LOGS", true),
 		NotifyNewRun:                source.bool("CTR_GO_NOTIFY_NEW_RUN", true),
-		NotifySystem:                source.bool("CTR_GO_NOTIFY_SYSTEM", true),
+		NotifySystem:                source.bool("CTR_GO_NOTIFY_SYSTEM", false),
 		OpenCodexDesktopOnFeishu:    source.bool("CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU", false),
 		ObserverPollInterval:        source.durationSeconds("CTR_GO_OBSERVER_POLL_SECONDS", 5*time.Second),
 		RequestTimeout:              source.durationSeconds("CTR_GO_REQUEST_TIMEOUT_SECONDS", 30*time.Second),

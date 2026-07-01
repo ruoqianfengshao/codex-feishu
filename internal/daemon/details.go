@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,7 +23,7 @@ func (s *Service) maybeRenderFinalCard(ctx context.Context, sender Sender, targe
 	if !isTerminalStatus(snapshot.LatestTurnStatus) || strings.TrimSpace(finalText) == "" {
 		return nil
 	}
-	if panel == nil || finalFP == "" || finalFP == panel.LastFinalNoticeFP {
+	if panel == nil || finalFP == "" || s.finalCardAlreadyRecorded(ctx, panel, thread.ID, snapshot.LatestTurnID, finalFP) {
 		return nil
 	}
 
@@ -59,8 +60,133 @@ func (s *Service) maybeRenderFinalCard(ctx context.Context, sender Sender, targe
 	return nil
 }
 
+func (s *Service) repairSupersededFinalCard(ctx context.Context, sender Sender, target model.ObserverTarget, panel *model.ThreadPanel, thread model.Thread, latest *appserver.ThreadReadSnapshot) error {
+	if panel == nil || latest == nil {
+		return nil
+	}
+	if strings.TrimSpace(panel.CurrentTurnID) == "" || strings.TrimSpace(panel.CurrentTurnID) == strings.TrimSpace(latest.LatestTurnID) {
+		return nil
+	}
+	if !isTerminalStatus(panel.Status) || strings.TrimSpace(panel.LastFinalCardHash) != "" {
+		return nil
+	}
+	snapshot, ok := snapshotForPanelTurn(thread, latest, panel)
+	if !ok || snapshot == nil {
+		return nil
+	}
+	finalText, finalFP := terminalCardTextAndFP(snapshot)
+	if strings.TrimSpace(finalText) == "" || strings.TrimSpace(finalFP) == "" {
+		return nil
+	}
+	if s.finalCardAlreadyRecorded(ctx, panel, thread.ID, snapshot.LatestTurnID, finalFP) {
+		return nil
+	}
+	return s.maybeRenderFinalCard(ctx, sender, target, panel, thread, snapshot)
+}
+
+func (s *Service) handleLatestDetailsCallback(ctx context.Context, chatID, topicID int64, threadID, sourceMode string) (*DirectResponse, error) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return &DirectResponse{Text: s.t(ctx, "无法找到会话。请从会话卡片重新打开。", "Could not find the chat. Reopen it from the chat card.")}, nil
+	}
+	s.mu.RLock()
+	live := s.live
+	connected := s.liveConnected
+	sender := s.sender
+	s.mu.RUnlock()
+	if connected && live != nil {
+		if _, err := s.refreshThreadForOperation(ctx, live, threadID, "latest_details"); err != nil {
+			if !isThreadNotLoadedError(err) {
+				return nil, err
+			}
+		}
+	}
+	thread, snapshot, err := s.loadThreadPanelSnapshot(ctx, threadID)
+	if err != nil {
+		return nil, err
+	}
+	if thread == nil || snapshot == nil {
+		return &DirectResponse{Text: s.t(ctx, "无法加载最新详情。请稍后重试。", "Could not load latest details. Try again later.")}, nil
+	}
+	target := model.ObserverTarget{
+		ChatKey: model.ChatKey(chatID, topicID),
+		ChatID:  chatID,
+		TopicID: topicID,
+		Enabled: true,
+	}
+	if sender == nil {
+		return &DirectResponse{Text: s.t(ctx, "飞书发送器未就绪。请稍后重试。", "Feishu sender is not ready. Try again later.")}, nil
+	}
+	panel, err := s.store.GetCurrentThreadPanel(ctx, chatID, topicID, threadID)
+	if err != nil {
+		return nil, err
+	}
+	if panel == nil || strings.TrimSpace(panel.CurrentTurnID) != strings.TrimSpace(snapshot.LatestTurnID) {
+		s.syncThreadPanelToTarget(ctx, target, threadID, true, sourceMode)
+		return &DirectResponse{CallbackText: s.t(ctx, "已同步最新状态", "Latest status synced."), ThreadID: threadID}, nil
+	}
+	if err := s.resendMissingLatestTurnCards(ctx, sender, target, panel, *thread, snapshot, sourceMode); err != nil {
+		return nil, err
+	}
+	return &DirectResponse{CallbackText: s.t(ctx, "已同步最新状态", "Latest status synced."), ThreadID: threadID}, nil
+}
+
+func (s *Service) resendMissingLatestTurnCards(ctx context.Context, sender Sender, target model.ObserverTarget, panel *model.ThreadPanel, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) error {
+	if panel == nil || snapshot == nil {
+		return nil
+	}
+	renderSourceMode := sourceMode
+	if renderSourceMode == "" {
+		renderSourceMode = panel.SourceMode
+	}
+	if s.latestUserNoticeMissing(ctx, thread.ID, snapshot) {
+		panel.LastUserNoticeFP = ""
+		panel.UserMessageID = 0
+		if err := s.store.UpdateThreadPanelUserNotice(ctx, panel.ID, 0, ""); err != nil {
+			return err
+		}
+	}
+	summaryMessage, summaryButtons, summaryHash := s.renderSummaryPanel(ctx, thread, snapshot, nil)
+	if summaryHash == panel.LastSummaryHash {
+		if route, err := s.store.ResolveMessageRoute(ctx, panel.ChatID, panel.TopicID, panel.SummaryMessageID); err == nil && route == nil {
+			panel.LastSummaryHash = ""
+		}
+	}
+	if _, finalFP := terminalCardTextAndFP(snapshot); finalFP != "" && s.latestFinalCardMissing(ctx, thread.ID, snapshot.LatestTurnID, finalFP) {
+		panel.LastFinalNoticeFP = ""
+	}
+	if panel.LastSummaryHash == "" && panel.SummaryMessageID != 0 {
+		s.logChatRenderedMessagesContainsNil(thread.ID, snapshot.LatestTurnID, "summary_latest_details", panel.SummaryMessageID, []model.RenderedMessage{summaryMessage})
+		if err := sender.EditRenderedMessage(ctx, panel.ChatID, panel.TopicID, panel.SummaryMessageID, summaryMessage, summaryButtons); err != nil {
+			return err
+		}
+		panel.LastSummaryHash = summaryHash
+		_ = s.store.PutMessageRoute(ctx, model.MessageRoute{ChatID: panel.ChatID, TopicID: panel.TopicID, MessageID: panel.SummaryMessageID, ThreadID: thread.ID, TurnID: snapshot.LatestTurnID, CreatedAt: model.NowString()})
+	}
+	if err := s.updateCurrentPanel(ctx, sender, panel, thread, snapshot, nil, renderSourceMode); err != nil {
+		return err
+	}
+	return s.maybeRenderFinalCard(ctx, sender, target, panel, thread, snapshot)
+}
+
+func (s *Service) latestUserNoticeMissing(ctx context.Context, threadID string, snapshot *appserver.ThreadReadSnapshot) bool {
+	if snapshot == nil || strings.TrimSpace(snapshot.LatestUserMessageFP) == "" {
+		return false
+	}
+	route, err := s.store.FindMessageRouteByEvent(ctx, threadID, snapshot.LatestTurnID, snapshot.LatestUserMessageID, snapshot.LatestUserMessageFP)
+	return err == nil && (route == nil || route.MessageID == 0)
+}
+
+func (s *Service) latestFinalCardMissing(ctx context.Context, threadID, turnID, finalFP string) bool {
+	if strings.TrimSpace(finalFP) == "" {
+		return false
+	}
+	route, err := s.store.FindMessageRouteByEvent(ctx, threadID, turnID, "", finalFP)
+	return err == nil && (route == nil || route.MessageID == 0)
+}
+
 func (s *Service) renderFinalCard(ctx context.Context, panelID int64, thread model.Thread, snapshot *appserver.ThreadReadSnapshot) (model.RenderedMessage, [][]model.ButtonSpec, string) {
-	buttons := [][]model.ButtonSpec{}
+	buttons := s.latestDetailsButtons(ctx, thread.ID, snapshot.LatestTurnID)
 	if !compactFeishuTopicCard(ctx) {
 		buttons = append(buttons, []model.ButtonSpec{
 			s.callbackButton(ctx, s.t(ctx, "详情", "Details"), "details_open", thread.ID, snapshot.LatestTurnID, "", map[string]any{
@@ -99,7 +225,46 @@ func (s *Service) renderFinalCard(ctx context.Context, panelID int64, thread mod
 		body += line
 	}
 	message := renderSingleMarkdownCard(header, body)
+	bodyWithoutImage, imagePath := extractLocalMarkdownImage(body)
+	if imagePath != "" {
+		message = renderSingleMarkdownCard(header, strings.TrimSpace(bodyWithoutImage))
+		message.ImagePath = imagePath
+	}
 	return message, buttons, hashStrings(msgformat.HashRendered(message), flattenButtonSpecs(buttons))
+}
+
+func extractLocalMarkdownImage(markdown string) (string, string) {
+	lines := strings.Split(strings.ReplaceAll(markdown, "\r\n", "\n"), "\n")
+	out := make([]string, 0, len(lines))
+	imagePath := ""
+	for _, line := range lines {
+		path, ok := localMarkdownImageLine(line)
+		if ok && imagePath == "" {
+			imagePath = path
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n")), imagePath
+}
+
+func localMarkdownImageLine(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "![") {
+		return "", false
+	}
+	closeAlt := strings.Index(trimmed, "](")
+	if closeAlt < 0 || !strings.HasSuffix(trimmed, ")") {
+		return "", false
+	}
+	path := strings.TrimSpace(trimmed[closeAlt+2 : len(trimmed)-1])
+	if strings.HasPrefix(path, "<") && strings.HasSuffix(path, ">") {
+		path = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(path, "<"), ">"))
+	}
+	if filepath.IsAbs(path) {
+		return path, true
+	}
+	return "", false
 }
 
 func terminalCardTextAndFP(snapshot *appserver.ThreadReadSnapshot) (string, string) {

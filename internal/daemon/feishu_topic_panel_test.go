@@ -20,6 +20,7 @@ type recordedMessage struct {
 	text                  string
 	entities              []model.MessageEntity
 	style                 string
+	imagePath             string
 	codexStatus           string
 	codexProgressMarkdown string
 	codexFinalMarkdown    string
@@ -85,6 +86,7 @@ func recordedRenderedMessage(chatID, topicID, messageID int64, rendered model.Re
 		text:                  rendered.Text,
 		entities:              rendered.Entities,
 		style:                 rendered.Style,
+		imagePath:             rendered.ImagePath,
 		codexStatus:           rendered.CodexStatus,
 		codexProgressMarkdown: rendered.CodexProgressMarkdown,
 		codexFinalMarkdown:    rendered.CodexFinalMarkdown,
@@ -208,6 +210,16 @@ func buttonToken(rows [][]model.ButtonSpec, label string) string {
 	return ""
 }
 
+func assertOnlyLatestDetailsButton(t *testing.T, rows [][]model.ButtonSpec) {
+	t.Helper()
+	if buttonToken(rows, "Refresh") == "" && buttonToken(rows, "手动刷新") == "" {
+		t.Fatalf("buttons = %#v, want Refresh button", rows)
+	}
+	if buttonToken(rows, "Stop") != "" || buttonToken(rows, "停止") != "" {
+		t.Fatalf("buttons = %#v, want no running buttons", rows)
+	}
+}
+
 func hasThreadChip(text, threadID string) bool {
 	return strings.Contains(strings.SplitN(text, "\n", 2)[0], "[T:"+visualShortID(threadID)+"]")
 }
@@ -221,7 +233,7 @@ func (n *recordingNotifier) Notify(ctx context.Context, notification SystemNotif
 	return nil
 }
 
-func TestSyncThreadPanelSendsCompletedSystemNotificationOnce(t *testing.T) {
+func TestSyncThreadPanelDoesNotSendCompletedSystemNotification(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -257,19 +269,12 @@ func TestSyncThreadPanelSendsCompletedSystemNotificationOnce(t *testing.T) {
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
 
-	if len(notifier.notifications) != 1 {
-		t.Fatalf("notifications = %#v, want one completed notification", notifier.notifications)
-	}
-	got := notifier.notifications[0]
-	if got.Kind != systemNotificationCompleted || got.ThreadID != thread.ID || got.TurnID != "turn-system-complete" {
-		t.Fatalf("notification = %#v, want completed thread/turn", got)
-	}
-	if !strings.Contains(got.Message, "All work complete.") {
-		t.Fatalf("notification message = %q, want final text", got.Message)
+	if len(notifier.notifications) != 0 {
+		t.Fatalf("notifications = %#v, want none after local system notifications were removed", notifier.notifications)
 	}
 }
 
-func TestSyncThreadPanelSendsFailedSystemNotificationWithoutFinalText(t *testing.T) {
+func TestSyncThreadPanelDoesNotSendFailedSystemNotification(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -303,19 +308,12 @@ func TestSyncThreadPanelSendsFailedSystemNotificationWithoutFinalText(t *testing
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
 
-	if len(notifier.notifications) != 1 {
-		t.Fatalf("notifications = %#v, want one failed notification", notifier.notifications)
-	}
-	got := notifier.notifications[0]
-	if got.Kind != systemNotificationFailed || got.Title != "Codex session failed" {
-		t.Fatalf("notification = %#v, want failed notification", got)
-	}
-	if !strings.Contains(got.Message, "Status: failed") {
-		t.Fatalf("notification message = %q, want failed status", got.Message)
+	if len(notifier.notifications) != 0 {
+		t.Fatalf("notifications = %#v, want none after local system notifications were removed", notifier.notifications)
 	}
 }
 
-func TestPendingApprovalSystemNotificationDedupes(t *testing.T) {
+func TestPendingApprovalDoesNotSendSystemNotification(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -336,15 +334,8 @@ func TestPendingApprovalSystemNotificationDedupes(t *testing.T) {
 	service.notifyPendingApproval(ctx, approval)
 	service.notifyPendingApproval(ctx, approval)
 
-	if len(notifier.notifications) != 1 {
-		t.Fatalf("notifications = %#v, want one approval notification", notifier.notifications)
-	}
-	got := notifier.notifications[0]
-	if got.Kind != systemNotificationApproval || got.RequestID != approval.RequestID {
-		t.Fatalf("notification = %#v, want approval request", got)
-	}
-	if !strings.Contains(got.Message, "Allow command?") {
-		t.Fatalf("notification message = %q, want question", got.Message)
+	if len(notifier.notifications) != 0 {
+		t.Fatalf("notifications = %#v, want none after local system notifications were removed", notifier.notifications)
 	}
 }
 
@@ -1016,6 +1007,9 @@ func TestFeishuTopicSyncSendsCodexDesktopUserNoticeAndFinalAfterFeishuTurn(t *te
 	if got := sender.messages[baseMessages]; got.style != model.MessageStyleDesktopUser || !strings.Contains(got.text, "Desktop asks Feishu to sync this.") {
 		t.Fatalf("first new message = %#v, want desktop user notice before progress", got)
 	}
+	if buttonToken(sender.messages[baseMessages].buttons, "Refresh") == "" {
+		t.Fatalf("desktop user notice buttons = %#v, want Refresh", sender.messages[baseMessages].buttons)
+	}
 	panel, err := service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
 	if err != nil {
 		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
@@ -1048,9 +1042,10 @@ func TestFeishuTopicSyncSendsCodexDesktopUserNoticeAndFinalAfterFeishuTurn(t *te
 		t.Fatalf("edits = %#v, want progress panel edited to terminal state", sender.edits)
 	}
 	finalCard := lastFinalMessage(t, sender.messages[beforeFinalMessages:])
-	if !strings.Contains(finalCard.text, "Desktop turn done.") || len(finalCard.buttons) != 0 {
-		t.Fatalf("final card = %#v, want final content and no running buttons", finalCard)
+	if !strings.Contains(finalCard.text, "Desktop turn done.") {
+		t.Fatalf("final card = %#v, want final content", finalCard)
 	}
+	assertOnlyLatestDetailsButton(t, finalCard.buttons)
 	panel, err = service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
 	if err != nil {
 		t.Fatalf("GetCurrentThreadPanel after final failed: %v", err)
@@ -1148,9 +1143,7 @@ func TestFeishuTopicCodexPanelProgressThenFinalEffectGuard(t *testing.T) {
 	if !strings.Contains(finalEdit.codexStatus, "Processed") || strings.Contains(finalEdit.codexStatus, "Processing") || finalEdit.codexFinalMarkdown != "" {
 		t.Fatalf("final edit = %#v, want processed progress panel without final content", finalEdit)
 	}
-	if len(finalEdit.buttons) != 0 {
-		t.Fatalf("final buttons = %#v, want no running buttons after final", finalEdit.buttons)
-	}
+	assertOnlyLatestDetailsButton(t, finalEdit.buttons)
 	finalCard := lastFinalMessage(t, sender.messages[beforeFinalMessages:])
 	if !strings.Contains(finalCard.text, "Final answer is ready.") {
 		t.Fatalf("final card = %#v, want final content", finalCard)
@@ -2052,9 +2045,10 @@ func TestChatInputSyncAdoptsObserverPanelForSameTurn(t *testing.T) {
 		t.Fatalf("messages = %#v, want standalone final card", sender.messages)
 	}
 	finalEdit := lastCodexPanelEdit(t, sender.edits)
-	if finalEdit.codexFinalMarkdown != "" || len(finalEdit.buttons) != 0 {
+	if finalEdit.codexFinalMarkdown != "" {
 		t.Fatalf("final edit = %#v, want terminal progress panel without final", finalEdit)
 	}
+	assertOnlyLatestDetailsButton(t, finalEdit.buttons)
 	finalCard := lastFinalMessage(t, sender.messages)
 	if !strings.Contains(finalCard.text, "Test") {
 		t.Fatalf("final card = %#v, want final content", finalCard)
@@ -2269,6 +2263,9 @@ func TestRenderSummaryPanelShowsActiveRunElapsedTimeAtBottom(t *testing.T) {
 	if !strings.Contains(messages[0].CodexStatus, "Processing 30s") {
 		t.Fatalf("codex status = %q, want active run elapsed time", messages[0].CodexStatus)
 	}
+	if !strings.Contains(messages[0].CodexStatus, "Refreshed:") && !strings.Contains(messages[0].CodexStatus, "最后刷新:") {
+		t.Fatalf("codex status = %q, want refresh time", messages[0].CodexStatus)
+	}
 	if strings.Contains(text, "Run active for:") {
 		t.Fatalf("rendered summary = %q, want no run timing footer in progress body", text)
 	}
@@ -2404,15 +2401,16 @@ func TestLegacyTerminalPanelSeedsFinalFingerprintWithoutResending(t *testing.T) 
 
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
 
-	if len(sender.messages) != 0 {
-		t.Fatalf("message count = %d, want 0 for legacy terminal replay; messages=%#v", len(sender.messages), sender.messages)
+	finalCard := lastFinalMessage(t, sender.messages)
+	if !strings.Contains(finalCard.text, "Legacy final text.") {
+		t.Fatalf("final card = %#v, want legacy final text", finalCard)
 	}
 	refreshed, err := service.store.GetThreadPanelByID(ctx, panel.ID)
 	if err != nil {
 		t.Fatalf("GetThreadPanelByID failed: %v", err)
 	}
-	if refreshed == nil || refreshed.LastFinalNoticeFP != "final-fp-legacy" {
-		t.Fatalf("LastFinalNoticeFP = %#v, want final-fp-legacy", refreshed)
+	if refreshed == nil || refreshed.LastFinalNoticeFP != "final-fp-legacy" || refreshed.LastFinalCardHash == "" {
+		t.Fatalf("panel = %#v, want final-fp-legacy with final card hash", refreshed)
 	}
 }
 
@@ -2465,9 +2463,10 @@ func TestInterruptedPanelSendsFinalWhenSameTurnCompletes(t *testing.T) {
 	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
 
 	finalEdit := lastCodexPanelEdit(t, sender.edits)
-	if finalEdit.codexFinalMarkdown != "" || len(finalEdit.buttons) != 0 {
+	if finalEdit.codexFinalMarkdown != "" {
 		t.Fatalf("final edit = %#v, want terminal progress panel without final and no running buttons", finalEdit)
 	}
+	assertOnlyLatestDetailsButton(t, finalEdit.buttons)
 	finalCard := lastFinalMessage(t, sender.messages)
 	if !strings.Contains(finalCard.text, "Recovered final.") {
 		t.Fatalf("final card = %#v, want recovered final", finalCard)
@@ -2478,6 +2477,65 @@ func TestInterruptedPanelSendsFinalWhenSameTurnCompletes(t *testing.T) {
 	}
 	if refreshed == nil || refreshed.LastFinalNoticeFP != "final-after-interrupted" || refreshed.Status != "completed" {
 		t.Fatalf("panel = %#v, want completed with final fp", refreshed)
+	}
+}
+
+func TestTerminalPanelRepairsMissingFinalCardWhenFinalNoticeWasSeeded(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+
+	thread := model.Thread{
+		ID:          "thread-missing-final-card",
+		Title:       "Missing final card",
+		ProjectName: "Codex",
+		CWD:         "/Users/example/project",
+		UpdatedAt:   time.Now().UTC().Unix(),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
+	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:            target.ChatID,
+		TopicID:           target.TopicID,
+		ProjectName:       thread.ProjectName,
+		ThreadID:          thread.ID,
+		SourceMode:        model.PanelSourceFeishuInput,
+		SummaryMessageID:  11,
+		CurrentTurnID:     "turn-missing-final-card",
+		Status:            "completed",
+		ArchiveEnabled:    true,
+		LastFinalNoticeFP: "final-missing-card",
+	}); err != nil {
+		t.Fatalf("CreateThreadPanel failed: %v", err)
+	}
+	snapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-missing-final-card",
+		LatestTurnStatus: "completed",
+		LatestFinalFP:    "final-missing-card",
+		LatestFinalText:  "Final card should be repaired.",
+	}, time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+
+	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
+
+	finalCard := lastFinalMessage(t, sender.messages)
+	if !strings.Contains(finalCard.text, "Final card should be repaired.") {
+		t.Fatalf("final card = %#v, want repaired final", finalCard)
+	}
+	refreshed, err := service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
+	if err != nil {
+		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
+	}
+	if refreshed == nil || refreshed.LastFinalCardHash == "" || refreshed.LastFinalNoticeFP != "final-missing-card" {
+		t.Fatalf("panel = %#v, want repaired final card state", refreshed)
 	}
 }
 
@@ -2542,6 +2600,208 @@ func TestNewTerminalTurnAfterExistingPanelStillSendsFinal(t *testing.T) {
 	finalCard := lastFinalMessage(t, sender.messages)
 	if !strings.Contains(finalCard.text, "NEW FINAL") {
 		t.Fatalf("final card = %#v, want new final", finalCard)
+	}
+}
+
+func TestSyncRepairsPreviousTerminalPanelBeforeCreatingNextPanel(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
+
+	threadPayload := map[string]any{
+		"id":     "thread-repair-previous-final",
+		"name":   "Repair previous final",
+		"cwd":    "/Users/example/project",
+		"status": "completed",
+		"turns": []any{
+			map[string]any{
+				"id":     "turn-old",
+				"status": "completed",
+				"items": []any{
+					map[string]any{"id": "old-user", "type": "userMessage", "content": []any{map[string]any{"type": "text", "text": "old prompt"}}},
+					map[string]any{"id": "old-final", "type": "agentMessage", "phase": "final_answer", "text": "OLD FINAL"},
+				},
+			},
+			map[string]any{
+				"id":     "turn-new",
+				"status": "inProgress",
+				"items": []any{
+					map[string]any{"id": "new-user", "type": "userMessage", "content": []any{map[string]any{"type": "text", "text": "new prompt"}}},
+					map[string]any{"id": "new-commentary", "type": "agentMessage", "phase": "commentary", "text": "Working."},
+				},
+			},
+		},
+	}
+	latest := appserver.SnapshotFromThreadRead(threadPayload)
+	latest.Thread.Raw = json.RawMessage(model.MustJSON(map[string]any{"thread": threadPayload}))
+	if err := service.store.UpsertThread(ctx, latest.Thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if err := service.store.UpsertSnapshot(ctx, latest.Thread.ID, appserver.CompactSnapshot(nil, latest, time.Now().UTC())); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	oldPanel, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:            target.ChatID,
+		TopicID:           target.TopicID,
+		ProjectName:       latest.Thread.ProjectName,
+		ThreadID:          latest.Thread.ID,
+		SourceMode:        model.PanelSourceFeishuInput,
+		SummaryMessageID:  11,
+		CurrentTurnID:     "turn-old",
+		Status:            "completed",
+		ArchiveEnabled:    true,
+		LastFinalNoticeFP: "old-final-fp-without-card",
+	})
+	if err != nil {
+		t.Fatalf("CreateThreadPanel failed: %v", err)
+	}
+
+	service.syncThreadPanelToTarget(ctx, target, latest.Thread.ID, false, model.PanelSourceFeishuInput)
+
+	finalCard := lastFinalMessage(t, sender.messages)
+	if !strings.Contains(finalCard.text, "OLD FINAL") {
+		t.Fatalf("final card = %#v, want old final before new panel", finalCard)
+	}
+	route, err := service.store.FindMessageRouteByEvent(ctx, latest.Thread.ID, "turn-old", "", finalCardEventIDForTest(latest.Thread.Raw, "turn-old"))
+	if err != nil {
+		t.Fatalf("FindMessageRouteByEvent failed: %v", err)
+	}
+	if route == nil || route.MessageID == 0 {
+		t.Fatalf("old final route = %#v, want recorded final route", route)
+	}
+	refreshedOld, err := service.store.GetThreadPanelByID(ctx, oldPanel.ID)
+	if err != nil {
+		t.Fatalf("GetThreadPanelByID failed: %v", err)
+	}
+	if refreshedOld == nil || refreshedOld.LastFinalCardHash == "" {
+		t.Fatalf("old panel = %#v, want final card hash", refreshedOld)
+	}
+	current, err := service.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, latest.Thread.ID)
+	if err != nil {
+		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
+	}
+	if current == nil || current.CurrentTurnID != "turn-new" {
+		t.Fatalf("current panel = %#v, want new turn panel", current)
+	}
+}
+
+func TestFinalCardUploadsLocalMarkdownImage(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	thread := model.Thread{ID: "thread-final-image", Title: "Final image", ProjectName: "Codex"}
+	snapshot := &appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-final-image",
+		LatestTurnStatus: "completed",
+		LatestFinalFP:    "final-image-fp",
+		LatestFinalText:  "这是当前桌面截图：\n\n![当前 Codex 界面](/tmp/codex-screenshots/current-codex-ui.png)",
+	}
+
+	message, _, _ := service.renderFinalCard(ctx, 42, thread, snapshot)
+
+	if message.ImagePath != "/tmp/codex-screenshots/current-codex-ui.png" {
+		t.Fatalf("image path = %q, want local screenshot path", message.ImagePath)
+	}
+	if strings.Contains(message.Text, "![") || strings.Contains(message.Text, "/tmp/codex-screenshots/current-codex-ui.png") {
+		t.Fatalf("final text = %q, want markdown image stripped", message.Text)
+	}
+	if !strings.Contains(message.Text, "这是当前桌面截图：") {
+		t.Fatalf("final text = %q, want caption preserved", message.Text)
+	}
+}
+
+func finalCardEventIDForTest(raw json.RawMessage, turnID string) string {
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	snapshot := appserver.SnapshotFromThreadRead(payload)
+	panel := &model.ThreadPanel{CurrentTurnID: turnID}
+	if turnSnapshot, ok := snapshotForPanelTurn(snapshot.Thread, &snapshot, panel); ok && turnSnapshot != nil {
+		return turnSnapshot.LatestFinalFP
+	}
+	return ""
+}
+
+func TestLatestDetailsCallbackRepairsLatestTurnFromOldCard(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "thread-latest-details-old-card",
+		Title:       "Latest details repair",
+		ProjectName: "Codex",
+		CWD:         "/Users/example/project",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	panel, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:            123456789,
+		TopicID:           0,
+		ProjectName:       thread.ProjectName,
+		ThreadID:          thread.ID,
+		SourceMode:        model.PanelSourceFeishuInput,
+		SummaryMessageID:  101,
+		CurrentTurnID:     "turn-old",
+		Status:            "completed",
+		LastSummaryHash:   "old-summary",
+		LastFinalNoticeFP: "old-final-fp",
+	})
+	if err != nil {
+		t.Fatalf("CreateThreadPanel failed: %v", err)
+	}
+	if err := service.store.PutMessageRoute(ctx, model.MessageRoute{
+		ChatID:    panel.ChatID,
+		TopicID:   panel.TopicID,
+		MessageID: panel.SummaryMessageID,
+		ThreadID:  thread.ID,
+		TurnID:    "turn-old",
+		EventID:   "old-summary-route",
+		CreatedAt: model.NowString(),
+	}); err != nil {
+		t.Fatalf("PutMessageRoute failed: %v", err)
+	}
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
+		Thread:                thread,
+		LatestTurnID:          "turn-new",
+		LatestTurnStatus:      "completed",
+		LatestUserMessageID:   "user-new",
+		LatestUserMessageText: "Latest user prompt",
+		LatestUserMessageFP:   "user-new-fp",
+		LatestFinalText:       "LATEST FINAL",
+		LatestFinalFP:         "new-final-fp",
+	}, time.Now().UTC())); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+
+	oldToken := service.callbackButton(ctx, "Refresh", "latest_details", thread.ID, "turn-old", "", nil).CallbackData
+	response, err := service.HandleCallbackFromSource(ctx, panel.ChatID, panel.TopicID, panel.SummaryMessageID, panel.ChatID, oldToken, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("HandleCallbackFromSource failed: %v", err)
+	}
+	if response == nil || !strings.Contains(response.CallbackText, "Latest status synced") {
+		t.Fatalf("response = %#v, want latest repair callback", response)
+	}
+	final := lastFinalMessage(t, sender.messages)
+	if !strings.Contains(final.text, "LATEST FINAL") || strings.Contains(final.text, "old") {
+		t.Fatalf("final = %#v, want latest turn final only", final)
+	}
+	refreshed, err := service.store.GetCurrentThreadPanel(ctx, panel.ChatID, panel.TopicID, thread.ID)
+	if err != nil {
+		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
+	}
+	if refreshed == nil || refreshed.CurrentTurnID != "turn-new" || refreshed.LastFinalNoticeFP != "new-final-fp" {
+		t.Fatalf("panel = %#v, want repaired latest turn", refreshed)
 	}
 }
 
@@ -3248,9 +3508,10 @@ func TestTerminalSyncAdoptsActivePanelWithoutTurnID(t *testing.T) {
 		t.Fatalf("messages = %#v, want standalone final card", sender.messages)
 	}
 	finalEdit := lastCodexPanelEdit(t, sender.edits)
-	if finalEdit.codexFinalMarkdown != "" || len(finalEdit.buttons) != 0 {
+	if finalEdit.codexFinalMarkdown != "" {
 		t.Fatalf("final edit = %#v, want terminal progress panel without final", finalEdit)
 	}
+	assertOnlyLatestDetailsButton(t, finalEdit.buttons)
 	finalCard := lastFinalMessage(t, sender.messages)
 	if !strings.Contains(finalCard.text, "ADOPTED_OK") {
 		t.Fatalf("final card = %#v, want adopted final", finalCard)

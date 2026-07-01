@@ -841,6 +841,72 @@ func TestSendRenderedMessagesUploadsAndRendersImage(t *testing.T) {
 	}
 }
 
+func TestSendRenderedMessagesFallsBackWhenImageUploadReturnsNoKey(t *testing.T) {
+	t.Parallel()
+
+	store, err := storage.Open(t.TempDir() + "/state.sqlite")
+	if err != nil {
+		t.Fatalf("storage.Open failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	chatID, err := store.ResolveExternalID(context.Background(), namespaceChat, "oc_chat")
+	if err != nil {
+		t.Fatalf("ResolveExternalID failed: %v", err)
+	}
+	imagePath := t.TempDir() + "/prompt.jpg"
+	if err := os.WriteFile(imagePath, []byte("fake image bytes"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	api := &fakeAPIClient{forceEmptyUploadedImageKey: true}
+	bot := &Bot{store: store, api: api}
+
+	_, err = bot.SendRenderedMessages(context.Background(), chatID, 0, []model.RenderedMessage{{
+		Text:      "Desktop image prompt",
+		ImagePath: imagePath,
+	}}, nil, model.SendOptions{})
+	if err != nil {
+		t.Fatalf("SendRenderedMessages failed: %v", err)
+	}
+	if strings.Contains(api.lastContent, `"tag":"img"`) || strings.Contains(api.lastContent, `"img_key"`) {
+		t.Fatalf("content = %s, want no invalid image element", api.lastContent)
+	}
+	if !strings.Contains(api.lastContent, "Desktop image prompt") {
+		t.Fatalf("content = %s, want text fallback", api.lastContent)
+	}
+}
+
+func TestSendRenderedMessagesSanitizesMarkdownImageSyntax(t *testing.T) {
+	t.Parallel()
+
+	store, err := storage.Open(t.TempDir() + "/state.sqlite")
+	if err != nil {
+		t.Fatalf("storage.Open failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	chatID, err := store.ResolveExternalID(context.Background(), namespaceChat, "oc_chat")
+	if err != nil {
+		t.Fatalf("ResolveExternalID failed: %v", err)
+	}
+	api := &fakeAPIClient{}
+	bot := &Bot{store: store, api: api}
+
+	_, err = bot.SendRenderedMessages(context.Background(), chatID, 0, []model.RenderedMessage{{
+		Text: "Example: `![shot](/tmp/current.png)`",
+	}}, nil, model.SendOptions{})
+	if err != nil {
+		t.Fatalf("SendRenderedMessages failed: %v", err)
+	}
+	if strings.Contains(api.lastContent, `![shot](/tmp/current.png)`) {
+		t.Fatalf("content = %s, want markdown image syntax sanitized", api.lastContent)
+	}
+	if strings.Contains(api.lastContent, `"tag":"img"`) || strings.Contains(api.lastContent, `"img_key"`) {
+		t.Fatalf("content = %s, want no image element", api.lastContent)
+	}
+	if !strings.Contains(api.lastContent, `[shot](/tmp/current.png)`) {
+		t.Fatalf("content = %s, want image syntax rendered as link text", api.lastContent)
+	}
+}
+
 func TestSendRenderedMessagesRepliesInFeishuThread(t *testing.T) {
 	t.Parallel()
 
@@ -1577,28 +1643,29 @@ func ptrString(value string) *string {
 }
 
 type fakeAPIClient struct {
-	lastMsgType              string
-	lastContent              string
-	lastReceiveID            string
-	lastOpenMessageID        string
-	lastText                 string
-	lastCard                 string
-	lastReplyInThread        bool
-	lastRoomName             string
-	lastRoomUserOpenIDs      []string
-	updateTextCalls          int
-	patchCardCalls           int
-	createWorkspaceMenuCalls int
-	sendCalls                int
-	replyCalls               int
-	deleteCalls              int
-	createThreadRoomCalls    int
-	chatModes                map[string]string
-	downloadedImages         map[string][]byte
-	downloadImageMessageIDs  []string
-	downloadImageKeys        []string
-	uploadedImageData        []byte
-	uploadedImageKey         string
+	lastMsgType                string
+	lastContent                string
+	lastReceiveID              string
+	lastOpenMessageID          string
+	lastText                   string
+	lastCard                   string
+	lastReplyInThread          bool
+	lastRoomName               string
+	lastRoomUserOpenIDs        []string
+	updateTextCalls            int
+	patchCardCalls             int
+	createWorkspaceMenuCalls   int
+	sendCalls                  int
+	replyCalls                 int
+	deleteCalls                int
+	createThreadRoomCalls      int
+	chatModes                  map[string]string
+	downloadedImages           map[string][]byte
+	downloadImageMessageIDs    []string
+	downloadImageKeys          []string
+	uploadedImageData          []byte
+	uploadedImageKey           string
+	forceEmptyUploadedImageKey bool
 }
 
 func (f *fakeAPIClient) Send(_ context.Context, receiveID, msgType, content string) (sentMessage, error) {
@@ -1670,6 +1737,9 @@ func (f *fakeAPIClient) UploadFile(context.Context, string, []byte) (string, err
 
 func (f *fakeAPIClient) UploadImage(_ context.Context, data []byte) (string, error) {
 	f.uploadedImageData = append([]byte(nil), data...)
+	if f.forceEmptyUploadedImageKey {
+		return "", nil
+	}
 	if f.uploadedImageKey != "" {
 		return f.uploadedImageKey, nil
 	}

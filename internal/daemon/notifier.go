@@ -104,33 +104,7 @@ func (s *Service) notifyTerminalSnapshot(ctx context.Context, thread model.Threa
 }
 
 func (s *Service) notifySystemOnce(ctx context.Context, key string, notification SystemNotification) {
-	if s == nil || !s.cfg.NotifySystem || strings.TrimSpace(key) == "" {
-		return
-	}
-	s.notificationMu.Lock()
-	defer s.notificationMu.Unlock()
-	if value, err := s.store.GetState(ctx, key); err == nil && strings.TrimSpace(value) != "" {
-		return
-	}
-	s.mu.RLock()
-	notifier := s.notifier
-	s.mu.RUnlock()
-	if notifier == nil {
-		notifier = noopNotifier{}
-	}
-	err := notifier.Notify(ctx, notification)
-	state := string(model.NowString())
-	if err != nil {
-		state = "error:" + sanitizeDiagnosticString(err.Error())
-		s.logLifecycle("system_notification_failed", lifecycleFields{
-			"kind":       notification.Kind,
-			"thread_id":  notification.ThreadID,
-			"turn_id":    notification.TurnID,
-			"request_id": notification.RequestID,
-			"error":      sanitizeDiagnosticString(err.Error()),
-		})
-	}
-	_ = s.store.SetState(ctx, key, state)
+	return
 }
 
 func systemNotificationKey(parts ...string) string {

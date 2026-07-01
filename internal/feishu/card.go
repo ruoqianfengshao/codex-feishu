@@ -3,6 +3,7 @@ package feishu
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/mideco-tech/codex-tg/internal/model"
@@ -12,6 +13,8 @@ const (
 	maxCardButtonsPerRow = 3
 	threadRowSeparator   = "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌"
 )
+
+var markdownImagePattern = regexp.MustCompile(`!\[([^\]]*)\]\(([^)]*)\)`)
 
 func buildCard(text string, buttons [][]model.ButtonSpec) (string, error) {
 	return buildSectionedCard([]model.MessageSection{{
@@ -24,6 +27,7 @@ func buildRenderedCard(message model.RenderedMessage, buttons [][]model.ButtonSp
 	if strings.TrimSpace(message.ImageKey) != "" {
 		return buildRenderedCardWithImage(message, buttons)
 	}
+	message.ImagePath = ""
 	if strings.TrimSpace(message.Style) == model.MessageStyleCodexPanel {
 		return buildCodexPanelCard(message, buttons)
 	}
@@ -314,6 +318,7 @@ func markdownElement(text string) map[string]any {
 	if text == "" {
 		text = " "
 	}
+	text = sanitizeMarkdownImages(text)
 	return map[string]any{
 		"tag":     "markdown",
 		"content": text,
@@ -325,10 +330,15 @@ func markdownElementV2(text string) map[string]any {
 	if text == "" {
 		text = " "
 	}
+	text = sanitizeMarkdownImages(text)
 	return map[string]any{
 		"tag":     "markdown",
 		"content": text,
 	}
+}
+
+func sanitizeMarkdownImages(text string) string {
+	return markdownImagePattern.ReplaceAllString(text, `[$1]($2)`)
 }
 
 func plainTextElementV2(text string) map[string]any {

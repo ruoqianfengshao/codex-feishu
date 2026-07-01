@@ -270,7 +270,7 @@ func feishuSetupConfigValues(opts feishuSetupOptions, existing map[string]string
 	values["CTR_GO_CODEX_CHATS_ROOT"] = strings.TrimSpace(firstNonEmpty(opts.CodexChatsRoot, existing["CTR_GO_CODEX_CHATS_ROOT"], config.DefaultCodexChatsRoot()))
 	values["CTR_GO_CODEX_BIN"] = strings.TrimSpace(firstNonEmpty(opts.CodexBin, existing["CTR_GO_CODEX_BIN"], codexBin))
 	values["CTR_GO_NOTIFY_NEW_RUN"] = strings.TrimSpace(firstNonEmpty(opts.NotifyNewRun, existing["CTR_GO_NOTIFY_NEW_RUN"], "true"))
-	values["CTR_GO_NOTIFY_SYSTEM"] = strings.TrimSpace(firstNonEmpty(opts.NotifySystem, existing["CTR_GO_NOTIFY_SYSTEM"], "true"))
+	values["CTR_GO_NOTIFY_SYSTEM"] = strings.TrimSpace(firstNonEmpty(opts.NotifySystem, existing["CTR_GO_NOTIFY_SYSTEM"], "false"))
 	values["CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU"] = strings.TrimSpace(firstNonEmpty(opts.OpenCodexDesktop, existing["CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU"], "true"))
 	for _, key := range config.RuntimeEnvPassthroughKeys() {
 		if strings.TrimSpace(values[key]) != "" {
@@ -567,7 +567,7 @@ func runInit(args []string, in io.Reader, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	notifySystem, err := prompt(reader, out, "macOS system notifications", "true")
+	notifySystem, err := prompt(reader, out, "macOS system notifications (removed)", "false")
 	if err != nil {
 		return err
 	}

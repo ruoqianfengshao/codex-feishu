@@ -109,6 +109,10 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 		}
 	}
 	sender = senderWithThreadTopic{Sender: sender, topic: threadTopic}
+	if err := s.repairSupersededFinalCard(ctx, sender, target, existingPanel, *thread, snapshot); err != nil {
+		s.setError(ctx, err)
+		return
+	}
 	panel, err := s.ensureCurrentPanel(ctx, sender, target, *thread, snapshot, pending, effectiveForceNew, sourceMode, renderSourceMode)
 	if err != nil {
 		s.setError(ctx, fmt.Errorf("ensure current panel: %w", err))
@@ -123,12 +127,17 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 		_ = s.store.UpdateThreadPanelSourceMode(ctx, panel.ID, panel.SourceMode)
 	}
 	legacyTerminalReplay := existingPanel != nil && existingPanel.CurrentTurnID == strings.TrimSpace(snapshot.LatestTurnID) && isLegacyTerminalReplay(panel, snapshot)
-	if isTerminalStatus(snapshot.LatestTurnStatus) && strings.TrimSpace(snapshot.LatestFinalFP) != "" && panel.LastFinalNoticeFP == snapshot.LatestFinalFP {
+	if isTerminalStatus(snapshot.LatestTurnStatus) &&
+		strings.TrimSpace(snapshot.LatestFinalFP) != "" &&
+		panel.LastFinalNoticeFP == snapshot.LatestFinalFP &&
+		s.finalCardAlreadyRecorded(ctx, panel, thread.ID, snapshot.LatestTurnID, snapshot.LatestFinalFP) {
 		return
 	}
 	if legacyTerminalReplay && snapshot.LatestFinalFP != "" {
-		panel.LastFinalNoticeFP = snapshot.LatestFinalFP
-		if err := s.store.UpdateThreadPanelState(ctx, panel.ID, panel.CurrentTurnID, panel.Status, panel.LastSummaryHash, panel.LastToolHash, panel.LastOutputHash, panel.LastFinalNoticeFP); err != nil {
+		if s.finalCardAlreadyRecorded(ctx, panel, thread.ID, snapshot.LatestTurnID, snapshot.LatestFinalFP) {
+			return
+		}
+		if err := s.maybeRenderFinalCard(ctx, sender, target, panel, *thread, snapshot); err != nil {
 			s.setError(ctx, err)
 		}
 		return
@@ -159,6 +168,13 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 		s.setError(ctx, err)
 		return
 	}
+}
+
+func (s *Service) finalCardAlreadyRecorded(ctx context.Context, panel *model.ThreadPanel, threadID, turnID, finalFP string) bool {
+	if panel != nil && strings.TrimSpace(panel.LastFinalCardHash) != "" && strings.TrimSpace(panel.LastFinalNoticeFP) == strings.TrimSpace(finalFP) {
+		return true
+	}
+	return strings.TrimSpace(finalFP) != "" && !s.latestFinalCardMissing(ctx, threadID, turnID, finalFP)
 }
 
 func (s *Service) ensureThreadTopic(ctx context.Context, sender Sender, target model.ObserverTarget, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) (*model.FeishuThreadTopic, error) {
@@ -426,7 +442,7 @@ func (s *Service) maybeSendUserRequestNotice(ctx context.Context, sender Sender,
 	if panel.UserMessageID != 0 {
 		message := firstRenderedMessage(s.renderUserRequestNoticeCard(ctx, thread, snapshot, noticeSourceMode))
 		s.logChatRenderedMessagesContainsNil(thread.ID, snapshot.LatestTurnID, "user", panel.UserMessageID, []model.RenderedMessage{message})
-		if err := sender.EditRenderedMessage(ctx, panel.ChatID, panel.TopicID, panel.UserMessageID, message, nil); err != nil {
+		if err := sender.EditRenderedMessage(ctx, panel.ChatID, panel.TopicID, panel.UserMessageID, message, s.latestDetailsButtons(ctx, thread.ID, snapshot.LatestTurnID)); err != nil {
 			s.setError(ctx, fmt.Errorf("edit user notice card: %w", err))
 			return nil
 		}
@@ -526,7 +542,7 @@ func (s *Service) sendUserRequestNotice(ctx context.Context, sender Sender, targ
 	}
 	messages := s.renderUserRequestNoticeCard(ctx, thread, snapshot, s.userRequestNoticeSourceMode(ctx, thread.ID, snapshot.LatestTurnID, sourceMode))
 	s.logChatRenderedMessagesContainsNil(thread.ID, snapshot.LatestTurnID, "user", 0, messages)
-	messageIDs, err := sender.SendRenderedMessages(ctx, target.ChatID, target.TopicID, messages, nil, silentSendOptions())
+	messageIDs, err := sender.SendRenderedMessages(ctx, target.ChatID, target.TopicID, messages, s.latestDetailsButtons(ctx, thread.ID, snapshot.LatestTurnID), silentSendOptions())
 	if err != nil {
 		return 0, "", err
 	}
@@ -544,6 +560,12 @@ func (s *Service) sendUserRequestNotice(ctx context.Context, sender Sender, targ
 		})
 	}
 	return canonicalMessageID, snapshot.LatestUserMessageFP, nil
+}
+
+func (s *Service) latestDetailsButtons(ctx context.Context, threadID, turnID string) [][]model.ButtonSpec {
+	return [][]model.ButtonSpec{
+		{s.callbackButton(ctx, s.t(ctx, "手动刷新", "Refresh"), "latest_details", threadID, turnID, "", nil)},
+	}
 }
 
 func (s *Service) renderUserRequestNoticeCard(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, renderSourceMode string) []model.RenderedMessage {
@@ -809,6 +831,7 @@ func (s *Service) updateCurrentPanel(ctx context.Context, sender Sender, panel *
 func (s *Service) renderSummaryPanel(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, pending *model.PendingApproval) (model.RenderedMessage, [][]model.ButtonSpec, string) {
 	pending = pendingForSnapshot(pending, snapshot)
 	buttons := [][]model.ButtonSpec{}
+	buttons = append(buttons, s.latestDetailsButtons(ctx, thread.ID, snapshot.LatestTurnID)...)
 	if !isTerminalStatus(cardDisplayStatus(snapshot, thread)) {
 		buttons = append(buttons, []model.ButtonSpec{
 			s.callbackButton(ctx, s.t(ctx, "停止", "Stop"), "stop_turn", thread.ID, snapshot.LatestTurnID, "", nil),
@@ -939,7 +962,8 @@ func (s *Service) renderSummaryPanelMarkdownAt(ctx context.Context, thread model
 		progressTruncated = utf16LenLocal(progressFull) > summaryLogLimit
 		progress = s.summaryLogVisibleText(ctx, progressFull, snapshot)
 	}
-	displaySegments := []msgformat.Segment{msgformat.Markdown(statusText)}
+	statusDisplayText := strings.TrimSpace(statusText + "\n" + s.statusRefreshTimeText(ctx, now))
+	displaySegments := []msgformat.Segment{msgformat.Markdown(statusDisplayText)}
 	if progress != "" {
 		displaySegments = append(displaySegments, msgformat.Plain("\n\n"))
 		if progressTruncated {
@@ -954,10 +978,18 @@ func (s *Service) renderSummaryPanelMarkdownAt(ctx context.Context, thread model
 	displaySegments = append(displaySegments, segments...)
 	message := firstRenderedMessage(msgformat.RenderSegments(displaySegments, msgformat.MessageLimit))
 	message.Style = model.MessageStyleCodexPanel
-	message.CodexStatus = statusText
+	message.CodexStatus = statusDisplayText
 	message.CodexProgressMarkdown = progress
 	message.CodexProgressExpanded = !isTerminalStatus(status)
 	return []model.RenderedMessage{message}
+}
+
+func (s *Service) statusRefreshTimeText(ctx context.Context, now time.Time) string {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	local := now.Local().Format("15:04:05")
+	return fmt.Sprintf("%s: %s", s.t(ctx, "最后刷新", "Refreshed"), local)
 }
 
 func (s *Service) codexPanelStatusText(ctx context.Context, snapshot *appserver.ThreadReadSnapshot, status string, now time.Time) string {

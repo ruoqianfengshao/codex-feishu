@@ -277,7 +277,7 @@ func collectServiceInstallValues(opts serviceInstallOptions, existing map[string
 	values["CTR_GO_CODEX_CHATS_ROOT"] = strings.TrimSpace(firstNonEmpty(opts.CodexChatsRoot, existing["CTR_GO_CODEX_CHATS_ROOT"], config.DefaultCodexChatsRoot()))
 	values["CTR_GO_CODEX_BIN"] = strings.TrimSpace(firstNonEmpty(opts.CodexBin, existing["CTR_GO_CODEX_BIN"], codexBin))
 	values["CTR_GO_NOTIFY_NEW_RUN"] = strings.TrimSpace(firstNonEmpty(opts.NotifyNewRun, existing["CTR_GO_NOTIFY_NEW_RUN"], "true"))
-	values["CTR_GO_NOTIFY_SYSTEM"] = strings.TrimSpace(firstNonEmpty(opts.NotifySystem, existing["CTR_GO_NOTIFY_SYSTEM"], "true"))
+	values["CTR_GO_NOTIFY_SYSTEM"] = strings.TrimSpace(firstNonEmpty(opts.NotifySystem, existing["CTR_GO_NOTIFY_SYSTEM"], "false"))
 	values["CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU"] = strings.TrimSpace(firstNonEmpty(opts.OpenCodexDesktop, existing["CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU"], "false"))
 	values["CTR_GO_CTR_GO_BIN"] = strings.TrimSpace(firstNonEmpty(opts.CTRGoBinaryPath, existing["CTR_GO_CTR_GO_BIN"]))
 	for _, key := range config.RuntimeEnvPassthroughKeys() {
@@ -356,8 +356,8 @@ func runServiceWizard(values map[string]string, in io.Reader, out io.Writer) (ma
 		},
 		wizardField{
 			Key:      "CTR_GO_NOTIFY_SYSTEM",
-			Label:    "macOS system notifications",
-			Help:     "Use true/false. Sends macOS notifications for completion, failure, and approval.",
+			Label:    "macOS system notifications (removed)",
+			Help:     "Kept for config compatibility. Local system notifications are no longer sent.",
 			Required: true,
 			Validate: validateBoolText,
 		},

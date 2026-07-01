@@ -1060,6 +1060,17 @@ func TestProjectOpenShowsInteractiveThreadList(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpsertThread(archived) failed: %v", err)
 	}
+	if err := service.store.UpsertThread(ctx, model.Thread{
+		ID:            "deleted-project-thread",
+		Title:         "Deleted thread",
+		CWD:           "/Users/example/project",
+		ProjectName:   "project",
+		DirectoryName: "project",
+		UpdatedAt:     8,
+		Raw:           json.RawMessage(`{"id":"deleted-project-thread","deleted":true}`),
+	}); err != nil {
+		t.Fatalf("UpsertThread(deleted) failed: %v", err)
+	}
 
 	projects, err := service.handleCommandFromSource(ctx, 123456789, 0, "/projects", 0, model.PanelSourceFeishuInput)
 	if err != nil {
@@ -1080,6 +1091,9 @@ func TestProjectOpenShowsInteractiveThreadList(t *testing.T) {
 	if strings.Contains(menu.Text, "Archived thread") {
 		t.Fatalf("project threads text = %q, want archived thread hidden", menu.Text)
 	}
+	if strings.Contains(menu.Text, "Deleted thread") {
+		t.Fatalf("project threads text = %q, want deleted thread hidden", menu.Text)
+	}
 	if len(menu.Sections) != 1 || menu.Sections[0].Text != "project" || len(menu.Sections[0].Rows) != 1 {
 		t.Fatalf("project sections = %#v, want one project section with one visible row", menu.Sections)
 	}
@@ -1087,8 +1101,11 @@ func TestProjectOpenShowsInteractiveThreadList(t *testing.T) {
 	if row.Title != "Menu thread" || row.Trailing == "" || row.Button.Text != "Open" || row.Button.CallbackData == "" {
 		t.Fatalf("project row = %#v, want clickable visible thread row", row)
 	}
-	if callbackTokenForButton(menu.Buttons, "New thread") != "" || callbackTokenForButton(menu.Buttons, "Threads") != "" {
-		t.Fatalf("project buttons = %#v, want no intermediate project menu actions", menu.Buttons)
+	if callbackTokenForButton(menu.Buttons, "New thread") == "" {
+		t.Fatalf("project buttons = %#v, want New thread action", menu.Buttons)
+	}
+	if callbackTokenForButton(menu.Buttons, "Threads") != "" {
+		t.Fatalf("project buttons = %#v, want no intermediate Threads action", menu.Buttons)
 	}
 }
 
@@ -5104,8 +5121,11 @@ func TestFinalSummaryPanelHasGetThreadIDButton(t *testing.T) {
 	}
 
 	_, buttons, _ := service.renderSummaryPanel(ctx, thread, snapshot, nil)
-	if len(buttons) != 0 {
-		t.Fatalf("final summary buttons = %#v, want none", buttons)
+	if callbackTokenForButton(buttons, "Refresh") == "" {
+		t.Fatalf("final summary buttons = %#v, want Refresh", buttons)
+	}
+	if callbackTokenForButton(buttons, "Stop") != "" {
+		t.Fatalf("final summary buttons = %#v, want no running buttons", buttons)
 	}
 }
 

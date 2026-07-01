@@ -310,10 +310,46 @@ func threadVisibleInProjectCatalog(thread model.Thread) bool {
 	if thread.Archived {
 		return false
 	}
+	if threadMarkedDeletedForOverview(thread) {
+		return false
+	}
 	if threadLooksUnavailableForOverview(thread) {
 		return false
 	}
 	return true
+}
+
+func threadMarkedDeletedForOverview(thread model.Thread) bool {
+	var payload map[string]any
+	if len(thread.Raw) == 0 || json.Unmarshal(thread.Raw, &payload) != nil {
+		return false
+	}
+	return payloadBoolish(payload["deleted"]) ||
+		payloadBoolish(payload["isDeleted"]) ||
+		payloadNestedBoolish(payload, "thread", "deleted") ||
+		payloadNestedBoolish(payload, "thread", "isDeleted")
+}
+
+func payloadNestedBoolish(payload map[string]any, parent, key string) bool {
+	nested, ok := payload[parent].(map[string]any)
+	return ok && payloadBoolish(nested[key])
+}
+
+func payloadBoolish(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "1", "true", "yes":
+			return true
+		}
+	case float64:
+		return typed != 0
+	case json.Number:
+		return typed.String() != "" && typed.String() != "0"
+	}
+	return false
 }
 
 func (s *Service) chatsOverviewPage(ctx context.Context, page int) (*DirectResponse, error) {
@@ -519,8 +555,11 @@ func (s *Service) projectThreads(ctx context.Context, payload map[string]any) (*
 		return nil, err
 	}
 	lines := []string{fmt.Sprintf(localized(lang, "%s 的会话", "Threads for %s"), workspace.ProjectName)}
-	buttons := [][]model.ButtonSpec{}
+	buttons := [][]model.ButtonSpec{
+		{s.callbackButton(ctx, localized(lang, "新建会话", "New thread"), "project_new_thread", "", "", "", projectWorkspacePayload(workspace))},
+	}
 	section := model.MessageSection{Text: workspace.ProjectName, Heading: true}
+	visibleThreadCount := 0
 	for _, thread := range threads {
 		if !threadVisibleInProjectCatalog(thread) {
 			continue
@@ -533,15 +572,16 @@ func (s *Service) projectThreads(ctx context.Context, payload map[string]any) (*
 		button := s.callbackButton(ctx, localized(lang, "打开", "Open"), "show_thread", thread.ID, "", "", nil)
 		lines = append(lines, fmt.Sprintf("- %s    %s", label, updatedAt))
 		buttons = append(buttons, []model.ButtonSpec{button})
+		visibleThreadCount++
 		section.Rows = append(section.Rows, model.MessageSectionRow{
 			Title:    label,
 			Trailing: updatedAt,
 			Button:   button,
 		})
 	}
-	if len(buttons) == 0 {
+	if visibleThreadCount == 0 {
 		lines = append(lines, localized(lang, "这个项目还没有缓存会话。", "No cached threads for this project."))
-		return &DirectResponse{Text: strings.Join(lines, "\n")}, nil
+		return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons}, nil
 	}
 	return &DirectResponse{Text: strings.Join(lines, "\n"), Sections: []model.MessageSection{section}, Buttons: buttons}, nil
 }
