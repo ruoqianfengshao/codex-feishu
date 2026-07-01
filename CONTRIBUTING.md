@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for considering a contribution to `codex-tg`.
+Thanks for considering a contribution to `codex-feishu`.
 
 ## Development Loop
 

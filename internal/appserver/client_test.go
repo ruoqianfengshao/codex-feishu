@@ -192,10 +192,10 @@ func TestStartConcurrentCallsShareInitializedProcess(t *testing.T) {
 	}
 	root := t.TempDir()
 	logPath := filepath.Join(root, "rpc.log")
-	t.Setenv("CODEX_TG_FAKE_APPSERVER_LOG", logPath)
+	t.Setenv("CODEX_FEISHU_FAKE_APPSERVER_LOG", logPath)
 	script := writeFakeAppServer(t, root, `#!/bin/sh
 set -eu
-log="${CODEX_TG_FAKE_APPSERVER_LOG:-}"
+log="${CODEX_FEISHU_FAKE_APPSERVER_LOG:-}"
 if IFS= read -r line; then
   if [ -n "$log" ]; then printf '%s\n' "$line" >> "$log"; fi
   sleep 0.2

@@ -225,7 +225,7 @@ func chatMenuItem(name, url string) *larkim.ChatMenuItem {
 }
 
 func feishuMenuCommandURL(command string) string {
-	return "https://applink.feishu.cn/client/bot/open?app_id=codex-tg&command=" + command
+	return "https://applink.feishu.cn/client/bot/open?app_id=codex-feishu&command=" + command
 }
 
 func (c *sdkAPIClient) UpdateText(ctx context.Context, openMessageID, text string) error {

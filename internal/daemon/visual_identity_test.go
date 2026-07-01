@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mideco-tech/codex-tg/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
 )
 
 func TestVisualMarkerIsStableForSameThread(t *testing.T) {
@@ -92,11 +92,11 @@ func TestVisualHeaderShowsProjectSegmentForWorkspaceThread(t *testing.T) {
 	header := service.visualHeader(context.Background(), "Final", model.Thread{
 		ID:          "thread-header-project",
 		Title:       "Implement Feishu bridge",
-		ProjectName: "codex-tg-controller",
-		CWD:         "/Users/example/workspace/codex-tg-controller",
+		ProjectName: "codex-feishu-controller",
+		CWD:         "/Users/example/workspace/codex-feishu-controller",
 	}, "turn-header-project")
 
-	if !strings.Contains(header, "[codex-tg-contro...]") {
+	if !strings.Contains(header, "[codex-feishu-co...]") {
 		t.Fatalf("header = %q, want project segment", header)
 	}
 	if !strings.Contains(header, "[Implement Feishu bridge]") || strings.Contains(header, "[T:") || strings.Contains(header, "[R:") || !strings.Contains(header, "[Final]") {

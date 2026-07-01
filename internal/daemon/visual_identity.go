@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/mideco-tech/codex-tg/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
 )
 
 const (

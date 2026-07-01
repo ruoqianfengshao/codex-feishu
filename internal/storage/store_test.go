@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mideco-tech/codex-tg/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
 )
 
 func TestResolveExternalIDIsStableAndDistinctByNamespace(t *testing.T) {
@@ -106,8 +106,8 @@ func TestListThreadsFiltersInternalAppServerThreads(t *testing.T) {
 		{
 			ID:            "visible-thread",
 			Title:         "Visible work",
-			ProjectName:   "codex-tg",
-			DirectoryName: "codex-tg",
+			ProjectName:   "codex-feishu",
+			DirectoryName: "codex-feishu",
 			UpdatedAt:     10,
 			LastPreview:   "normal user request",
 			Raw:           json.RawMessage(`{"id":"visible-thread","preview":"normal user request"}`),

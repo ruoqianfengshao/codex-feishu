@@ -21,7 +21,7 @@ Objective: make this project Feishu-only. Do not preserve Telegram runtime, data
 Verification:
 
 - [x] `rg -n "telegram|Telegram|tg" cmd internal/config`
-  - Remaining hits are project/package name strings such as `codex-tg`, not Telegram adapter/config references.
+  - Remaining hits are project/package name strings such as `codex-feishu`, not Telegram adapter/config references.
 - [x] `go test ./cmd/ctr-go ./internal/config`
 
 ## Phase 2: Source Modes And Runtime Naming

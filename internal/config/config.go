@@ -25,7 +25,7 @@ func DefaultPaths() Paths {
 func defaultPaths(home string) Paths {
 	if strings.TrimSpace(home) == "" {
 		userHome, _ := os.UserHomeDir()
-		home = filepath.Join(userHome, ".codex-tg")
+		home = filepath.Join(userHome, ".codex-feishu")
 	}
 	return Paths{
 		Home:    home,

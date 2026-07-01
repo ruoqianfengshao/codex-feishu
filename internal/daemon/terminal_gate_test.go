@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mideco-tech/codex-tg/internal/appserver"
-	"github.com/mideco-tech/codex-tg/internal/config"
-	"github.com/mideco-tech/codex-tg/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/appserver"
+	"github.com/ruoqianfengshao/codex-feishu/internal/config"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
 )
 
 func TestChatEmptyInterruptedGateDefersAndKeepsHotPollingMetadata(t *testing.T) {

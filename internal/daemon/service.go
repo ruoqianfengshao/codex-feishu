@@ -14,12 +14,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mideco-tech/codex-tg/internal/appserver"
-	"github.com/mideco-tech/codex-tg/internal/config"
-	"github.com/mideco-tech/codex-tg/internal/control"
-	"github.com/mideco-tech/codex-tg/internal/desktopipc"
-	"github.com/mideco-tech/codex-tg/internal/model"
-	"github.com/mideco-tech/codex-tg/internal/storage"
+	"github.com/ruoqianfengshao/codex-feishu/internal/appserver"
+	"github.com/ruoqianfengshao/codex-feishu/internal/config"
+	"github.com/ruoqianfengshao/codex-feishu/internal/control"
+	"github.com/ruoqianfengshao/codex-feishu/internal/desktopipc"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/storage"
 )
 
 type Session = control.RuntimeSession

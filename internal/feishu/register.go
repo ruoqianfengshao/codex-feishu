@@ -15,7 +15,7 @@ const (
 	defaultRegistrationDomain     = "accounts.feishu.cn"
 	defaultRegistrationLarkDomain = "accounts.larksuite.com"
 	registrationEndpoint          = "/oauth/v1/app/registration"
-	registrationSDKName           = "codex-tg-go"
+	registrationSDKName           = "codex-feishu-go"
 	registrationDefaultAppName    = "Codex"
 )
 

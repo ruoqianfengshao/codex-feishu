@@ -19,11 +19,11 @@ import (
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 
-	"github.com/mideco-tech/codex-tg/internal/appserver"
-	"github.com/mideco-tech/codex-tg/internal/config"
-	"github.com/mideco-tech/codex-tg/internal/daemon"
-	"github.com/mideco-tech/codex-tg/internal/model"
-	"github.com/mideco-tech/codex-tg/internal/storage"
+	"github.com/ruoqianfengshao/codex-feishu/internal/appserver"
+	"github.com/ruoqianfengshao/codex-feishu/internal/config"
+	"github.com/ruoqianfengshao/codex-feishu/internal/daemon"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/storage"
 )
 
 const (
@@ -751,7 +751,7 @@ func (b *Bot) handleMessageEvent(ctx context.Context, event *larkim.P2MessageRec
 		return nil
 	}
 	if !b.isAllowed(openUserID, openChatID, userID, chatID) {
-		return b.sendFailureMessage(ctx, chatID, b.t(ctx, "当前飞书用户或聊天无权控制 codex-tg。", "This Feishu user or chat is not allowed to control codex-tg."))
+		return b.sendFailureMessage(ctx, chatID, b.t(ctx, "当前飞书用户或聊天无权控制 codex-feishu。", "This Feishu user or chat is not allowed to control codex-feishu."))
 	}
 	if replyTo == 0 && isFeishuGroupMessage(message) && !isFeishuCommand(text) {
 		return nil
@@ -841,7 +841,7 @@ func (b *Bot) handleBotMenu(ctx context.Context, event *larkapplication.P2BotMen
 		return err
 	}
 	if !b.isBotMenuAllowed(openUserID, userID) {
-		return b.sendOpenIDFailureMessage(ctx, openUserID, b.t(ctx, "当前飞书用户无权控制 codex-tg。", "This Feishu user is not allowed to control codex-tg."))
+		return b.sendOpenIDFailureMessage(ctx, openUserID, b.t(ctx, "当前飞书用户无权控制 codex-feishu。", "This Feishu user is not allowed to control codex-feishu."))
 	}
 	response, err := b.service.HandleMessageFromSource(ctx, chatID, 0, userID, command, 0, model.PanelSourceFeishuInput)
 	if err != nil {

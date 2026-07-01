@@ -1,6 +1,6 @@
 # Security
 
-`codex-tg` is local-first:
+`codex-feishu` is local-first:
 
 - Codex App Server should stay local/private.
 - Feishu app id and secret are stored in the private local config.

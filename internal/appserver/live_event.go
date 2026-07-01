@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mideco-tech/codex-tg/internal/control"
-	"github.com/mideco-tech/codex-tg/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/control"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
 )
 
 type LiveEventKind = control.EventKind

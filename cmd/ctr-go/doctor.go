@@ -12,8 +12,8 @@ import (
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 
-	"github.com/mideco-tech/codex-tg/internal/appserver"
-	"github.com/mideco-tech/codex-tg/internal/config"
+	"github.com/ruoqianfengshao/codex-feishu/internal/appserver"
+	"github.com/ruoqianfengshao/codex-feishu/internal/config"
 )
 
 const (

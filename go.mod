@@ -1,4 +1,4 @@
-module github.com/mideco-tech/codex-tg
+module github.com/ruoqianfengshao/codex-feishu
 
 go 1.26.0
 

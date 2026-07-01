@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mideco-tech/codex-tg/internal/config"
-	"github.com/mideco-tech/codex-tg/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/config"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
 )
 
 func TestValueFromMapSkipsNilLikeValues(t *testing.T) {

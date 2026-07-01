@@ -21,8 +21,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mideco-tech/codex-tg/internal/control"
-	"github.com/mideco-tech/codex-tg/internal/version"
+	"github.com/ruoqianfengshao/codex-feishu/internal/control"
+	"github.com/ruoqianfengshao/codex-feishu/internal/version"
 )
 
 type Event = control.Event
@@ -402,8 +402,8 @@ func (c *Client) Start(ctx context.Context) error {
 	if _, err := c.Request(ctx, "initialize", map[string]any{
 		"capabilities": map[string]any{"experimentalApi": true},
 		"clientInfo": map[string]any{
-			"name":    "codex-tg",
-			"title":   "codex-tg Feishu bridge",
+			"name":    "codex-feishu",
+			"title":   "codex-feishu Feishu bridge",
 			"version": version.Version,
 		},
 	}); err != nil {

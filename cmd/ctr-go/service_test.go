@@ -274,7 +274,7 @@ func TestServiceInstallInteractiveWizardRetriesInvalidValues(t *testing.T) {
 		t.Fatalf("wizard leaked secret:\n%s", got)
 	}
 	for _, want := range []string{
-		"codex-tg service setup",
+		"codex-feishu service setup",
 		"[1/10] Feishu app id",
 		"[2/10] Feishu app secret",
 		"value must be true or false",
@@ -308,10 +308,10 @@ func TestRenderLaunchAgentPlistContainsOnlyConfigEnvironment(t *testing.T) {
 	plist, err := renderLaunchAgentPlist(launchAgentConfig{
 		Label:      serviceLabel,
 		BinaryPath: "/usr/local/bin/ctr-go",
-		ConfigPath: "/Users/you/.codex-tg/config.env",
+		ConfigPath: "/Users/you/.codex-feishu/config.env",
 		WorkingDir: "/Users/you/project",
-		StdoutPath: "/Users/you/.codex-tg/logs/daemon.out.log",
-		StderrPath: "/Users/you/.codex-tg/logs/daemon.err.log",
+		StdoutPath: "/Users/you/.codex-feishu/logs/daemon.out.log",
+		StderrPath: "/Users/you/.codex-feishu/logs/daemon.err.log",
 		KeepAlive:  true,
 		RunAtLoad:  true,
 	})

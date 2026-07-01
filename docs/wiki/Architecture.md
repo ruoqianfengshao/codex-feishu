@@ -1,6 +1,6 @@
 # Architecture
 
-`codex-tg` is a local daemon with three main boundaries:
+`codex-feishu` is a local daemon with three main boundaries:
 
 - Codex App Server client for threads, turns, snapshots, live events, approvals,
   and history.

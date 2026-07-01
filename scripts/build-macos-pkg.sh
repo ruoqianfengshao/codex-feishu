@@ -20,7 +20,7 @@ for arch in $ARCHES; do
   trap 'rm -rf "$workdir"' EXIT
 
   payload="$workdir/payload"
-  app="$payload/Applications/codex-tg.app"
+  app="$payload/Applications/codex-feishu.app"
   mkdir -p "$payload/usr/local/bin" "$app/Contents/MacOS" "$app/Contents/Resources"
 
   env CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" \
@@ -40,11 +40,11 @@ for arch in $ARCHES; do
   <key>CFBundleExecutable</key>
   <string>ctr-go-tray</string>
   <key>CFBundleIdentifier</key>
-  <string>tech.mideco.codex-tg.tray</string>
+  <string>tech.mideco.codex-feishu.tray</string>
   <key>CFBundleName</key>
-  <string>codex-tg</string>
+  <string>codex-feishu</string>
   <key>CFBundleDisplayName</key>
-  <string>codex-tg</string>
+  <string>codex-feishu</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -62,10 +62,10 @@ PLIST
 
   pkgbuild \
     --root "$payload" \
-    --identifier "tech.mideco.codex-tg" \
+    --identifier "tech.mideco.codex-feishu" \
     --version "$PKG_VERSION" \
     --install-location "/" \
-    "$DIST_DIR/codex-tg_${VERSION}_darwin_${arch}.pkg"
+    "$DIST_DIR/codex-feishu_${VERSION}_darwin_${arch}.pkg"
 
   rm -rf "$workdir"
   trap - EXIT

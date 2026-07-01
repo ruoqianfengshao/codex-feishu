@@ -2,7 +2,7 @@
 
 ## Supported Model
 
-`codex-tg` is a local-first Feishu bridge:
+`codex-feishu` is a local-first Feishu bridge:
 
 - Codex App Server runs locally.
 - Feishu/Lark is the remote input and rendering surface.

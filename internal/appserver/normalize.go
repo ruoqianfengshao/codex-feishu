@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mideco-tech/codex-tg/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
 )
 
 type ThreadReadSnapshot struct {
@@ -1033,12 +1033,12 @@ func liveToolDetailItems(snapshot ThreadReadSnapshot) []model.DetailItem {
 		return nil
 	}
 	items := []model.DetailItem{{
-		ID:     snapshot.LatestToolID,
-		Kind:   model.DetailItemTool,
-		Label:  snapshot.LatestToolLabel,
+		ID:       snapshot.LatestToolID,
+		Kind:     model.DetailItemTool,
+		Label:    snapshot.LatestToolLabel,
 		ToolKind: snapshot.LatestToolKind,
-		Status: snapshot.LatestToolStatus,
-		FP:     snapshot.LatestToolFP,
+		Status:   snapshot.LatestToolStatus,
+		FP:       snapshot.LatestToolFP,
 	}}
 	if output := strings.TrimSpace(snapshot.LatestToolOutput); output != "" {
 		items = append(items, model.DetailItem{

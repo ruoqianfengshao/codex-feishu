@@ -1,12 +1,19 @@
-# codex-tg: Feishu control for local Codex
+# codex-feishu: Feishu control for local Codex
 
-`codex-tg` is a local Go daemon for remotely controlling OpenAI Codex App
+`codex-feishu` is a local Go daemon for remotely controlling OpenAI Codex App
 Server from Feishu/Lark. It keeps Codex on your machine, maps opened Codex
 threads to Feishu topics, and routes replies, approvals, progress, final
 answers, images, and project navigation through a Feishu bot DM.
 
-The product is Feishu-only. Older channel adapters and observer-style global
-monitoring have been removed.
+The project name is `codex-feishu`; the command-line binary is still `ctr-go`
+for now. The product is Feishu-only. Older channel adapters and observer-style
+global monitoring have been removed.
+
+This project is a fork of
+[`mideco-tech/codex-tg`](https://github.com/mideco-tech/codex-tg). It has been
+substantially reworked for the Feishu/Lark workflow, including the Feishu-only
+adapter surface, project/thread navigation, topic cards, final-card repair,
+installation health checks, and local service defaults.
 
 ## What It Does
 
@@ -18,7 +25,8 @@ monitoring have been removed.
 - Sends Codex desktop/user input, progress, tool activity, final answers, and image messages into the topic.
 - Sends Feishu topic replies and images back into the matching Codex thread.
 - Supports Plan Mode prompts, approvals, stop, steer, settings, status, and repair flows.
-- Stores local state in SQLite under the configured `CTR_GO_HOME`.
+- Stores local state in SQLite under the configured `CTR_GO_HOME`, defaulting
+  to `~/.codex-feishu`.
 
 ## Quickstart
 
@@ -28,7 +36,7 @@ Prerequisites:
 - Feishu/Lark access that can create or authorize an enterprise self-built app.
 
 On macOS, install the latest package from
-[GitHub Releases](https://github.com/mideco-tech/codex-tg/releases/latest),
+[GitHub Releases](https://github.com/ruoqianfengshao/codex-feishu/releases/latest),
 then run:
 
 ```powershell
@@ -37,11 +45,14 @@ ctr-go feishu setup
 ctr-go doctor
 ```
 
+The installer and service are named for `codex-feishu`, but the installed CLI is
+`ctr-go`.
+
 For a source build:
 
 ```powershell
-git clone https://github.com/mideco-tech/codex-tg.git
-cd codex-tg
+git clone https://github.com/ruoqianfengshao/codex-feishu.git
+cd codex-feishu
 go run ./cmd/ctr-go feishu setup
 go run ./cmd/ctr-go doctor
 go run ./cmd/ctr-go daemon run
@@ -61,7 +72,9 @@ $env:CTR_GO_FEISHU_ALLOWED_CHAT_IDS = "<feishu-chat-id>"
 
 The Feishu app must have the bot enabled, WebSocket event subscription enabled,
 message receive events subscribed, and interactive card callbacks enabled. It
-also needs the message and file permissions required for the target chats.
+also needs the message, image, file, and chat permissions required for the
+target chats. If a card button, image, or file upload fails, rerun
+`ctr-go doctor` first and then check the Feishu app permissions.
 
 `ctr-go doctor` emits a JSON health report under `health`. AI installers should
 treat `health.ok == true` as the readiness gate. When it is false, read
@@ -134,11 +147,14 @@ ctr-go repair
 ctr-go daemon run
 ```
 
+The binary name may change in a future release; until then, automation should
+call `ctr-go`.
+
 ## Configuration
 
 Common environment variables:
 
-- `CTR_GO_HOME`
+- `CTR_GO_HOME` defaults to `~/.codex-feishu`
 - `CTR_GO_CONFIG`
 - `CTR_GO_ADAPTER` (`feishu`)
 - `CTR_GO_CODEX_BIN`

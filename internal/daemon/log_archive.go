@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mideco-tech/codex-tg/internal/config"
-	"github.com/mideco-tech/codex-tg/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/config"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
 )
 
 type sessionLogEnvelope struct {

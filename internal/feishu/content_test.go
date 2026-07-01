@@ -10,11 +10,11 @@ import (
 
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 
-	"github.com/mideco-tech/codex-tg/internal/appserver"
-	"github.com/mideco-tech/codex-tg/internal/config"
-	"github.com/mideco-tech/codex-tg/internal/daemon"
-	"github.com/mideco-tech/codex-tg/internal/model"
-	"github.com/mideco-tech/codex-tg/internal/storage"
+	"github.com/ruoqianfengshao/codex-feishu/internal/appserver"
+	"github.com/ruoqianfengshao/codex-feishu/internal/config"
+	"github.com/ruoqianfengshao/codex-feishu/internal/daemon"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/storage"
 )
 
 func TestEncodeAndParseTextContent(t *testing.T) {
@@ -382,7 +382,7 @@ func TestBuildSectionedCardRendersThreadRowsAsInteractiveContainersV2(t *testing
 	card, err := buildSectionedCard([]model.MessageSection{
 		{Text: "All chats"},
 		{
-			Text:    "codex-tg",
+			Text:    "codex-feishu",
 			Heading: true,
 			Rows: []model.MessageSectionRow{
 				{
@@ -447,7 +447,7 @@ func TestBuildSectionedCardRendersThreadRowsAsInteractiveContainersV2(t *testing
 	if len(elements) != 4 {
 		t.Fatalf("elements = %#v, want header, project title, two interactive rows", elements)
 	}
-	if elements[1].Content != "codex-tg" || elements[1].TextSize != "xx-large" {
+	if elements[1].Content != "codex-feishu" || elements[1].TextSize != "xx-large" {
 		t.Fatalf("project title = %#v, want styled project heading", elements[1])
 	}
 	first := elements[2]
@@ -1277,15 +1277,15 @@ func botRememberControlRoomSourceForTest(ctx context.Context, store *storage.Sto
 func TestRenderThreadTopicRootTextUsesCompactTitleAndProject(t *testing.T) {
 	t.Parallel()
 
-	longTitle := "实现飞书版本的 codex-tg，要求体验丝滑，功能完善，而且标题不能被截断"
+	longTitle := "实现飞书版本的 codex-feishu，要求体验丝滑，功能完善，而且标题不能被截断"
 	got := renderThreadTopicRootText(model.Thread{
 		ID:          "thread-title",
 		Title:       longTitle,
-		ProjectName: "codex-tg-controller",
+		ProjectName: "codex-feishu-controller",
 		Status:      "active",
 	}, &appserver.ThreadReadSnapshot{LatestTurnID: "turn-123456789", LatestTurnStatus: "inProgress"}, model.PanelSourceFeishuInput)
 
-	if !strings.HasPrefix(got, longTitle+"\nProject: codex-tg-controller\n") {
+	if !strings.HasPrefix(got, longTitle+"\nProject: codex-feishu-controller\n") {
 		t.Fatalf("root text = %q, want compact title then project", got)
 	}
 	if strings.Contains(got, "## Codex 会话") || strings.Contains(got, "Thread:") {
@@ -1304,11 +1304,11 @@ func TestRenderThreadTopicRootTextFallsBackToCWDBasenameForProject(t *testing.T)
 	got := renderThreadTopicRootText(model.Thread{
 		ID:     "thread-cwd",
 		Title:  "Use cwd project",
-		CWD:    "/Users/example/workspace/codex-tg-controller",
+		CWD:    "/Users/example/workspace/codex-feishu-controller",
 		Status: "idle",
 	}, nil, model.PanelSourceFeishuInput)
 
-	if !strings.Contains(got, "Project: codex-tg-controller") {
+	if !strings.Contains(got, "Project: codex-feishu-controller") {
 		t.Fatalf("root text = %q, want CWD basename project", got)
 	}
 }

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mideco-tech/codex-tg/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
 
 	_ "modernc.org/sqlite"
 )

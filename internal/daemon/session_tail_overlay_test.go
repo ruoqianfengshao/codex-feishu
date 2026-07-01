@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mideco-tech/codex-tg/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
 )
 
 func TestPollTrackedIgnoresStaleSessionTailTool(t *testing.T) {

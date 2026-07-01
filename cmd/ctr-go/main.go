@@ -22,10 +22,10 @@ import (
 
 	qrterminal "github.com/mdp/qrterminal/v3"
 
-	"github.com/mideco-tech/codex-tg/internal/config"
-	"github.com/mideco-tech/codex-tg/internal/daemon"
-	"github.com/mideco-tech/codex-tg/internal/feishu"
-	"github.com/mideco-tech/codex-tg/internal/version"
+	"github.com/ruoqianfengshao/codex-feishu/internal/config"
+	"github.com/ruoqianfengshao/codex-feishu/internal/daemon"
+	"github.com/ruoqianfengshao/codex-feishu/internal/feishu"
+	"github.com/ruoqianfengshao/codex-feishu/internal/version"
 )
 
 func main() {
@@ -525,7 +525,7 @@ func runInit(args []string, in io.Reader, out io.Writer) error {
 	}
 
 	reader := bufio.NewReader(in)
-	_, _ = fmt.Fprintln(out, "This writes a local codex-tg config file. Keep it private.")
+	_, _ = fmt.Fprintln(out, "This writes a local codex-feishu config file. Keep it private.")
 	values := map[string]string{
 		"CTR_GO_ADAPTER": "feishu",
 	}
@@ -644,7 +644,7 @@ func writeConfigEnv(path string, values map[string]string, force bool) error {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	_, _ = fmt.Fprintln(file, "# codex-tg local configuration")
+	_, _ = fmt.Fprintln(file, "# codex-feishu local configuration")
 	_, _ = fmt.Fprintln(file, "# Keep this file private. It contains bot credentials.")
 	for _, key := range keys {
 		_, _ = fmt.Fprintf(file, "%s=%s\n", key, strconv.Quote(values[key]))
@@ -669,7 +669,7 @@ func printInitUsage(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "Usage:")
 	_, _ = fmt.Fprintln(out, "  ctr-go init [--force]")
 	_, _ = fmt.Fprintln(out)
-	_, _ = fmt.Fprintln(out, "Creates a private local config.env for codex-tg.")
+	_, _ = fmt.Fprintln(out, "Creates a private local config.env for codex-feishu.")
 	_, _ = fmt.Fprintln(out, "Set CTR_GO_CONFIG to choose a custom config path.")
 }
 

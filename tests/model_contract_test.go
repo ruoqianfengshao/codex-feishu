@@ -3,7 +3,7 @@ package tests
 import (
 	"testing"
 
-	"github.com/mideco-tech/codex-tg/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
 )
 
 func TestProjectNameFromCWDUsesSharedGeneralFallbacks(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/mideco-tech/codex-tg/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
 )
 
 func (s *Store) CreateThreadPanel(ctx context.Context, panel model.ThreadPanel) (*model.ThreadPanel, error) {

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mideco-tech/codex-tg/internal/appserver"
-	"github.com/mideco-tech/codex-tg/internal/model"
-	"github.com/mideco-tech/codex-tg/internal/msgformat"
+	"github.com/ruoqianfengshao/codex-feishu/internal/appserver"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/msgformat"
 )
 
 type recordedMessage struct {

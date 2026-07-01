@@ -14,8 +14,8 @@ import (
 
 	"fyne.io/systray"
 
-	"github.com/mideco-tech/codex-tg/internal/config"
-	"github.com/mideco-tech/codex-tg/internal/trayapp"
+	"github.com/ruoqianfengshao/codex-feishu/internal/config"
+	"github.com/ruoqianfengshao/codex-feishu/internal/trayapp"
 )
 
 var templateIcon = []byte{
@@ -34,20 +34,20 @@ func main() {
 func onReady() {
 	ctrGo := resolveCTRGo()
 	systray.SetTitle("ctg")
-	systray.SetTooltip("codex-tg")
+	systray.SetTooltip("codex-feishu")
 	if len(templateIcon) > 0 {
 		systray.SetTemplateIcon(templateIcon, templateIcon)
 	}
 
 	statusItem := systray.AddMenuItem("Status: checking...", "Show service status")
-	startItem := systray.AddMenuItem("Start", "Start codex-tg service")
-	stopItem := systray.AddMenuItem("Stop", "Stop codex-tg service")
-	restartItem := systray.AddMenuItem("Restart", "Restart codex-tg service")
+	startItem := systray.AddMenuItem("Start", "Start codex-feishu service")
+	stopItem := systray.AddMenuItem("Stop", "Stop codex-feishu service")
+	restartItem := systray.AddMenuItem("Restart", "Restart codex-feishu service")
 	loginItem := systray.AddMenuItemCheckbox("Start with system", "Toggle login LaunchAgent", false)
 	systray.AddSeparator()
 	doctorItem := systray.AddMenuItem("Run doctor", "Run ctr-go doctor in Terminal")
 	configItem := systray.AddMenuItem("Open config", "Open config.env")
-	logsItem := systray.AddMenuItem("Open logs", "Open codex-tg logs")
+	logsItem := systray.AddMenuItem("Open logs", "Open codex-feishu logs")
 	setupItem := systray.AddMenuItem("Open Terminal Setup", "Run friendly setup wizard")
 	systray.AddSeparator()
 	quitItem := systray.AddMenuItem("Quit", "Quit tray app")

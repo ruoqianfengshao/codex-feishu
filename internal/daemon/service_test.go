@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mideco-tech/codex-tg/internal/appserver"
-	"github.com/mideco-tech/codex-tg/internal/config"
-	"github.com/mideco-tech/codex-tg/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/appserver"
+	"github.com/ruoqianfengshao/codex-feishu/internal/config"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
 )
 
 func TestResolveRoutePrecedenceExplicitThenReplyThenNone(t *testing.T) {
@@ -291,8 +291,8 @@ func TestThreadsCommandHidesInternalSubAgentThreads(t *testing.T) {
 	visible := model.Thread{
 		ID:            "visible-thread",
 		Title:         "Visible work",
-		ProjectName:   "codex-tg",
-		DirectoryName: "codex-tg",
+		ProjectName:   "codex-feishu",
+		DirectoryName: "codex-feishu",
 		UpdatedAt:     10,
 		Status:        "idle",
 		LastPreview:   "normal user request",
@@ -356,7 +356,7 @@ func TestThreadsCommandHidesInternalSubAgentThreads(t *testing.T) {
 	if strings.Contains(response.Text, "sample-app") || strings.Contains(response.Text, notLoadedIDTitle.ID) {
 		t.Fatalf("/chats text contains unavailable id-title notLoaded thread:\n%s", response.Text)
 	}
-	if !strings.Contains(response.Text, "codex-tg\nVisible work    1 分钟前") {
+	if !strings.Contains(response.Text, "codex-feishu\nVisible work    1 分钟前") {
 		t.Fatalf("/chats text missing grouped visible thread:\n%s", response.Text)
 	}
 	if strings.Contains(response.Text, "All chats") {
@@ -368,8 +368,8 @@ func TestThreadsCommandHidesInternalSubAgentThreads(t *testing.T) {
 	if len(response.Sections) != 1 {
 		t.Fatalf("/chats sections = %#v, want project section", response.Sections)
 	}
-	if response.Sections[0].Text != "codex-tg" {
-		t.Fatalf("/chats project section = %#v, want codex-tg", response.Sections[0])
+	if response.Sections[0].Text != "codex-feishu" {
+		t.Fatalf("/chats project section = %#v, want codex-feishu", response.Sections[0])
 	}
 	if !response.Sections[0].Heading {
 		t.Fatalf("/chats project section = %#v, want heading section", response.Sections[0])
@@ -716,27 +716,27 @@ func TestProjectsCommandShowsProjectButtonsGroupedByCWD(t *testing.T) {
 		{
 			ID:            "workspace-a-1",
 			Title:         "A one",
-			CWD:           "/Users/example/work/a/codex-tg",
-			ProjectName:   "codex-tg",
-			DirectoryName: "codex-tg",
+			CWD:           "/Users/example/work/a/codex-feishu",
+			ProjectName:   "codex-feishu",
+			DirectoryName: "codex-feishu",
 			UpdatedAt:     30,
 			Raw:           json.RawMessage(`{"id":"workspace-a-1"}`),
 		},
 		{
 			ID:            "workspace-a-2",
 			Title:         "A two",
-			CWD:           "/Users/example/work/a/codex-tg",
-			ProjectName:   "codex-tg",
-			DirectoryName: "codex-tg",
+			CWD:           "/Users/example/work/a/codex-feishu",
+			ProjectName:   "codex-feishu",
+			DirectoryName: "codex-feishu",
 			UpdatedAt:     40,
 			Raw:           json.RawMessage(`{"id":"workspace-a-2"}`),
 		},
 		{
 			ID:            "workspace-b-1",
 			Title:         "B one",
-			CWD:           "/Users/example/work/b/codex-tg",
-			ProjectName:   "codex-tg",
-			DirectoryName: "codex-tg",
+			CWD:           "/Users/example/work/b/codex-feishu",
+			ProjectName:   "codex-feishu",
+			DirectoryName: "codex-feishu",
 			UpdatedAt:     20,
 			Raw:           json.RawMessage(`{"id":"workspace-b-1"}`),
 		},
@@ -754,7 +754,7 @@ func TestProjectsCommandShowsProjectButtonsGroupedByCWD(t *testing.T) {
 	if response == nil {
 		t.Fatal("handleCommand(/projects) returned nil response")
 	}
-	if !strings.Contains(response.Text, "codex-tg") || len(response.Sections) == 0 || len(response.Sections[0].Rows) != 2 {
+	if !strings.Contains(response.Text, "codex-feishu") || len(response.Sections) == 0 || len(response.Sections[0].Rows) != 2 {
 		t.Fatalf("/projects response missing grouped project rows: text=\n%s\nsections=%#v", response.Text, response.Sections)
 	}
 	if strings.Contains(response.Text, "key:") {
@@ -763,7 +763,7 @@ func TestProjectsCommandShowsProjectButtonsGroupedByCWD(t *testing.T) {
 	if !strings.Contains(response.Text, "A two") || !strings.Contains(response.Text, "B one") {
 		t.Fatalf("/projects text missing latest thread labels:\n%s", response.Text)
 	}
-	if got := countButtonsContaining(response.Buttons, "codex-tg"); got != 2 {
+	if got := countButtonsContaining(response.Buttons, "codex-feishu"); got != 2 {
 		t.Fatalf("/projects buttons = %#v, want two named project workspace buttons", response.Buttons)
 	}
 }
@@ -3521,7 +3521,7 @@ func TestFeishuImageInputUsesDesktopLocalImagePart(t *testing.T) {
 	service.desktopInputDispatcher = desktop
 	service.desktopOpener = func(ctx context.Context, threadID string) error { return nil }
 
-	text := "用户发送了一张图片，已保存到：/Users/example/.codex-tg/data/feishu-attachments/7893bfdbd95a.jpg\n请读取并分析这张图片。"
+	text := "用户发送了一张图片，已保存到：/Users/example/.codex-feishu/data/feishu-attachments/7893bfdbd95a.jpg\n请读取并分析这张图片。"
 	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", text, "", model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
@@ -3548,7 +3548,7 @@ func TestFeishuImageInputUsesDesktopLocalImagePart(t *testing.T) {
 	if got, want := input[1]["type"], "localImage"; got != want {
 		t.Fatalf("image part type = %v, want %q", got, want)
 	}
-	if got, want := input[1]["path"], "/Users/example/.codex-tg/data/feishu-attachments/7893bfdbd95a.jpg"; got != want {
+	if got, want := input[1]["path"], "/Users/example/.codex-feishu/data/feishu-attachments/7893bfdbd95a.jpg"; got != want {
 		t.Fatalf("image part path = %v, want %q", got, want)
 	}
 }
@@ -3580,7 +3580,7 @@ func TestFeishuImageReplyUsesDesktopLocalImagePart(t *testing.T) {
 	service.desktopInputDispatcher = desktop
 	service.desktopOpener = func(ctx context.Context, threadID string) error { return nil }
 
-	text := "The user sent an image saved at: /Users/example/.codex-tg/data/feishu-attachments/reply.jpg\nPlease read and analyze this image."
+	text := "The user sent an image saved at: /Users/example/.codex-feishu/data/feishu-attachments/reply.jpg\nPlease read and analyze this image."
 	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, thread.ActiveTurnID, text, "", model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
@@ -3604,7 +3604,7 @@ func TestFeishuImageReplyUsesDesktopLocalImagePart(t *testing.T) {
 	if got, want := input[1]["type"], "localImage"; got != want {
 		t.Fatalf("image part type = %v, want %q", got, want)
 	}
-	if got, want := input[1]["path"], "/Users/example/.codex-tg/data/feishu-attachments/reply.jpg"; got != want {
+	if got, want := input[1]["path"], "/Users/example/.codex-feishu/data/feishu-attachments/reply.jpg"; got != want {
 		t.Fatalf("image part path = %v, want %q", got, want)
 	}
 }

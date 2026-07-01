@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	defaultClientType = "codex-tg"
+	defaultClientType = "codex-feishu"
 	defaultTimeout    = 5 * time.Second
 )
 
@@ -75,10 +75,10 @@ func New(socketPath string, timeout time.Duration) *Client {
 		timeout = defaultTimeout
 	}
 	return &Client{
-		socketPath: strings.TrimSpace(socketPath),
-		timeout:    timeout,
-		clientType: defaultClientType,
-		pending:    map[string]pendingRequest{},
+		socketPath:   strings.TrimSpace(socketPath),
+		timeout:      timeout,
+		clientType:   defaultClientType,
+		pending:      map[string]pendingRequest{},
 		threadOwners: map[string]string{},
 	}
 }

@@ -1,11 +1,11 @@
 # AGENTS
 
-Purpose: help agents work on `codex-tg`, a Feishu-only local control bridge for
+Purpose: help agents work on `codex-feishu`, a Feishu-only local control bridge for
 OpenAI Codex App Server.
 
 ## Repository Purpose
 
-`codex-tg` runs locally, connects to Codex App Server, and exposes Codex control
+`codex-feishu` runs locally, connects to Codex App Server, and exposes Codex control
 through a Feishu/Lark bot DM and thread topics. Feishu is the only supported
 chat surface.
 

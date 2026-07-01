@@ -3,8 +3,8 @@ package tests
 import (
 	"testing"
 
-	"github.com/mideco-tech/codex-tg/internal/appserver"
-	"github.com/mideco-tech/codex-tg/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/appserver"
+	"github.com/ruoqianfengshao/codex-feishu/internal/model"
 )
 
 func TestThreadFromPayloadMapsProjectAndActiveTurn(t *testing.T) {

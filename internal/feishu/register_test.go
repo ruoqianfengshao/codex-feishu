@@ -62,7 +62,7 @@ func TestRegistrationClientRegisterPollsUntilSuccess(t *testing.T) {
 	if result.ClientID != "cli_test" || result.ClientSecret != "secret" || result.UserOpenID != "ou_1" {
 		t.Fatalf("result = %#v", result)
 	}
-	if !strings.Contains(qr.URL, "from=sdk") || !strings.Contains(qr.URL, "source=codex-tg-go") || !strings.Contains(qr.URL, "tp=sdk") || !strings.Contains(qr.URL, "name=Codex") {
+	if !strings.Contains(qr.URL, "from=sdk") || !strings.Contains(qr.URL, "source=codex-feishu-go") || !strings.Contains(qr.URL, "tp=sdk") || !strings.Contains(qr.URL, "name=Codex") {
 		t.Fatalf("qr url missing sdk params: %s", qr.URL)
 	}
 	if got := strings.Join(actions, ","); got != "begin,poll" {
@@ -194,7 +194,7 @@ func TestRegistrationQRCodeURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("registrationQRCodeURL failed: %v", err)
 	}
-	for _, want := range []string{"from=sdk", "source=codex-tg-go%2Ftest-source", "tp=sdk", "name=Codex"} {
+	for _, want := range []string{"from=sdk", "source=codex-feishu-go%2Ftest-source", "tp=sdk", "name=Codex"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("url missing %q: %s", want, got)
 		}

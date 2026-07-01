@@ -16,10 +16,10 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/mideco-tech/codex-tg/internal/config"
+	"github.com/ruoqianfengshao/codex-feishu/internal/config"
 )
 
-const serviceLabel = "tech.mideco.codex-tg"
+const serviceLabel = "tech.mideco.codex-feishu"
 
 var (
 	serviceRunner     serviceCommandRunner = execServiceRunner{}
@@ -296,7 +296,7 @@ func collectServiceInstallValues(opts serviceInstallOptions, existing map[string
 
 func runServiceWizard(values map[string]string, in io.Reader, out io.Writer) (map[string]string, error) {
 	reader := bufio.NewReader(in)
-	_, _ = fmt.Fprintln(out, "codex-tg service setup")
+	_, _ = fmt.Fprintln(out, "codex-feishu service setup")
 	_, _ = fmt.Fprintln(out, "This wizard creates a private config.env and a user-level macOS service.")
 	_, _ = fmt.Fprintln(out, "Secrets are written to the config file only; they are not printed in the summary.")
 	values["CTR_GO_ADAPTER"] = "feishu"
@@ -530,9 +530,9 @@ func runServiceStart(out io.Writer) error {
 		}
 	}
 	if !waitServiceLoaded(ctx, target, true) {
-		return errors.New("launchctl start did not load codex-tg service")
+		return errors.New("launchctl start did not load codex-feishu service")
 	}
-	_, _ = fmt.Fprintln(out, "codex-tg service started.")
+	_, _ = fmt.Fprintln(out, "codex-feishu service started.")
 	return nil
 }
 
@@ -560,7 +560,7 @@ func runServiceStop(out io.Writer) error {
 	if err := serviceStop(); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintln(out, "codex-tg service stopped.")
+	_, _ = fmt.Fprintln(out, "codex-feishu service stopped.")
 	return nil
 }
 
@@ -573,7 +573,7 @@ func serviceStop() error {
 	target := launchctlTarget()
 	_, _ = serviceRunner.Run(ctx, "launchctl", "bootout", target+"/"+serviceLabel)
 	if !waitServiceLoaded(ctx, target, false) {
-		return errors.New("launchctl stop did not unload codex-tg service")
+		return errors.New("launchctl stop did not unload codex-feishu service")
 	}
 	return nil
 }
@@ -598,7 +598,7 @@ func runServiceStatus(out io.Writer) error {
 	defer cancel()
 	_, printErr := serviceRunner.Run(ctx, "launchctl", "print", launchctlTarget()+"/"+serviceLabel)
 	loaded := printErr == nil
-	_, _ = fmt.Fprintln(out, "codex-tg service status")
+	_, _ = fmt.Fprintln(out, "codex-feishu service status")
 	_, _ = fmt.Fprintf(out, "  Config: %s\n", config.ConfigFilePath())
 	_, _ = fmt.Fprintf(out, "  Service plist: %s\n", paths.ServicePlistPath)
 	_, _ = fmt.Fprintf(out, "  Start with system: %t\n", fileExists(paths.LoginPlistPath))
@@ -658,7 +658,7 @@ func runServiceUninstall(args []string, out io.Writer) error {
 			return err
 		}
 	}
-	_, _ = fmt.Fprintln(out, "codex-tg service uninstalled.")
+	_, _ = fmt.Fprintln(out, "codex-feishu service uninstalled.")
 	if keepConfig {
 		_, _ = fmt.Fprintln(out, "Config kept.")
 	}

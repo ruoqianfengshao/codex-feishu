@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mideco-tech/codex-tg/internal/config"
+	"github.com/ruoqianfengshao/codex-feishu/internal/config"
 )
 
 func isolateLocalConfig(t *testing.T) {

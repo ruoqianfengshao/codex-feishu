@@ -1,6 +1,6 @@
-# codex-tg Wiki
+# codex-feishu Wiki
 
-`codex-tg` is a local Codex control bridge for Feishu/Lark.
+`codex-feishu` is a local Codex control bridge for Feishu/Lark.
 
 ## Start Here
 
