@@ -48,8 +48,8 @@ cards, settings, status, and Codex topic workflow:
   </tr>
   <tr>
     <td><img src="docs/images/feishu/7.jpg" alt="Feishu screenshot 7"></td>
-    <td></td>
-    <td></td>
+    <td><img src="docs/images/feishu/8.jpg" alt="Feishu screenshot 8"></td>
+    <td><img src="docs/images/feishu/9.jpg" alt="Feishu screenshot 9"></td>
   </tr>
 </table>
 
