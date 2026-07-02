@@ -125,9 +125,9 @@ topic it only shows topic-scoped commands such as `/plan`, `/goal`, and `/stop`.
 When no local override is saved, the model and reasoning dropdowns are
 pre-filled from the current Codex config.
 
-`/status` returns a dashboard-style Feishu card with KPI sections and a Feishu
-chart for thread mix statistics. Language switching is intentionally kept in
-`/setting`, not `/status`.
+`/status` returns a dashboard-style Feishu card with health and thread KPIs,
+plus a Feishu pie chart with thread mix percentages. Language switching is
+intentionally kept in `/setting`, not `/status`.
 
 Configure Feishu bot custom menu items manually in the Feishu/Lark developer
 console if you want input-box shortcuts. Recommended commands:

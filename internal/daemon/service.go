@@ -270,37 +270,15 @@ func (s *Service) StatusSnapshot(ctx context.Context) (*DirectResponse, error) {
 	lang := s.botLanguage(ctx)
 	threadCount, _ := s.store.CountThreads(ctx)
 	catalog, _ := s.projectCatalog(ctx)
-	backlog, _ := s.store.DeliveryQueueBacklog(ctx)
 	s.mu.RLock()
 	ready := s.ready
-	liveConnected := s.liveConnected
-	pollConnected := s.pollConnected
 	startedAt := s.startedAt
-	lastError := s.lastError
 	s.mu.RUnlock()
 	workspaceCount := realProjectWorkspaceCount(catalog.Workspaces)
 	chatCount := len(catalog.Chats)
-	connectedCount := 0
-	if liveConnected {
-		connectedCount++
-	}
-	if pollConnected {
-		connectedCount++
-	}
 	healthRows := []model.MessageSectionRow{
 		{Title: localized(lang, "核心状态", "Core status"), Trailing: readyLabelLang(lang, ready)},
 		{Title: localized(lang, "运行时长", "Uptime"), Trailing: uptimeLabel(startedAt, s.now())},
-		{Title: localized(lang, "连接", "Connections"), Trailing: fmt.Sprintf("%d/2", connectedCount)},
-		{Title: localized(lang, "发送队列", "Queue"), Trailing: fmt.Sprintf("%d", backlog)},
-	}
-	if strings.TrimSpace(lastError) != "" {
-		healthRows = append(healthRows, model.MessageSectionRow{Title: localized(lang, "最近错误", "Last error"), Trailing: trimPreview(lastError)})
-	}
-	codexRows := []model.MessageSectionRow{
-		{Title: localized(lang, "实时会话", "Live session"), Trailing: onlineLabelLang(lang, liveConnected)},
-		{Title: localized(lang, "轮询会话", "Poll session"), Trailing: onlineLabelLang(lang, pollConnected)},
-		{Title: localized(lang, "桌面输入", "Desktop input"), Trailing: onOffLabelLang(lang, s.cfg.OpenCodexDesktopOnFeishu)},
-		{Title: localized(lang, "启动时间", "Started"), Trailing: startedAtLabel(startedAt)},
 	}
 	sections := []model.MessageSection{
 		{Text: localized(lang, "健康", "Health"), Heading: true, Rows: healthRows},
@@ -309,9 +287,7 @@ func (s *Service) StatusSnapshot(ctx context.Context) (*DirectResponse, error) {
 			{Title: localized(lang, "项目", "Projects"), Trailing: fmt.Sprintf("%d", workspaceCount)},
 			{Title: localized(lang, "临时", "Chats"), Trailing: fmt.Sprintf("%d", chatCount)},
 			{Title: localized(lang, "跟踪会话", "Tracked threads"), Trailing: fmt.Sprintf("%d", threadCount)},
-		}},
-		{Text: localized(lang, "会话构成", "Thread mix"), Heading: true, Divider: true, Rows: statusThreadMixRows(lang, workspaceCount, chatCount), Chart: statusThreadMixChart(lang, workspaceCount, chatCount)},
-		{Text: "Codex", Heading: true, Divider: true, Rows: codexRows},
+		}, Chart: statusThreadMixChart(lang, workspaceCount, chatCount)},
 		{Text: "Feishu", Heading: true, Divider: true, Rows: []model.MessageSectionRow{
 			{Title: localized(lang, "话题模式", "Topic mode"), Trailing: localized(lang, "单聊话题", "P2P topic")},
 		}},
@@ -319,28 +295,14 @@ func (s *Service) StatusSnapshot(ctx context.Context) (*DirectResponse, error) {
 	return &DirectResponse{Text: localized(lang, "Codex 状态总览", "Codex Remote Status"), Sections: sections}, nil
 }
 
-func statusThreadMixRows(lang string, workspaces, chats int) []model.MessageSectionRow {
-	total := workspaces + chats
-	return []model.MessageSectionRow{
-		statusBarRow(localized(lang, "项目", "Projects"), workspaces, total),
-		statusBarRow(localized(lang, "临时", "Chats"), chats, total),
-	}
-}
-
-func statusBarRow(label string, value, total int) model.MessageSectionRow {
-	return model.MessageSectionRow{
-		Title:    fmt.Sprintf("%s · %d · %s", label, value, percentLabel(value, total)),
-		Trailing: percentLabel(value, total),
-	}
-}
-
 func statusThreadMixChart(lang string, workspaces, chats int) *model.MessageChart {
+	total := workspaces + chats
 	values := []map[string]any{
-		{"type": localized(lang, "项目", "Projects"), "value": workspaces},
-		{"type": localized(lang, "临时", "Chats"), "value": chats},
+		{"type": localized(lang, "项目", "Projects"), "label": fmt.Sprintf("%s %s", localized(lang, "项目", "Projects"), percentLabel(workspaces, total)), "value": workspaces},
+		{"type": localized(lang, "临时", "Chats"), "label": fmt.Sprintf("%s %s", localized(lang, "临时", "Chats"), percentLabel(chats, total)), "value": chats},
 	}
-	if workspaces+chats == 0 {
-		values = []map[string]any{{"type": localized(lang, "暂无会话", "No threads"), "value": 1}}
+	if total == 0 {
+		values = []map[string]any{{"type": localized(lang, "暂无会话", "No threads"), "label": localized(lang, "暂无会话 100%", "No threads 100%"), "value": 1}}
 	}
 	return &model.MessageChart{
 		ElementID:   "thread_mix",
@@ -348,14 +310,11 @@ func statusThreadMixChart(lang string, workspaces, chats int) *model.MessageChar
 		ColorTheme:  "brand",
 		Spec: map[string]any{
 			"type": "pie",
-			"title": map[string]any{
-				"text": localized(lang, "会话构成", "Thread mix"),
-			},
 			"data": map[string]any{
 				"values": values,
 			},
 			"valueField":    "value",
-			"categoryField": "type",
+			"categoryField": "label",
 			"outerRadius":   0.9,
 			"innerRadius":   0.45,
 			"label": map[string]any{
@@ -389,32 +348,11 @@ func readyLabel(ready bool) string {
 	return "Not ready"
 }
 
-func onlineLabel(connected bool) string {
-	if connected {
-		return "Online"
-	}
-	return "Offline"
-}
-
-func onOffLabel(enabled bool) string {
-	if enabled {
-		return "On"
-	}
-	return "Off"
-}
-
 func uptimeLabel(startedAt, now time.Time) string {
 	if startedAt.IsZero() {
 		return "Unknown"
 	}
 	return formatToolDuration(now.Sub(startedAt))
-}
-
-func startedAtLabel(startedAt time.Time) string {
-	if startedAt.IsZero() {
-		return "Unknown"
-	}
-	return startedAt.Format("2006-01-02 15:04:05")
 }
 
 func (s *Service) HandleMessageFromSource(ctx context.Context, chatID, topicID, userID int64, text string, replyToMessageID int64, sourceMode string) (*DirectResponse, error) {

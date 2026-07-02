@@ -591,7 +591,7 @@ func TestStatusCommandReturnsWorkspaceStatsCard(t *testing.T) {
 	if response == nil || response.Text != "Codex 状态总览" {
 		t.Fatalf("/status response = %#v, want status card response", response)
 	}
-	if got, want := sectionTitles(response.Sections), []string{"健康", "会话", "会话构成", "Codex", "Feishu"}; !equalStrings(got, want) {
+	if got, want := sectionTitles(response.Sections), []string{"健康", "会话", "Feishu"}; !equalStrings(got, want) {
 		t.Fatalf("/status sections = %#v, want %#v", got, want)
 	}
 	if strings.Contains(response.Text, "Mode:") || strings.Contains(response.Text, "Thread ID:") || strings.Contains(response.Text, "status-thread") {
@@ -600,8 +600,6 @@ func TestStatusCommandReturnsWorkspaceStatsCard(t *testing.T) {
 	assertSectionRows(t, response.Sections[0], map[string]string{
 		"核心状态": "未就绪",
 		"运行时长": "1h 02m",
-		"连接":   "0/2",
-		"发送队列": "0",
 	})
 	assertSectionRows(t, response.Sections[1], map[string]string{
 		"缓存会话": "2",
@@ -609,27 +607,31 @@ func TestStatusCommandReturnsWorkspaceStatsCard(t *testing.T) {
 		"临时":   "1",
 		"跟踪会话": "2",
 	})
-	assertSectionRows(t, response.Sections[2], map[string]string{
-		"项目 · 1 · 50%": "50%",
-		"临时 · 1 · 50%": "50%",
-	})
-	if response.Sections[2].Chart == nil || response.Sections[2].Chart.Spec["type"] != "pie" {
-		t.Fatalf("thread mix chart = %#v, want pie chart", response.Sections[2].Chart)
+	if response.Sections[1].Chart == nil || response.Sections[1].Chart.Spec["type"] != "pie" {
+		t.Fatalf("thread mix chart = %#v, want pie chart", response.Sections[1].Chart)
 	}
-	assertSectionRows(t, response.Sections[3], map[string]string{
-		"实时会话": "离线",
-		"轮询会话": "离线",
-		"桌面输入": "关闭",
-		"启动时间": "2026-06-28 09:00:00",
-	})
-	assertSectionRows(t, response.Sections[4], map[string]string{
+	if got, want := response.Sections[1].Chart.Spec["categoryField"], "label"; got != want {
+		t.Fatalf("thread mix categoryField = %#v, want %q", got, want)
+	}
+	chartData, ok := response.Sections[1].Chart.Spec["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("thread mix chart data = %#v, want map", response.Sections[1].Chart.Spec["data"])
+	}
+	chartValues, ok := chartData["values"].([]map[string]any)
+	if !ok || len(chartValues) != 2 {
+		t.Fatalf("thread mix chart values = %#v, want two values", chartData["values"])
+	}
+	if chartValues[0]["label"] != "项目 50%" || chartValues[1]["label"] != "临时 50%" {
+		t.Fatalf("thread mix chart labels = %#v, want percentage labels", chartValues)
+	}
+	assertSectionRows(t, response.Sections[2], map[string]string{
 		"话题模式": "单聊话题",
 	})
-	if got := len(response.Sections[4].Rows); got != 1 {
+	if got := len(response.Sections[2].Rows); got != 1 {
 		t.Fatalf("Feishu rows = %d, want topic mode only", got)
 	}
-	if len(response.Sections[4].Buttons) != 0 {
-		t.Fatalf("Feishu buttons = %#v, want no language switch in /status", response.Sections[4].Buttons)
+	if len(response.Sections[2].Buttons) != 0 {
+		t.Fatalf("Feishu buttons = %#v, want no language switch in /status", response.Sections[2].Buttons)
 	}
 }
 

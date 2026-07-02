@@ -25,9 +25,8 @@ tail -f "$HOME/.codex-feishu/logs/daemon.out.log"
     `/newchat`, `/models`, `/lang`, `/panelmode`, or `/reply`.
 - `/status`
   - Shows a dashboard-style card.
-  - Shows health KPIs, thread KPIs, Codex connection status, and Feishu topic
-    mode.
-  - Shows a Feishu chart component for project-vs-temporary thread mix.
+  - Shows health KPIs, thread KPIs, and Feishu topic mode.
+  - Shows a Feishu pie chart with project-vs-temporary thread mix percentages.
   - Does not show language switching controls; language is changed from
     `/setting`.
   - Does not show current chat context as the main content.
