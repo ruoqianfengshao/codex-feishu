@@ -30,6 +30,29 @@ installation health checks, and local service defaults.
 - Stores local state in SQLite under the configured `CTR_GO_HOME`, defaulting
   to `~/.codex-feishu`.
 
+## Feishu Screenshots
+
+These screenshots show the Feishu bot workspace, project navigation, thread
+cards, settings, status, and Codex topic workflow:
+
+<table>
+  <tr>
+    <td><img src="docs/images/feishu/1.jpg" alt="Feishu screenshot 1"></td>
+    <td><img src="docs/images/feishu/2.jpg" alt="Feishu screenshot 2"></td>
+    <td><img src="docs/images/feishu/3.jpg" alt="Feishu screenshot 3"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/feishu/4.jpg" alt="Feishu screenshot 4"></td>
+    <td><img src="docs/images/feishu/5.jpg" alt="Feishu screenshot 5"></td>
+    <td><img src="docs/images/feishu/6.jpg" alt="Feishu screenshot 6"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/feishu/7.jpg" alt="Feishu screenshot 7"></td>
+    <td></td>
+    <td></td>
+  </tr>
+</table>
+
 ## Quickstart
 
 Prerequisites:
