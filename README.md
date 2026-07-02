@@ -37,19 +37,19 @@ cards, settings, status, and Codex topic workflow:
 
 <table>
   <tr>
-    <td><img src="docs/images/feishu/1.jpg" alt="Feishu screenshot 1"></td>
-    <td><img src="docs/images/feishu/2.jpg" alt="Feishu screenshot 2"></td>
-    <td><img src="docs/images/feishu/3.jpg" alt="Feishu screenshot 3"></td>
+    <td width="33.33%"><img src="docs/images/feishu/1.jpg" alt="Feishu screenshot 1"></td>
+    <td width="33.33%"><img src="docs/images/feishu/2.jpg" alt="Feishu screenshot 2"></td>
+    <td width="33.33%"><img src="docs/images/feishu/3.jpg" alt="Feishu screenshot 3"></td>
   </tr>
   <tr>
-    <td><img src="docs/images/feishu/4.jpg" alt="Feishu screenshot 4"></td>
-    <td><img src="docs/images/feishu/5.jpg" alt="Feishu screenshot 5"></td>
-    <td><img src="docs/images/feishu/6.jpg" alt="Feishu screenshot 6"></td>
+    <td width="33.33%"><img src="docs/images/feishu/4.jpg" alt="Feishu screenshot 4"></td>
+    <td width="33.33%"><img src="docs/images/feishu/5.jpg" alt="Feishu screenshot 5"></td>
+    <td width="33.33%"><img src="docs/images/feishu/6.jpg" alt="Feishu screenshot 6"></td>
   </tr>
   <tr>
-    <td><img src="docs/images/feishu/7.jpg" alt="Feishu screenshot 7"></td>
-    <td><img src="docs/images/feishu/8.jpg" alt="Feishu screenshot 8"></td>
-    <td><img src="docs/images/feishu/9.jpg" alt="Feishu screenshot 9"></td>
+    <td width="33.33%"><img src="docs/images/feishu/7.jpg" alt="Feishu screenshot 7"></td>
+    <td width="33.33%"><img src="docs/images/feishu/8.jpg" alt="Feishu screenshot 8"></td>
+    <td width="33.33%"><img src="docs/images/feishu/9.jpg" alt="Feishu screenshot 9"></td>
   </tr>
 </table>
 
