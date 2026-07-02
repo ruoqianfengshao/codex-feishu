@@ -337,6 +337,7 @@ type MessageSectionRow struct {
 	Title           string     `json:"title,omitempty"`
 	Trailing        string     `json:"trailing,omitempty"`
 	BackgroundStyle string     `json:"background_style,omitempty"`
+	BorderColor     string     `json:"border_color,omitempty"`
 	Button          ButtonSpec `json:"button,omitempty"`
 }
 

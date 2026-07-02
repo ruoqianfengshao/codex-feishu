@@ -37,6 +37,7 @@ type projectWorkspace struct {
 	LatestThreadLabel string `json:"latest_thread_label,omitempty"`
 	ThreadCount       int    `json:"thread_count,omitempty"`
 	UpdatedAt         int64  `json:"updated_at,omitempty"`
+	Pinned            bool   `json:"pinned,omitempty"`
 }
 
 type pendingNewThreadState struct {
@@ -59,7 +60,7 @@ func (s *Service) projectCatalog(ctx context.Context) (projectCatalog, error) {
 	}
 	codexProjects := loadCodexProjectState(s.codexGlobalStatePath)
 	if !codexProjects.matchesAnyThread(threads) {
-		codexProjects = codexProjectState{}
+		codexProjects.disableProjectFilter()
 	}
 	grouped := map[string]*projectWorkspace{}
 	chats := []model.Thread{}
@@ -98,6 +99,9 @@ func (s *Service) projectCatalog(ctx context.Context) (projectCatalog, error) {
 			grouped[cwdKey] = workspace
 		}
 		workspace.ThreadCount++
+		if codexProjects.isPinnedThread(thread.ID) || codexProjects.isPinnedProject(thread.CWD) {
+			workspace.Pinned = true
+		}
 		if thread.UpdatedAt > workspace.UpdatedAt {
 			workspace.UpdatedAt = thread.UpdatedAt
 			workspace.LatestThread = thread.ID
@@ -111,6 +115,9 @@ func (s *Service) projectCatalog(ctx context.Context) (projectCatalog, error) {
 				workspaces = append(workspaces, *workspace)
 			}
 		}
+		sort.SliceStable(workspaces, func(i, j int) bool {
+			return workspaces[i].Pinned && !workspaces[j].Pinned
+		})
 	} else {
 		for _, workspace := range grouped {
 			workspaces = append(workspaces, *workspace)
@@ -118,24 +125,11 @@ func (s *Service) projectCatalog(ctx context.Context) (projectCatalog, error) {
 	}
 	if len(codexProjects.order) == 0 {
 		sort.Slice(workspaces, func(i, j int) bool {
-			if workspaces[i].UpdatedAt != workspaces[j].UpdatedAt {
-				return workspaces[i].UpdatedAt > workspaces[j].UpdatedAt
-			}
-			leftName := strings.ToLower(workspaces[i].ProjectName)
-			rightName := strings.ToLower(workspaces[j].ProjectName)
-			if leftName != rightName {
-				return leftName < rightName
-			}
-			leftCWD := strings.ToLower(model.NormalizePath(workspaces[i].CWD))
-			rightCWD := strings.ToLower(model.NormalizePath(workspaces[j].CWD))
-			return leftCWD < rightCWD
+			return projectWorkspaceLess(workspaces[i], workspaces[j])
 		})
 	}
 	sort.Slice(chats, func(i, j int) bool {
-		if chats[i].UpdatedAt != chats[j].UpdatedAt {
-			return chats[i].UpdatedAt > chats[j].UpdatedAt
-		}
-		return strings.ToLower(chats[i].Label()) < strings.ToLower(chats[j].Label())
+		return threadLess(chats[i], chats[j], codexProjects)
 	})
 	if len(chats) > 0 {
 		latest := chats[0]
@@ -148,6 +142,7 @@ func (s *Service) projectCatalog(ctx context.Context) (projectCatalog, error) {
 			LatestThreadLabel: threadDisplayLabel(latest),
 			ThreadCount:       len(chats),
 			UpdatedAt:         latest.UpdatedAt,
+			Pinned:            codexProjects.hasPinnedThread(chats),
 		})
 		sort.Slice(workspaces, func(i, j int) bool {
 			leftChats := isChatsProjectWorkspace(workspaces[i])
@@ -155,17 +150,7 @@ func (s *Service) projectCatalog(ctx context.Context) (projectCatalog, error) {
 			if leftChats != rightChats {
 				return !leftChats
 			}
-			if workspaces[i].UpdatedAt != workspaces[j].UpdatedAt {
-				return workspaces[i].UpdatedAt > workspaces[j].UpdatedAt
-			}
-			leftName := strings.ToLower(workspaces[i].ProjectName)
-			rightName := strings.ToLower(workspaces[j].ProjectName)
-			if leftName != rightName {
-				return leftName < rightName
-			}
-			leftCWD := strings.ToLower(model.NormalizePath(workspaces[i].CWD))
-			rightCWD := strings.ToLower(model.NormalizePath(workspaces[j].CWD))
-			return leftCWD < rightCWD
+			return projectWorkspaceLess(workspaces[i], workspaces[j])
 		})
 	}
 	assignProjectWorkspaceKeys(workspaces)
@@ -178,6 +163,8 @@ type codexProjectState struct {
 	order            []string
 	projectlessIDs   map[string]struct{}
 	workspaceRootIDs map[string]string
+	pinnedThreadIDs  map[string]struct{}
+	pinnedProjects   map[string]struct{}
 }
 
 func defaultCodexGlobalStatePath() string {
@@ -201,6 +188,8 @@ func loadCodexProjectState(path string) codexProjectState {
 		ElectronSavedWorkspaceRoots []string          `json:"electron-saved-workspace-roots"`
 		ProjectOrder                []string          `json:"project-order"`
 		ProjectlessThreadIDs        []string          `json:"projectless-thread-ids"`
+		PinnedThreadIDs             []string          `json:"pinned-thread-ids"`
+		PinnedProjectIDs            []string          `json:"pinned-project-ids"`
 		ThreadWorkspaceRootHints    map[string]string `json:"thread-workspace-root-hints"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
@@ -210,10 +199,22 @@ func loadCodexProjectState(path string) codexProjectState {
 		allowedProjects:  map[string]struct{}{},
 		projectlessIDs:   map[string]struct{}{},
 		workspaceRootIDs: map[string]string{},
+		pinnedThreadIDs:  map[string]struct{}{},
+		pinnedProjects:   map[string]struct{}{},
 	}
 	for _, id := range payload.ProjectlessThreadIDs {
 		if trimmed := strings.TrimSpace(id); trimmed != "" {
 			state.projectlessIDs[trimmed] = struct{}{}
+		}
+	}
+	for _, id := range payload.PinnedThreadIDs {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			state.pinnedThreadIDs[trimmed] = struct{}{}
+		}
+	}
+	for _, cwd := range payload.PinnedProjectIDs {
+		if normalized := model.NormalizePath(cwd); normalized != "" {
+			state.pinnedProjects[normalized] = struct{}{}
 		}
 	}
 	for id, root := range payload.ThreadWorkspaceRootHints {
@@ -253,6 +254,12 @@ func (s codexProjectState) allowProject(cwd string) bool {
 	return ok
 }
 
+func (s *codexProjectState) disableProjectFilter() {
+	s.hasProjectList = false
+	s.allowedProjects = nil
+	s.order = nil
+}
+
 func (s codexProjectState) isProjectlessThread(threadID string) bool {
 	if strings.TrimSpace(threadID) == "" {
 		return false
@@ -262,6 +269,25 @@ func (s codexProjectState) isProjectlessThread(threadID string) bool {
 	}
 	root := s.workspaceRootIDs[threadID]
 	return root != "" && isCodexChatsCWD(root)
+}
+
+func (s codexProjectState) isPinnedThread(threadID string) bool {
+	_, ok := s.pinnedThreadIDs[strings.TrimSpace(threadID)]
+	return ok
+}
+
+func (s codexProjectState) isPinnedProject(cwd string) bool {
+	_, ok := s.pinnedProjects[model.NormalizePath(cwd)]
+	return ok
+}
+
+func (s codexProjectState) hasPinnedThread(threads []model.Thread) bool {
+	for _, thread := range threads {
+		if s.isPinnedThread(thread.ID) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s codexProjectState) matchesAnyThread(threads []model.Thread) bool {
@@ -274,6 +300,35 @@ func (s codexProjectState) matchesAnyThread(threads []model.Thread) bool {
 		}
 	}
 	return false
+}
+
+func projectWorkspaceLess(left, right projectWorkspace) bool {
+	if left.Pinned != right.Pinned {
+		return left.Pinned
+	}
+	if left.UpdatedAt != right.UpdatedAt {
+		return left.UpdatedAt > right.UpdatedAt
+	}
+	leftName := strings.ToLower(left.ProjectName)
+	rightName := strings.ToLower(right.ProjectName)
+	if leftName != rightName {
+		return leftName < rightName
+	}
+	leftCWD := strings.ToLower(model.NormalizePath(left.CWD))
+	rightCWD := strings.ToLower(model.NormalizePath(right.CWD))
+	return leftCWD < rightCWD
+}
+
+func threadLess(left, right model.Thread, codexProjects codexProjectState) bool {
+	leftPinned := codexProjects.isPinnedThread(left.ID)
+	rightPinned := codexProjects.isPinnedThread(right.ID)
+	if leftPinned != rightPinned {
+		return leftPinned
+	}
+	if left.UpdatedAt != right.UpdatedAt {
+		return left.UpdatedAt > right.UpdatedAt
+	}
+	return strings.ToLower(left.Label()) < strings.ToLower(right.Label())
 }
 
 func (s *Service) projectWorkspaces(ctx context.Context) ([]projectWorkspace, error) {
@@ -391,10 +446,16 @@ func threadDisplayLabel(thread model.Thread) string {
 }
 
 func projectWorkspaceDisplayLabel(lang string, workspace projectWorkspace) string {
+	label := ""
 	if isChatsProjectWorkspace(workspace) {
-		return localized(lang, "对话", "Chats")
+		label = localized(lang, "对话", "Chats")
+	} else {
+		label = firstNonEmpty(workspace.ProjectName, workspace.DirectoryName, workspace.Key, "Project")
 	}
-	return firstNonEmpty(workspace.ProjectName, workspace.DirectoryName, workspace.Key, "Project")
+	if workspace.Pinned {
+		return pinnedDisplayLabel(lang, label)
+	}
+	return label
 }
 
 func projectWorkspaceDisplayButtonLabel(lang string, index int, workspace projectWorkspace) string {
@@ -421,6 +482,18 @@ func newThreadTrailingForWorkspace(lang string, workspace projectWorkspace) stri
 
 func chatThreadButtonLabel(index int, thread model.Thread) string {
 	return shortButtonLabel(fmt.Sprintf("Chat %d. %s", index, threadDisplayLabel(thread)))
+}
+
+func pinnedDisplayLabel(lang, label string) string {
+	return fmt.Sprintf("%s %s", localized(lang, "[置顶]", "[Pinned]"), strings.TrimSpace(label))
+}
+
+func threadPinnedDisplayLabel(lang string, thread model.Thread, codexProjects codexProjectState) string {
+	label := threadDisplayLabel(thread)
+	if codexProjects.isPinnedThread(thread.ID) {
+		return pinnedDisplayLabel(lang, label)
+	}
+	return label
 }
 
 func (s *Service) projectsOverview(ctx context.Context) (*DirectResponse, error) {
@@ -461,7 +534,7 @@ func (s *Service) projectsOverviewPage(ctx context.Context, page int) (*DirectRe
 		displayIndex := index + 1
 		label := projectWorkspaceDisplayLabel(lang, workspace)
 		latest := firstNonEmpty(workspace.LatestThreadLabel, workspace.LatestThread)
-		trailing := fmt.Sprintf("%d chats · %s", workspace.ThreadCount, threadUpdatedAtLabel(workspace.UpdatedAt, s.now))
+		trailing := fmt.Sprintf("%d chats · %s", workspace.ThreadCount, projectUpdatedAtLabel(workspace.UpdatedAt, s.now))
 		lines = append(lines,
 			fmt.Sprintf("%d. %s", displayIndex, label),
 			fmt.Sprintf("   %s · %s", trailing, latest),
@@ -469,9 +542,10 @@ func (s *Service) projectsOverviewPage(ctx context.Context, page int) (*DirectRe
 		button := s.callbackButton(ctx, projectWorkspaceDisplayButtonLabel(lang, displayIndex, workspace), "project_open", "", "", "", projectWorkspacePayload(workspace))
 		buttons = append(buttons, []model.ButtonSpec{button})
 		row := model.MessageSectionRow{
-			Title:    label,
-			Trailing: fmt.Sprintf("%s · %s", trailing, latest),
-			Button:   button,
+			Title:           label,
+			Trailing:        fmt.Sprintf("%s · %s", trailing, latest),
+			BackgroundStyle: projectWorkspaceBackgroundStyle(workspace),
+			Button:          button,
 		}
 		projectSection.Rows = append(projectSection.Rows, row)
 	}
@@ -482,7 +556,7 @@ func (s *Service) projectsOverviewPage(ctx context.Context, page int) (*DirectRe
 		displayIndex := len(projectWorkspaces) + 1
 		label := projectWorkspaceDisplayLabel(lang, *chatsWorkspace)
 		latest := firstNonEmpty(chatsWorkspace.LatestThreadLabel, chatsWorkspace.LatestThread)
-		trailing := fmt.Sprintf("%d chats · %s", chatsWorkspace.ThreadCount, threadUpdatedAtLabel(chatsWorkspace.UpdatedAt, s.now))
+		trailing := fmt.Sprintf("%d chats · %s", chatsWorkspace.ThreadCount, projectUpdatedAtLabel(chatsWorkspace.UpdatedAt, s.now))
 		lines = append(lines,
 			fmt.Sprintf("%d. %s", displayIndex, label),
 			fmt.Sprintf("   %s · %s", trailing, latest),
@@ -491,9 +565,10 @@ func (s *Service) projectsOverviewPage(ctx context.Context, page int) (*DirectRe
 		buttons = append(buttons, []model.ButtonSpec{button})
 		chatsSection := model.MessageSection{Text: label, Heading: true, Divider: len(sections) > 0}
 		chatsSection.Rows = append(chatsSection.Rows, model.MessageSectionRow{
-			Title:    label,
-			Trailing: fmt.Sprintf("%s · %s", trailing, latest),
-			Button:   button,
+			Title:           label,
+			Trailing:        fmt.Sprintf("%s · %s", trailing, latest),
+			BackgroundStyle: chatWorkspaceBackgroundStyle(*chatsWorkspace),
+			Button:          button,
 		})
 		if len(sections) == 0 {
 			chatsSection.Divider = false
@@ -501,6 +576,51 @@ func (s *Service) projectsOverviewPage(ctx context.Context, page int) (*DirectRe
 		sections = append(sections, chatsSection)
 	}
 	return &DirectResponse{Text: strings.Join(lines, "\n"), Sections: sections, Buttons: buttons}, nil
+}
+
+func projectWorkspaceBackgroundStyle(workspace projectWorkspace) string {
+	if workspace.Pinned {
+		return "cus-0"
+	}
+	return "cus-2"
+}
+
+func chatWorkspaceBackgroundStyle(workspace projectWorkspace) string {
+	if workspace.Pinned {
+		return "cus-5"
+	}
+	return "cus-6"
+}
+
+func newThreadBorderColor(workspace projectWorkspace) string {
+	return "cus-7"
+}
+
+func projectUpdatedAtLabel(updatedAt int64, now func() time.Time) string {
+	if updatedAt <= 0 {
+		return "unknown"
+	}
+	if now == nil {
+		now = time.Now
+	}
+	updated := time.Unix(updatedAt, 0)
+	if updated.IsZero() {
+		return "unknown"
+	}
+	delta := now().Sub(updated)
+	if delta < 0 {
+		delta = 0
+	}
+	switch {
+	case delta < 7*24*time.Hour:
+		return threadUpdatedAtLabel(updatedAt, now)
+	case delta < 30*24*time.Hour:
+		return fmt.Sprintf("%d 天前", int(delta/(24*time.Hour)))
+	case delta < 365*24*time.Hour:
+		return fmt.Sprintf("%d 个月前", int(delta/(30*24*time.Hour)))
+	default:
+		return fmt.Sprintf("%d 年前", int(delta/(365*24*time.Hour)))
+	}
 }
 
 func threadVisibleInProjectCatalog(thread model.Thread) bool {
@@ -580,14 +700,24 @@ func (s *Service) chatsOverviewPage(ctx context.Context, page int) (*DirectRespo
 		lines = append(lines, "", localized(lang, "还没有缓存临时对话。", "No cached Chats yet."))
 		return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons}, nil
 	}
+	codexProjects := loadCodexProjectState(s.codexGlobalStatePath)
+	section := model.MessageSection{Text: localized(lang, "临时对话", "Chats"), Heading: true}
 	for index, thread := range catalog.Chats[start:end] {
 		displayIndex := start + index + 1
-		lines = append(lines, fmt.Sprintf("%d. %s | %s", displayIndex, threadDisplayLabel(thread), thread.ShortID()))
+		label := threadPinnedDisplayLabel(lang, thread, codexProjects)
+		lines = append(lines, fmt.Sprintf("%d. %s | %s", displayIndex, label, thread.ShortID()))
+		button := s.callbackButton(ctx, shortButtonLabel(fmt.Sprintf("Chat %d. %s", displayIndex, label)), "chat_open", thread.ID, "", "", nil)
 		buttons = append(buttons, []model.ButtonSpec{
-			s.callbackButton(ctx, chatThreadButtonLabel(displayIndex, thread), "chat_open", thread.ID, "", "", nil),
+			button,
+		})
+		section.Rows = append(section.Rows, model.MessageSectionRow{
+			Title:           label,
+			Trailing:        threadUpdatedAtLabel(thread.UpdatedAt, s.now),
+			BackgroundStyle: threadBackgroundStyle(thread, codexProjects),
+			Button:          button,
 		})
 	}
-	return &DirectResponse{Text: strings.Join(lines, "\n"), Buttons: buttons}, nil
+	return &DirectResponse{Text: strings.Join(lines, "\n"), Sections: []model.MessageSection{section}, Buttons: buttons}, nil
 }
 
 func projectWorkspacePayload(workspace projectWorkspace) map[string]any {
@@ -599,6 +729,7 @@ func projectWorkspacePayload(workspace projectWorkspace) map[string]any {
 		"latest_thread":  workspace.LatestThread,
 		"latest_label":   workspace.LatestThreadLabel,
 		"thread_count":   workspace.ThreadCount,
+		"pinned":         workspace.Pinned,
 	}
 }
 
@@ -611,6 +742,7 @@ func projectWorkspaceFromPayload(payload map[string]any) projectWorkspace {
 		LatestThread:      payloadMapString(payload, "latest_thread"),
 		LatestThreadLabel: payloadMapString(payload, "latest_label"),
 		ThreadCount:       payloadMapInt(payload, "thread_count"),
+		Pinned:            payloadMapBool(payload, "pinned"),
 	}
 }
 
@@ -634,6 +766,26 @@ func payloadMapInt(values map[string]any, key string) int {
 	default:
 		return 0
 	}
+}
+
+func payloadMapBool(values map[string]any, key string) bool {
+	if values == nil {
+		return false
+	}
+	switch typed := values[key].(type) {
+	case bool:
+		return typed
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "1", "true", "yes":
+			return true
+		}
+	case float64:
+		return typed != 0
+	case json.Number:
+		return typed.String() != "" && typed.String() != "0"
+	}
+	return false
 }
 
 func (s *Service) projectsPage(ctx context.Context, chatID, topicID, messageID int64, payload map[string]any) (*DirectResponse, error) {
@@ -768,6 +920,10 @@ func (s *Service) projectThreads(ctx context.Context, payload map[string]any) (*
 	if err != nil {
 		return nil, err
 	}
+	codexProjects := loadCodexProjectState(s.codexGlobalStatePath)
+	sort.SliceStable(threads, func(i, j int) bool {
+		return threadLess(threads[i], threads[j], codexProjects)
+	})
 	label := projectWorkspaceDisplayLabel(lang, workspace)
 	lines := []string{fmt.Sprintf(localized(lang, "%s 的会话", "Threads for %s"), label)}
 	buttons := [][]model.ButtonSpec{}
@@ -781,15 +937,19 @@ func (s *Service) projectThreads(ctx context.Context, payload map[string]any) (*
 			continue
 		}
 		label := threadOverviewLabel(thread, lang)
+		if codexProjects.isPinnedThread(thread.ID) {
+			label = pinnedDisplayLabel(lang, label)
+		}
 		updatedAt := threadUpdatedAtLabel(thread.UpdatedAt, s.now)
 		button := s.callbackButton(ctx, localized(lang, "打开", "Open"), "show_thread", thread.ID, "", "", nil)
 		lines = append(lines, fmt.Sprintf("- %s    %s", label, updatedAt))
 		buttons = append(buttons, []model.ButtonSpec{button})
 		visibleThreadCount++
 		section.Rows = append(section.Rows, model.MessageSectionRow{
-			Title:    label,
-			Trailing: updatedAt,
-			Button:   button,
+			Title:           label,
+			Trailing:        updatedAt,
+			BackgroundStyle: threadBackgroundStyle(thread, codexProjects),
+			Button:          button,
 		})
 	}
 	newThreadLabel := newThreadLabelForWorkspace(lang, workspace)
@@ -800,6 +960,7 @@ func (s *Service) projectThreads(ctx context.Context, payload map[string]any) (*
 		Title:           newThreadLabel,
 		Trailing:        newThreadTrailingForWorkspace(lang, workspace),
 		BackgroundStyle: "cus-4",
+		BorderColor:     newThreadBorderColor(workspace),
 		Button:          newThreadButton,
 	})
 	if visibleThreadCount == 0 {
@@ -813,6 +974,13 @@ func (s *Service) threadBelongsToProjectWorkspace(thread model.Thread, workspace
 		return s.isCodexChatThread(thread)
 	}
 	return model.NormalizePath(thread.CWD) == model.NormalizePath(workspace.CWD)
+}
+
+func threadBackgroundStyle(thread model.Thread, codexProjects codexProjectState) string {
+	if codexProjects.isPinnedThread(thread.ID) {
+		return "cus-5"
+	}
+	return "cus-6"
 }
 
 func (s *Service) armProjectNewThread(ctx context.Context, chatID, topicID int64, payload map[string]any) (*DirectResponse, error) {

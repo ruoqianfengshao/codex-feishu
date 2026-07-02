@@ -445,6 +445,7 @@ func TestBuildSectionedCardRendersThreadRowsAsInteractiveContainersV2(t *testing
 					Title:           "Second thread",
 					Trailing:        "昨天",
 					BackgroundStyle: "cus-4",
+					BorderColor:     "cus-7",
 					Button:          model.ButtonSpec{Text: "Open", CallbackData: "cb_second"},
 				},
 			},
@@ -492,8 +493,8 @@ func TestBuildSectionedCardRendersThreadRowsAsInteractiveContainersV2(t *testing
 	if decoded.Schema != "2.0" {
 		t.Fatalf("schema = %q, want 2.0", decoded.Schema)
 	}
-	if decoded.Config.Style.Color["cus-0"].LightMode != "rgba(230,241,251,1.000000)" {
-		t.Fatalf("custom colors = %#v, want #E6F1FB equivalent", decoded.Config.Style.Color)
+	if decoded.Config.Style.Color["cus-0"].LightMode != "rgba(247,235,221,1.000000)" {
+		t.Fatalf("custom colors = %#v, want #F7EBDD equivalent", decoded.Config.Style.Color)
 	}
 	elements := decoded.Body.Elements
 	if len(elements) != 4 {
@@ -520,8 +521,8 @@ func TestBuildSectionedCardRendersThreadRowsAsInteractiveContainersV2(t *testing
 	if second.Tag != "interactive_container" || second.Behaviors[0].Value["callback_data"] != "cb_second" {
 		t.Fatalf("second row = %#v, want second callback interactive container", second)
 	}
-	if second.BackgroundStyle != "cus-4" || decoded.Config.Style.Color["cus-4"].LightMode != "rgba(255,255,255,1.000000)" {
-		t.Fatalf("second row style = %#v colors=%#v, want white custom background", second, decoded.Config.Style.Color)
+	if second.BackgroundStyle != "cus-4" || second.BorderColor != "cus-7" || decoded.Config.Style.Color["cus-7"].LightMode != "rgba(214,230,207,1.000000)" {
+		t.Fatalf("second row style = %#v colors=%#v, want explicit chat border", second, decoded.Config.Style.Color)
 	}
 }
 

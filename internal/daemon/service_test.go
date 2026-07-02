@@ -994,6 +994,148 @@ func TestProjectsCommandShowsChatsSectionAndSortsByRecency(t *testing.T) {
 	requireTextOrder(t, zh.Text, "old-project", "对话")
 }
 
+func TestProjectsCommandPromotesPinnedProjectsAndThreads(t *testing.T) {
+	t.Parallel()
+
+	state := map[string]any{
+		"pinned-project-ids": []string{"/Users/example/work/old-project"},
+		"pinned-thread-ids":  []string{"older-chat-thread"},
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal state failed: %v", err)
+	}
+	statePath := filepath.Join(t.TempDir(), ".codex-global-state.json")
+	if err := os.WriteFile(statePath, data, 0o644); err != nil {
+		t.Fatalf("write codex global state failed: %v", err)
+	}
+
+	service := newTestService(t)
+	service.codexGlobalStatePath = statePath
+	ctx := context.Background()
+	for _, thread := range []model.Thread{
+		{
+			ID:            "old-project-thread",
+			Title:         "Project pinned by workspace",
+			CWD:           "/Users/example/work/old-project",
+			ProjectName:   "old-project",
+			DirectoryName: "old-project",
+			UpdatedAt:     10,
+			Raw:           json.RawMessage(`{"id":"old-project-thread"}`),
+		},
+		{
+			ID:            "new-project-thread",
+			Title:         "Newer project thread",
+			CWD:           "/Users/example/work/new-project",
+			ProjectName:   "new-project",
+			DirectoryName: "new-project",
+			UpdatedAt:     50,
+			Raw:           json.RawMessage(`{"id":"new-project-thread"}`),
+		},
+		{
+			ID:            "old-project-newer-thread",
+			Title:         "Newer unpinned same project",
+			CWD:           "/Users/example/work/old-project",
+			ProjectName:   "old-project",
+			DirectoryName: "old-project",
+			UpdatedAt:     60,
+			Raw:           json.RawMessage(`{"id":"old-project-newer-thread"}`),
+		},
+		{
+			ID:            "older-chat-thread",
+			Title:         "Pinned Chat",
+			CWD:           "/Users/example/Documents/Codex/2026-04-28/pinned-chat",
+			ProjectName:   "pinned-chat",
+			DirectoryName: "pinned-chat",
+			UpdatedAt:     20,
+			Raw:           json.RawMessage(`{"id":"older-chat-thread"}`),
+		},
+		{
+			ID:            "newer-chat-thread",
+			Title:         "Newer Chat",
+			CWD:           "/Users/example/Documents/Codex/2026-04-29/new-chat",
+			ProjectName:   "new-chat",
+			DirectoryName: "new-chat",
+			UpdatedAt:     80,
+			Raw:           json.RawMessage(`{"id":"newer-chat-thread"}`),
+		},
+	} {
+		if err := service.store.UpsertThread(ctx, thread); err != nil {
+			t.Fatalf("UpsertThread(%s) failed: %v", thread.ID, err)
+		}
+	}
+
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/projects", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handleCommand(/projects) failed: %v", err)
+	}
+	requireTextOrder(t, response.Text, "[Pinned] old-project", "new-project")
+	requireTextOrder(t, response.Text, "new-project", "[Pinned] Chats")
+	if len(response.Sections) < 2 || len(response.Sections[0].Rows) < 2 || response.Sections[0].Rows[0].BackgroundStyle != "cus-0" || response.Sections[0].Rows[1].BackgroundStyle != "cus-2" {
+		t.Fatalf("/projects sections = %#v, want pinned project with cus-0 and regular project with cus-2", response.Sections)
+	}
+	if len(response.Sections[1].Rows) != 1 || response.Sections[1].Rows[0].BackgroundStyle != "cus-5" {
+		t.Fatalf("/projects sections = %#v, want pinned Chats with cus-5", response.Sections)
+	}
+	if callbackTokenForButton(response.Buttons, "1. [Pinned] old-project") == "" {
+		t.Fatalf("/projects buttons = %#v, want pinned project first", response.Buttons)
+	}
+
+	projectToken := callbackTokenForButton(response.Buttons, "1. [Pinned] old-project")
+	projectThreads, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, projectToken, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("HandleCallback(old-project) failed: %v", err)
+	}
+	requireTextOrder(t, projectThreads.Text, "Newer unpinned same project", "Project pinned by workspace")
+	if len(projectThreads.Sections) != 1 || len(projectThreads.Sections[0].Rows) < 2 || projectThreads.Sections[0].Rows[0].BackgroundStyle != "cus-6" || projectThreads.Sections[0].Rows[1].BackgroundStyle != "cus-6" {
+		t.Fatalf("project threads sections = %#v, want regular thread rows with cus-6", projectThreads.Sections)
+	}
+
+	chatsToken := callbackTokenForButton(response.Buttons, "3. [Pinned] Chats")
+	chats, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 43, 123456789, chatsToken, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("HandleCallback(Chats) failed: %v", err)
+	}
+	requireTextOrder(t, chats.Text, "[Pinned] Pinned Chat", "Newer Chat")
+	if len(chats.Sections) != 1 || len(chats.Sections[0].Rows) < 2 || chats.Sections[0].Rows[0].BackgroundStyle != "cus-5" || chats.Sections[0].Rows[1].BackgroundStyle != "cus-6" {
+		t.Fatalf("Chats sections = %#v, want pinned thread with cus-5 and regular thread with cus-6", chats.Sections)
+	}
+}
+
+func TestProjectsCommandShowsRelativeProjectUpdatedAt(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.now = func() time.Time { return time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC) }
+	ctx := context.Background()
+	updatedAt := service.now().Add(-10 * 24 * time.Hour).Unix()
+	if err := service.store.UpsertThread(ctx, model.Thread{
+		ID:            "old-project-thread",
+		Title:         "Old project thread",
+		CWD:           "/Users/example/work/old-project",
+		ProjectName:   "old-project",
+		DirectoryName: "old-project",
+		UpdatedAt:     updatedAt,
+		Raw:           json.RawMessage(`{"id":"old-project-thread"}`),
+	}); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/projects", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handleCommand(/projects) failed: %v", err)
+	}
+	if !strings.Contains(response.Text, "1 chats · 10 天前") {
+		t.Fatalf("/projects text =\n%s\nwant relative project updated time", response.Text)
+	}
+	if strings.Contains(response.Text, "2026-06-22") {
+		t.Fatalf("/projects text =\n%s\nwant no absolute project date", response.Text)
+	}
+	if len(response.Sections) != 1 || len(response.Sections[0].Rows) != 1 || !strings.Contains(response.Sections[0].Rows[0].Trailing, "10 天前") {
+		t.Fatalf("/projects sections = %#v, want relative project updated time", response.Sections)
+	}
+}
+
 func TestProjectsCommandShowsAllProjectsAndKeepsChatsLast(t *testing.T) {
 	t.Parallel()
 
@@ -1305,6 +1447,9 @@ func TestOpenChatsPaginatesAndChatSelectionBindsThread(t *testing.T) {
 	if !strings.Contains(chats.Text, "Threads for Chats") || !strings.Contains(chats.Text, "Chat 5") || !strings.Contains(chats.Text, "Chat 1") || !strings.Contains(chats.Text, "New chat") {
 		t.Fatalf("chats text =\n%s\nwant Chats project threads with New chat", chats.Text)
 	}
+	if len(chats.Sections) != 1 || len(chats.Sections[0].Rows) == 0 || chats.Sections[0].Rows[len(chats.Sections[0].Rows)-1].BackgroundStyle != "cus-4" || chats.Sections[0].Rows[len(chats.Sections[0].Rows)-1].BorderColor != "cus-7" {
+		t.Fatalf("chats sections = %#v, want New chat row with chat border", chats.Sections)
+	}
 	if callbackTokenForButton(chats.Buttons, "New chat") == "" {
 		t.Fatalf("chats response = %#v, want New chat action", chats)
 	}
@@ -1412,7 +1557,7 @@ func TestProjectOpenShowsInteractiveThreadList(t *testing.T) {
 		t.Fatalf("project row = %#v, want clickable visible thread row", row)
 	}
 	newThreadRow := menu.Sections[0].Rows[1]
-	if newThreadRow.Title != "New thread" || newThreadRow.BackgroundStyle != "cus-4" || newThreadRow.Button.Text != "New thread" || newThreadRow.Button.CallbackData == "" {
+	if newThreadRow.Title != "New thread" || newThreadRow.BackgroundStyle != "cus-4" || newThreadRow.BorderColor != "cus-7" || newThreadRow.Button.Text != "New thread" || newThreadRow.Button.CallbackData == "" {
 		t.Fatalf("project new thread row = %#v, want clickable new thread row", newThreadRow)
 	}
 	if callbackTokenForButton(menu.Buttons, "New thread") == "" {

@@ -358,16 +358,16 @@ func buildSectionedCardV2(sections []model.MessageSection, style string) (string
 			"style": map[string]any{
 				"color": map[string]any{
 					"cus-0": map[string]any{
-						"light_mode": "rgba(230,241,251,1.000000)",
-						"dark_mode":  "rgba(32,54,73,1.000000)",
+						"light_mode": "rgba(247,235,221,1.000000)",
+						"dark_mode":  "rgba(61,49,39,1.000000)",
 					},
 					"cus-1": map[string]any{
-						"light_mode": "rgba(184,216,240,1.000000)",
-						"dark_mode":  "rgba(55,88,115,1.000000)",
+						"light_mode": "rgba(227,216,200,1.000000)",
+						"dark_mode":  "rgba(80,68,55,1.000000)",
 					},
 					"cus-2": map[string]any{
-						"light_mode": "rgba(246,247,249,1.000000)",
-						"dark_mode":  "rgba(42,45,50,1.000000)",
+						"light_mode": "rgba(252,250,246,1.000000)",
+						"dark_mode":  "rgba(45,42,37,1.000000)",
 					},
 					"cus-3": map[string]any{
 						"light_mode": "rgba(255,224,224,1.000000)",
@@ -376,6 +376,18 @@ func buildSectionedCardV2(sections []model.MessageSection, style string) (string
 					"cus-4": map[string]any{
 						"light_mode": "rgba(255,255,255,1.000000)",
 						"dark_mode":  "rgba(255,255,255,1.000000)",
+					},
+					"cus-5": map[string]any{
+						"light_mode": "rgba(238,245,234,1.000000)",
+						"dark_mode":  "rgba(42,55,39,1.000000)",
+					},
+					"cus-6": map[string]any{
+						"light_mode": "rgba(247,251,245,1.000000)",
+						"dark_mode":  "rgba(40,47,37,1.000000)",
+					},
+					"cus-7": map[string]any{
+						"light_mode": "rgba(214,230,207,1.000000)",
+						"dark_mode":  "rgba(62,82,56,1.000000)",
 					},
 				},
 			},
@@ -636,6 +648,10 @@ func interactiveRowElements(rows []model.MessageSectionRow) []map[string]any {
 		if backgroundStyle == "" {
 			backgroundStyle = "cus-0"
 		}
+		borderColor := strings.TrimSpace(row.BorderColor)
+		if borderColor == "" {
+			borderColor = interactiveRowBorderColor(backgroundStyle)
+		}
 		columns := []map[string]any{
 			{
 				"tag":              "column",
@@ -663,7 +679,7 @@ func interactiveRowElements(rows []model.MessageSectionRow) []map[string]any {
 			"width":            "fill",
 			"background_style": backgroundStyle,
 			"has_border":       true,
-			"border_color":     "cus-1",
+			"border_color":     borderColor,
 			"corner_radius":    "8px",
 			"padding":          "10px 12px 10px 12px",
 			"vertical_spacing": "0px",
@@ -684,6 +700,15 @@ func interactiveRowElements(rows []model.MessageSectionRow) []map[string]any {
 		})
 	}
 	return elements
+}
+
+func interactiveRowBorderColor(backgroundStyle string) string {
+	switch strings.TrimSpace(backgroundStyle) {
+	case "cus-5", "cus-6":
+		return "cus-7"
+	default:
+		return "cus-1"
+	}
 }
 
 func metricRowElements(rows []model.MessageSectionRow) []map[string]any {
