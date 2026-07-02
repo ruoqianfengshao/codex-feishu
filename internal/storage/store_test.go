@@ -189,6 +189,40 @@ func TestListThreadsFiltersInternalAppServerThreads(t *testing.T) {
 	}
 }
 
+func TestReconcileListedThreadsHidesThreadsMissingFromCodexList(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	ctx := context.Background()
+	for _, thread := range []model.Thread{
+		{ID: "visible-thread", Title: "Visible", ProjectName: "visible-project", UpdatedAt: 20, Raw: json.RawMessage(`{"id":"visible-thread"}`)},
+		{ID: "removed-thread", Title: "Removed", ProjectName: "removed-project", UpdatedAt: 30, Raw: json.RawMessage(`{"id":"removed-thread"}`)},
+	} {
+		if err := store.UpsertThread(ctx, thread); err != nil {
+			t.Fatalf("UpsertThread(%s) failed: %v", thread.ID, err)
+		}
+	}
+
+	if err := store.ReconcileListedThreads(ctx, map[string]struct{}{"visible-thread": {}}); err != nil {
+		t.Fatalf("ReconcileListedThreads failed: %v", err)
+	}
+
+	listed, err := store.ListThreads(ctx, 10, "")
+	if err != nil {
+		t.Fatalf("ListThreads failed: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != "visible-thread" {
+		t.Fatalf("listed threads = %#v, want only visible-thread", listed)
+	}
+	removed, err := store.GetThread(ctx, "removed-thread")
+	if err != nil {
+		t.Fatalf("GetThread(removed-thread) failed: %v", err)
+	}
+	if removed == nil || removed.Listed {
+		t.Fatalf("removed thread = %#v, want listed=false", removed)
+	}
+}
+
 func TestDeliveryQueueClaimRetryAndComplete(t *testing.T) {
 	t.Parallel()
 

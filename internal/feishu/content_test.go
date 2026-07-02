@@ -442,9 +442,10 @@ func TestBuildSectionedCardRendersThreadRowsAsInteractiveContainersV2(t *testing
 					Button:   model.ButtonSpec{Text: "Open", CallbackData: "cb_open"},
 				},
 				{
-					Title:    "Second thread",
-					Trailing: "昨天",
-					Button:   model.ButtonSpec{Text: "Open", CallbackData: "cb_second"},
+					Title:           "Second thread",
+					Trailing:        "昨天",
+					BackgroundStyle: "cus-4",
+					Button:          model.ButtonSpec{Text: "Open", CallbackData: "cb_second"},
 				},
 			},
 		},
@@ -518,6 +519,9 @@ func TestBuildSectionedCardRendersThreadRowsAsInteractiveContainersV2(t *testing
 	second := elements[3]
 	if second.Tag != "interactive_container" || second.Behaviors[0].Value["callback_data"] != "cb_second" {
 		t.Fatalf("second row = %#v, want second callback interactive container", second)
+	}
+	if second.BackgroundStyle != "cus-4" || decoded.Config.Style.Color["cus-4"].LightMode != "rgba(255,255,255,1.000000)" {
+		t.Fatalf("second row style = %#v colors=%#v, want white custom background", second, decoded.Config.Style.Color)
 	}
 }
 
@@ -1423,7 +1427,7 @@ func botRememberControlRoomSourceForTest(ctx context.Context, store *storage.Sto
 	return store.SetState(ctx, feishuControlRoomSourceKey(roomOpenChatID), fmt.Sprintf("%d|%s", p2pChatID, sourceOpenChatID))
 }
 
-func TestRenderThreadTopicRootTextUsesCompactTitleAndProject(t *testing.T) {
+func TestRenderThreadTopicRootTextUsesOnlyTitle(t *testing.T) {
 	t.Parallel()
 
 	longTitle := "实现飞书版本的 codex-feishu，要求体验丝滑，功能完善，而且标题不能被截断"
@@ -1434,20 +1438,17 @@ func TestRenderThreadTopicRootTextUsesCompactTitleAndProject(t *testing.T) {
 		Status:      "active",
 	}, &appserver.ThreadReadSnapshot{LatestTurnID: "turn-123456789", LatestTurnStatus: "inProgress"}, model.PanelSourceFeishuInput)
 
-	if !strings.HasPrefix(got, longTitle+"\nProject: codex-feishu-controller\n") {
-		t.Fatalf("root text = %q, want compact title then project", got)
+	if got != longTitle+"\n\n这个话题对应一个 Codex 会话；在这里直接回复会继续该会话。" {
+		t.Fatalf("root text = %q, want title only", got)
 	}
-	if strings.Contains(got, "## Codex 会话") || strings.Contains(got, "Thread:") {
-		t.Fatalf("root text = %q, want no legacy heading/thread line", got)
-	}
-	for _, want := range []string{"Status: inProgress", "Source: Feishu", "Turn: turn-123"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("root text missing %q:\n%s", want, got)
+	for _, unwanted := range []string{"## Codex 会话", "Thread:", "Project:", "codex-feishu-controller", "inProgress", "Feishu", "turn-123"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("root text = %q, want no %q", got, unwanted)
 		}
 	}
 }
 
-func TestRenderThreadTopicRootTextFallsBackToCWDBasenameForProject(t *testing.T) {
+func TestRenderThreadTopicRootTextDoesNotIncludeCWDBasename(t *testing.T) {
 	t.Parallel()
 
 	got := renderThreadTopicRootText(model.Thread{
@@ -1457,8 +1458,29 @@ func TestRenderThreadTopicRootTextFallsBackToCWDBasenameForProject(t *testing.T)
 		Status: "idle",
 	}, nil, model.PanelSourceFeishuInput)
 
-	if !strings.Contains(got, "Project: codex-feishu-controller") {
-		t.Fatalf("root text = %q, want CWD basename project", got)
+	if got != "Use cwd project\n\n这个话题对应一个 Codex 会话；在这里直接回复会继续该会话。" {
+		t.Fatalf("root text = %q, want title only", got)
+	}
+	if strings.Contains(got, "codex-feishu-controller") || strings.Contains(got, "Project:") {
+		t.Fatalf("root text = %q, want no cwd/project metadata", got)
+	}
+}
+
+func TestRenderThreadTopicRootTextFallsBackToLastPreview(t *testing.T) {
+	t.Parallel()
+
+	got := renderThreadTopicRootText(model.Thread{
+		ID:          "thread-preview",
+		LastPreview: "测试一下项目里的新会话",
+		ProjectName: "codex-tg-controller",
+		Status:      "inProgress",
+	}, &appserver.ThreadReadSnapshot{LatestTurnID: "turn-123456789", LatestTurnStatus: "inProgress"}, model.PanelSourceFeishuInput)
+
+	if got != "测试一下项目里的新会话\n\n这个话题对应一个 Codex 会话；在这里直接回复会继续该会话。" {
+		t.Fatalf("root text = %q, want first prompt preview only", got)
+	}
+	if strings.Contains(got, "New thread") || strings.Contains(got, "Project:") || strings.Contains(got, "codex-tg-controller") {
+		t.Fatalf("root text = %q, want no placeholder or project metadata", got)
 	}
 }
 
@@ -1817,6 +1839,50 @@ func TestTopicHelpRepliesInThread(t *testing.T) {
 	}
 }
 
+func TestHelpSendRebuildsAPIClientAfterAuthError(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	service, err := daemon.New(config.Config{
+		Paths: config.Paths{
+			Home:    t.TempDir(),
+			DataDir: t.TempDir(),
+			LogDir:  t.TempDir(),
+			DBPath:  t.TempDir() + "/service.sqlite",
+		},
+	})
+	if err != nil {
+		t.Fatalf("daemon.New failed: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	store := service.Store()
+	firstAPI := &fakeAPIClient{sendErrs: []error{fmt.Errorf("feishu send message failed: code=99991663: Invalid access token for authorization")}}
+	secondAPI := &fakeAPIClient{}
+	rebuilds := 0
+	bot := &Bot{store: store, service: service, api: firstAPI}
+	bot.apiNew = func() apiClient {
+		rebuilds++
+		return secondAPI
+	}
+	event := newTextMessageEvent("oc_help", "om_help", "ou_user", "/help")
+
+	if err := bot.handleMessageEvent(ctx, event); err != nil {
+		t.Fatalf("handleMessageEvent failed: %v", err)
+	}
+	if rebuilds != 1 {
+		t.Fatalf("rebuilds = %d, want 1", rebuilds)
+	}
+	if firstAPI.sendCalls != 1 {
+		t.Fatalf("firstAPI.sendCalls = %d, want failed first send", firstAPI.sendCalls)
+	}
+	if secondAPI.sendCalls != 1 || secondAPI.lastMsgType != "interactive" {
+		t.Fatalf("secondAPI sendCalls=%d msgType=%q, want one interactive retry", secondAPI.sendCalls, secondAPI.lastMsgType)
+	}
+	if !strings.Contains(secondAPI.lastContent, "/projects") || !strings.Contains(secondAPI.lastContent, "/setting") {
+		t.Fatalf("help card missing workspace commands:\n%s", secondAPI.lastContent)
+	}
+}
+
 func TestUnknownFeishuTopicGroupPlainMessageShouldBeIgnored(t *testing.T) {
 	t.Parallel()
 
@@ -1959,6 +2025,8 @@ type fakeAPIClient struct {
 	uploadedImageData          []byte
 	uploadedImageKey           string
 	forceEmptyUploadedImageKey bool
+	sendErrs                   []error
+	replyErrs                  []error
 }
 
 func (f *fakeAPIClient) Send(_ context.Context, receiveID, msgType, content string) (sentMessage, error) {
@@ -1966,6 +2034,11 @@ func (f *fakeAPIClient) Send(_ context.Context, receiveID, msgType, content stri
 	f.lastReceiveID = receiveID
 	f.lastMsgType = msgType
 	f.lastContent = content
+	if len(f.sendErrs) > 0 {
+		err := f.sendErrs[0]
+		f.sendErrs = f.sendErrs[1:]
+		return sentMessage{}, err
+	}
 	return sentMessage{OpenMessageID: "om_fake", OpenChatID: receiveID}, nil
 }
 
@@ -1973,6 +2046,11 @@ func (f *fakeAPIClient) SendToOpenID(_ context.Context, _, msgType, content stri
 	f.sendCalls++
 	f.lastMsgType = msgType
 	f.lastContent = content
+	if len(f.sendErrs) > 0 {
+		err := f.sendErrs[0]
+		f.sendErrs = f.sendErrs[1:]
+		return sentMessage{}, err
+	}
 	return sentMessage{OpenMessageID: "om_fake", OpenChatID: "oc_fake"}, nil
 }
 
@@ -1982,6 +2060,11 @@ func (f *fakeAPIClient) Reply(_ context.Context, openMessageID, msgType, content
 	f.lastMsgType = msgType
 	f.lastContent = content
 	f.lastReplyInThread = replyInThread
+	if len(f.replyErrs) > 0 {
+		err := f.replyErrs[0]
+		f.replyErrs = f.replyErrs[1:]
+		return sentMessage{}, err
+	}
 	return sentMessage{OpenMessageID: "om_reply", OpenChatID: "oc_fake", RootID: openMessageID, ThreadID: "othread_fake"}, nil
 }
 

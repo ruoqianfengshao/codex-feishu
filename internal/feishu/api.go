@@ -370,6 +370,25 @@ func sdkError(action string, code int, message, requestID string) error {
 	return fmt.Errorf("%s", strings.Join(parts, ": "))
 }
 
+func isFeishuAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"code=99991663",
+		"code=99991661",
+		"invalid access token",
+		"access token invalid",
+		"access token expired",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func value(pointer *string) string {
 	if pointer == nil {
 		return ""

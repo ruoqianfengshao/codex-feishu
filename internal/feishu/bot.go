@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
@@ -39,7 +40,9 @@ type Bot struct {
 	cfg     config.Config
 	service *daemon.Service
 	store   *storage.Store
+	apiMu   sync.RWMutex
 	api     apiClient
+	apiNew  func() apiClient
 	logger  *log.Logger
 	ws      wsClient
 }
@@ -59,9 +62,12 @@ func NewBot(cfg config.Config, service *daemon.Service, store *storage.Store, lo
 		cfg:     cfg,
 		service: service,
 		store:   store,
-		api:     newSDKAPIClient(cfg.FeishuAppID, cfg.FeishuAppSecret),
 		logger:  logger,
 	}
+	bot.apiNew = func() apiClient {
+		return newSDKAPIClient(cfg.FeishuAppID, cfg.FeishuAppSecret)
+	}
+	bot.api = bot.apiNew()
 	bot.ws = bot.newWSClient()
 	return bot, nil
 }
@@ -86,6 +92,50 @@ func (b *Bot) Run(ctx context.Context) error {
 
 func (b *Bot) String() string {
 	return "feishu bot"
+}
+
+func (b *Bot) currentAPI() apiClient {
+	if b == nil {
+		return nil
+	}
+	b.apiMu.RLock()
+	api := b.api
+	b.apiMu.RUnlock()
+	return api
+}
+
+func (b *Bot) rebuildAPIClient(reason error) apiClient {
+	if b == nil {
+		return nil
+	}
+	b.apiMu.Lock()
+	defer b.apiMu.Unlock()
+	if b.apiNew == nil {
+		b.apiNew = func() apiClient {
+			return newSDKAPIClient(b.cfg.FeishuAppID, b.cfg.FeishuAppSecret)
+		}
+	}
+	b.api = b.apiNew()
+	if b.logger != nil {
+		b.logger.Printf("feishu api client rebuilt after auth error: %v", reason)
+	}
+	return b.api
+}
+
+func (b *Bot) withRecoveredAPIClient(ctx context.Context, call func(context.Context, apiClient) (sentMessage, error)) (sentMessage, error) {
+	api := b.currentAPI()
+	if api == nil {
+		return sentMessage{}, errors.New("feishu api client is not configured")
+	}
+	sent, err := call(ctx, api)
+	if err == nil || !isFeishuAuthError(err) {
+		return sent, err
+	}
+	api = b.rebuildAPIClient(err)
+	if api == nil {
+		return sentMessage{}, err
+	}
+	return call(ctx, api)
 }
 
 func (b *Bot) newWSClient() wsClient {
@@ -640,25 +690,40 @@ func (b *Bot) sendWithOptions(ctx context.Context, chatID int64, msgType, conten
 	if strings.TrimSpace(openChatID) == "" {
 		return 0, fmt.Errorf("feishu chat mapping not found: %d", chatID)
 	}
-	sendCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	var sent sentMessage
 	if options.FeishuReplyToMessageID != 0 {
 		var root *model.FeishuMessageMap
 		root, err = b.store.GetFeishuMessageByNumericID(ctx, options.FeishuReplyToMessageID)
 		if err != nil {
-			cancel()
 			return 0, err
 		}
 		if root == nil || strings.TrimSpace(root.OpenMessageID) == "" {
-			cancel()
 			return 0, fmt.Errorf("feishu reply root not found: %d", options.FeishuReplyToMessageID)
 		}
-		sent, err = b.api.Reply(sendCtx, root.OpenMessageID, msgType, content, options.FeishuReplyInThread)
+		sendCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		sent, err = b.withRecoveredAPIClient(sendCtx, func(callCtx context.Context, api apiClient) (sentMessage, error) {
+			return api.Reply(callCtx, root.OpenMessageID, msgType, content, options.FeishuReplyInThread)
+		})
+		cancel()
 	} else {
-		sent, err = b.api.Send(sendCtx, openChatID, msgType, content)
+		sendCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		sent, err = b.withRecoveredAPIClient(sendCtx, func(callCtx context.Context, api apiClient) (sentMessage, error) {
+			return api.Send(callCtx, openChatID, msgType, content)
+		})
+		cancel()
 	}
-	cancel()
 	if err != nil {
+		if b.logger != nil {
+			b.logger.Printf(
+				"feishu send failed: chat_id=%d msg_type=%s reply_to=%d reply_in_thread=%t content_len=%d err=%v",
+				chatID,
+				msgType,
+				options.FeishuReplyToMessageID,
+				options.FeishuReplyInThread,
+				len(content),
+				err,
+			)
+		}
 		return 0, err
 	}
 	openMessageID := strings.TrimSpace(sent.OpenMessageID)
@@ -1048,40 +1113,12 @@ func isFeishuCommand(text string) bool {
 }
 
 func renderThreadTopicRootText(thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) string {
-	title := strings.TrimSpace(thread.Title)
-	if title == "" {
+	_, _ = snapshot, sourceMode
+	title := firstNonEmptyString(thread.Title, thread.LastPreview)
+	if strings.TrimSpace(title) == "" {
 		title = thread.ShortID()
 	}
-	project := strings.TrimSpace(thread.ProjectName)
-	if project == "" {
-		project = strings.TrimSpace(filepath.Base(strings.TrimSpace(thread.CWD)))
-	}
-	if project == "" || project == "." {
-		project = "Project"
-	}
-	status := strings.TrimSpace(thread.Status)
-	turnID := ""
-	if snapshot != nil {
-		status = firstNonEmptyString(strings.TrimSpace(snapshot.LatestTurnStatus), status)
-		turnID = strings.TrimSpace(snapshot.LatestTurnID)
-	}
-	if status == "" {
-		status = "unknown"
-	}
-	source := "Codex"
-	switch strings.TrimSpace(sourceMode) {
-	case model.PanelSourceFeishuInput:
-		source = "Feishu"
-	}
-	lines := []string{
-		title,
-		fmt.Sprintf("Project: %s", project),
-		fmt.Sprintf("Status: %s", status),
-		fmt.Sprintf("Source: %s", source),
-	}
-	if turnID != "" {
-		lines = append(lines, fmt.Sprintf("Turn: %s", shortIDForText(turnID)))
-	}
+	lines := []string{title}
 	lines = append(lines, "", "这个话题对应一个 Codex 会话；在这里直接回复会继续该会话。")
 	return strings.Join(lines, "\n")
 }
@@ -1241,7 +1278,9 @@ func (b *Bot) sendOpenIDMessage(ctx context.Context, openUserID, text string, bu
 		return 0, err
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	sent, err := b.api.SendToOpenID(sendCtx, openUserID, msgType, content)
+	sent, err := b.withRecoveredAPIClient(sendCtx, func(callCtx context.Context, api apiClient) (sentMessage, error) {
+		return api.SendToOpenID(callCtx, openUserID, msgType, content)
+	})
 	cancel()
 	if err != nil {
 		return 0, err
@@ -1277,7 +1316,9 @@ func (b *Bot) sendOpenIDSectionedCard(ctx context.Context, openUserID string, se
 
 func (b *Bot) sendOpenIDInteractive(ctx context.Context, openUserID, content string) (int64, error) {
 	sendCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	sent, err := b.api.SendToOpenID(sendCtx, openUserID, "interactive", content)
+	sent, err := b.withRecoveredAPIClient(sendCtx, func(callCtx context.Context, api apiClient) (sentMessage, error) {
+		return api.SendToOpenID(callCtx, openUserID, "interactive", content)
+	})
 	cancel()
 	if err != nil {
 		return 0, err

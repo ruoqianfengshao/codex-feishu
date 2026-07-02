@@ -575,7 +575,7 @@ func (c *Client) RespondServerRequest(ctx context.Context, requestID string, res
 }
 
 func (c *Client) ThreadList(ctx context.Context, limit int, cursor string) (map[string]any, error) {
-	params := map[string]any{"limit": limit, "sortKey": "updated_at"}
+	params := map[string]any{"limit": limit, "sortKey": "updated_at", "archived": false}
 	if strings.TrimSpace(cursor) != "" {
 		params["cursor"] = cursor
 	}
@@ -1006,6 +1006,7 @@ func (c *Client) ThreadStart(ctx context.Context, cwd string) (map[string]any, e
 	params := map[string]any{
 		"experimentalRawEvents":  false,
 		"persistExtendedHistory": true,
+		"threadSource":           "user",
 	}
 	if strings.TrimSpace(cwd) != "" {
 		params["cwd"] = cwd

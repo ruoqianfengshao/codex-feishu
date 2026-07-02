@@ -63,6 +63,7 @@ func (s *Store) initialize(ctx context.Context) error {
 		preferred_model TEXT,
 		permissions_mode TEXT,
 		archived INTEGER NOT NULL DEFAULT 0,
+		listed INTEGER NOT NULL DEFAULT 1,
 		raw_json TEXT NOT NULL
 	);
 
@@ -273,6 +274,9 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err := s.ensureColumn(ctx, "thread_panels", "last_final_card_hash", `ALTER TABLE thread_panels ADD COLUMN last_final_card_hash TEXT`); err != nil {
 		return err
 	}
+	if err := s.ensureColumn(ctx, "threads", "listed", `ALTER TABLE threads ADD COLUMN listed INTEGER NOT NULL DEFAULT 1`); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -380,8 +384,8 @@ func (s *Store) UpsertThread(ctx context.Context, thread model.Thread) error {
 		raw = []byte("{}")
 	}
 	_, err := s.db.ExecContext(ctx, `
-	INSERT INTO threads(thread_id, title, cwd, project_name, directory_name, updated_at, status, last_preview, active_turn_id, preferred_model, permissions_mode, archived, raw_json)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO threads(thread_id, title, cwd, project_name, directory_name, updated_at, status, last_preview, active_turn_id, preferred_model, permissions_mode, archived, listed, raw_json)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(thread_id) DO UPDATE SET
 		title = excluded.title,
 		cwd = excluded.cwd,
@@ -397,14 +401,14 @@ func (s *Store) UpsertThread(ctx context.Context, thread model.Thread) error {
 		raw_json = excluded.raw_json`,
 		thread.ID, thread.Title, nullable(thread.CWD), thread.ProjectName, nullable(thread.DirectoryName), thread.UpdatedAt,
 		nullable(thread.Status), nullable(thread.LastPreview), nullable(thread.ActiveTurnID), nullable(thread.PreferredModel),
-		nullable(thread.PermissionsMode), boolToInt(thread.Archived), string(raw),
+		nullable(thread.PermissionsMode), boolToInt(thread.Archived), boolToInt(true), string(raw),
 	)
 	return err
 }
 
 func (s *Store) GetThread(ctx context.Context, threadID string) (*model.Thread, error) {
 	row := s.db.QueryRowContext(ctx, `
-	SELECT thread_id, title, cwd, project_name, directory_name, updated_at, status, last_preview, active_turn_id, preferred_model, permissions_mode, archived, raw_json
+	SELECT thread_id, title, cwd, project_name, directory_name, updated_at, status, last_preview, active_turn_id, preferred_model, permissions_mode, archived, listed, raw_json
 	FROM threads WHERE thread_id = ?`, threadID)
 	return scanThread(row)
 }
@@ -414,7 +418,7 @@ func (s *Store) ListThreads(ctx context.Context, limit int, search string) ([]mo
 		limit = 10
 	}
 	query := `
-	SELECT thread_id, title, cwd, project_name, directory_name, updated_at, status, last_preview, active_turn_id, preferred_model, permissions_mode, archived, raw_json
+	SELECT thread_id, title, cwd, project_name, directory_name, updated_at, status, last_preview, active_turn_id, preferred_model, permissions_mode, archived, listed, raw_json
 	FROM threads WHERE ` + visibleThreadPredicateSQL
 	args := make([]any, 0, 2)
 	if trimmed := strings.TrimSpace(search); trimmed != "" {
@@ -442,9 +446,34 @@ func (s *Store) ListThreads(ctx context.Context, limit int, search string) ([]mo
 
 const visibleThreadPredicateSQL = `(
 	archived = 0
+	AND listed = 1
+	AND lower(trim(cast(coalesce(json_extract(raw_json, '$.archived'), json_extract(raw_json, '$.thread.archived'), json_extract(raw_json, '$.isArchived'), json_extract(raw_json, '$.thread.isArchived'), '') as text))) NOT IN ('1', 'true', 'yes')
+	AND lower(trim(cast(coalesce(json_extract(raw_json, '$.deleted'), json_extract(raw_json, '$.thread.deleted'), json_extract(raw_json, '$.isDeleted'), json_extract(raw_json, '$.thread.isDeleted'), '') as text))) NOT IN ('1', 'true', 'yes')
 	AND lower(trim(cast(coalesce(json_extract(raw_json, '$.ephemeral'), json_extract(raw_json, '$.thread.ephemeral'), '') as text))) NOT IN ('1', 'true', 'yes')
 	AND trim(cast(coalesce(json_extract(raw_json, '$.source.subAgent'), json_extract(raw_json, '$.thread.source.subAgent'), '') as text)) = ''
 )`
+
+func (s *Store) ReconcileListedThreads(ctx context.Context, listedIDs map[string]struct{}) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE threads SET listed = 0`); err != nil {
+		return err
+	}
+	stmt, err := tx.PrepareContext(ctx, `UPDATE threads SET listed = 1 WHERE thread_id = ?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for threadID := range listedIDs {
+		if _, err := stmt.ExecContext(ctx, threadID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
 
 func (s *Store) CountThreads(ctx context.Context) (int, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT count(*) FROM threads WHERE `+visibleThreadPredicateSQL)
@@ -1027,8 +1056,8 @@ func scanThread(scanner interface{ Scan(...any) error }) (*model.Thread, error) 
 	var thread model.Thread
 	var cwd, directoryName, status, lastPreview, activeTurnID, preferredModel, permissionsMode sql.NullString
 	var raw string
-	var archived int
-	if err := scanner.Scan(&thread.ID, &thread.Title, &cwd, &thread.ProjectName, &directoryName, &thread.UpdatedAt, &status, &lastPreview, &activeTurnID, &preferredModel, &permissionsMode, &archived, &raw); err != nil {
+	var archived, listed int
+	if err := scanner.Scan(&thread.ID, &thread.Title, &cwd, &thread.ProjectName, &directoryName, &thread.UpdatedAt, &status, &lastPreview, &activeTurnID, &preferredModel, &permissionsMode, &archived, &listed, &raw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -1042,6 +1071,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (*model.Thread, error) 
 	thread.PreferredModel = preferredModel.String
 	thread.PermissionsMode = permissionsMode.String
 	thread.Archived = archived == 1
+	thread.Listed = listed == 1
 	thread.Raw = json.RawMessage(raw)
 	return &thread, nil
 }

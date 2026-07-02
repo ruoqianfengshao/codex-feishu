@@ -938,17 +938,19 @@ func TestProjectsCommandShowsChatsSectionAndSortsByRecency(t *testing.T) {
 	if response == nil {
 		t.Fatal("handleCommand(/projects) returned nil response")
 	}
-	for _, needle := range []string{"Projects 1/1", "Projects 2/2", "Chats 3/3", "Newer Chat", "Windows Chat", "Older Chat"} {
+	for _, needle := range []string{"Projects", "Projects 2/2", "Chats", "Newer Chat"} {
 		if !strings.Contains(response.Text, needle) {
 			t.Fatalf("/projects text missing %q:\n%s", needle, response.Text)
 		}
 	}
-	if len(response.Sections) != 2 {
-		t.Fatalf("/projects sections = %#v, want projects and chats sections", response.Sections)
+	if len(response.Sections) != 2 || len(response.Sections[0].Rows) != 2 || len(response.Sections[1].Rows) != 1 || !response.Sections[1].Divider {
+		t.Fatalf("/projects sections = %#v, want projects section and divider Chats section", response.Sections)
+	}
+	if strings.Contains(response.Text, "Windows Chat") || strings.Contains(response.Text, "Older Chat") {
+		t.Fatalf("/projects text should not list chat threads at top level:\n%s", response.Text)
 	}
 	requireTextOrder(t, response.Text, "new-project", "old-project")
-	requireTextOrder(t, response.Text, "Newer Chat", "Windows Chat")
-	requireTextOrder(t, response.Text, "Windows Chat", "Older Chat")
+	requireTextOrder(t, response.Text, "old-project", "Chats")
 	if strings.Contains(response.Text, "cwd: /Users/example/Documents/Codex") || strings.Contains(response.Text, `cwd: C:\Users\you\Documents\Codex`) {
 		t.Fatalf("/projects text renders chat cwd as project cwd:\n%s", response.Text)
 	}
@@ -958,17 +960,39 @@ func TestProjectsCommandShowsChatsSectionAndSortsByRecency(t *testing.T) {
 	if !strings.Contains(response.Text, "New project") || !strings.Contains(response.Text, "Old project") {
 		t.Fatalf("/projects text missing latest project thread labels:\n%s", response.Text)
 	}
-	for _, label := range []string{"1. new-project", "2. old-project", "Chat 1. Newer Chat", "Chat 2. Windows Chat", "Chat 3. Older Chat"} {
+	for _, label := range []string{"1. new-project", "2. old-project", "3. Chats"} {
 		if callbackTokenForButton(response.Buttons, label) == "" {
 			t.Fatalf("/projects buttons = %#v, want named button %q", response.Buttons, label)
 		}
 	}
-	if callbackTokenForButton(response.Buttons, "Open Chats") == "" {
-		t.Fatalf("/projects buttons = %#v, want Open Chats", response.Buttons)
+	chatsToken := callbackTokenForButton(response.Buttons, "3. Chats")
+	chats, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, chatsToken, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("HandleCallback(Chats project) failed: %v", err)
 	}
+	for _, needle := range []string{"Threads for Chats", "Newer Chat", "Windows Chat", "Older Chat", "New chat"} {
+		if !strings.Contains(chats.Text, needle) {
+			t.Fatalf("Chats project text missing %q:\n%s", needle, chats.Text)
+		}
+	}
+	if callbackTokenForButton(chats.Buttons, "New chat") == "" {
+		t.Fatalf("Chats project buttons = %#v, want New chat", chats.Buttons)
+	}
+
+	if err := service.store.SetState(ctx, botLanguageStateKey, botLanguageChinese); err != nil {
+		t.Fatalf("SetState(language) failed: %v", err)
+	}
+	zh, err := service.handleCommandFromSource(ctx, 123456789, 0, "/projects", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handleCommand(/projects zh) failed: %v", err)
+	}
+	if !strings.Contains(zh.Text, "对话") || strings.Contains(zh.Text, "临时对话") || strings.Contains(zh.Text, "\n3. Chats") {
+		t.Fatalf("zh /projects text =\n%s\nwant localized 对话 project label", zh.Text)
+	}
+	requireTextOrder(t, zh.Text, "old-project", "对话")
 }
 
-func TestProjectsPaginationUsesPreviewLimitsAndKeepsLatestChats(t *testing.T) {
+func TestProjectsCommandShowsAllProjectsAndKeepsChatsLast(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -1008,35 +1032,238 @@ func TestProjectsPaginationUsesPreviewLimitsAndKeepsLatestChats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleCommand(/projects) failed: %v", err)
 	}
-	if !strings.Contains(page1.Text, "Projects 1/3") || !strings.Contains(page1.Text, "project-5") || !strings.Contains(page1.Text, "project-4") || strings.Contains(page1.Text, "project-3") {
-		t.Fatalf("page1 text =\n%s\nwant first two recent projects only", page1.Text)
+	for _, needle := range []string{"Projects", "project-5", "project-4", "project-3", "project-2", "project-1", "Chats"} {
+		if !strings.Contains(page1.Text, needle) {
+			t.Fatalf("page1 text =\n%s\nwant %q", page1.Text, needle)
+		}
 	}
-	if !strings.Contains(page1.Text, "Chats 1/2") || !strings.Contains(page1.Text, "Chat 2") || strings.Contains(page1.Text, "Chat 1") {
-		t.Fatalf("page1 text =\n%s\nwant latest one chat preview", page1.Text)
+	if strings.Contains(page1.Text, "Chat 1") {
+		t.Fatalf("page1 text =\n%s\nwant no chat thread rows at top level", page1.Text)
 	}
-	for _, label := range []string{"1. project-5", "2. project-4", "Chat 1. Chat 2"} {
+	for _, label := range []string{"1. project-5", "2. project-4", "3. project-3", "4. project-2", "5. project-1", "6. Chats"} {
 		if callbackTokenForButton(page1.Buttons, label) == "" {
 			t.Fatalf("page1 buttons = %#v, want named button %q", page1.Buttons, label)
 		}
 	}
-	nextToken := callbackTokenForButton(page1.Buttons, ">")
-	if nextToken == "" {
-		t.Fatalf("page1 buttons = %#v, want next button", page1.Buttons)
+	if callbackTokenForButton(page1.Buttons, ">") != "" || callbackTokenForButton(page1.Buttons, "<") != "" {
+		t.Fatalf("page1 buttons = %#v, want no pagination controls", page1.Buttons)
 	}
-	page2, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, nextToken, model.PanelSourceFeishuInput)
-	if err != nil {
-		t.Fatalf("HandleCallback(next projects page) failed: %v", err)
+	requireTextOrder(t, page1.Text, "project-1", "Chats")
+}
+
+func TestProjectsCommandFiltersArchivedAndDeletedProjects(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	threads := []model.Thread{
+		{
+			ID:            "visible-thread",
+			Title:         "Visible",
+			CWD:           "/Users/example/work/visible",
+			ProjectName:   "visible-project",
+			DirectoryName: "visible",
+			UpdatedAt:     50,
+			Raw:           json.RawMessage(`{"id":"visible-thread"}`),
+		},
+		{
+			ID:            "archived-thread",
+			Title:         "Archived",
+			CWD:           "/Users/example/work/archived",
+			ProjectName:   "archived-project",
+			DirectoryName: "archived",
+			UpdatedAt:     60,
+			Archived:      true,
+			Raw:           json.RawMessage(`{"id":"archived-thread"}`),
+		},
+		{
+			ID:            "raw-archived-thread",
+			Title:         "Raw Archived",
+			CWD:           "/Users/example/work/raw-archived",
+			ProjectName:   "raw-archived-project",
+			DirectoryName: "raw-archived",
+			UpdatedAt:     70,
+			Raw:           json.RawMessage(`{"thread":{"id":"raw-archived-thread","archived":true}}`),
+		},
+		{
+			ID:            "deleted-thread",
+			Title:         "Deleted",
+			CWD:           "/Users/example/work/deleted",
+			ProjectName:   "deleted-project",
+			DirectoryName: "deleted",
+			UpdatedAt:     80,
+			Raw:           json.RawMessage(`{"thread":{"id":"deleted-thread","isDeleted":true}}`),
+		},
 	}
-	if !strings.Contains(page2.Text, "Projects 2/3") || !strings.Contains(page2.Text, "project-3") || !strings.Contains(page2.Text, "project-2") || strings.Contains(page2.Text, "project-5") {
-		t.Fatalf("page2 text =\n%s\nwant second page projects only", page2.Text)
-	}
-	if !strings.Contains(page2.Text, "Chat 2") || strings.Contains(page2.Text, "Chat 1") {
-		t.Fatalf("page2 text =\n%s\nwant same latest chat preview", page2.Text)
-	}
-	for _, label := range []string{"3. project-3", "4. project-2", "Chat 1. Chat 2"} {
-		if callbackTokenForButton(page2.Buttons, label) == "" {
-			t.Fatalf("page2 buttons = %#v, want named button %q", page2.Buttons, label)
+	for _, thread := range threads {
+		if err := service.store.UpsertThread(ctx, thread); err != nil {
+			t.Fatalf("UpsertThread(%s) failed: %v", thread.ID, err)
 		}
+	}
+
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/projects", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handleCommand(/projects) failed: %v", err)
+	}
+	if !strings.Contains(response.Text, "visible-project") {
+		t.Fatalf("/projects text =\n%s\nwant visible project", response.Text)
+	}
+	for _, hidden := range []string{"archived-project", "raw-archived-project", "deleted-project"} {
+		if strings.Contains(response.Text, hidden) || callbackTokenForButton(response.Buttons, "1. "+hidden) != "" {
+			t.Fatalf("/projects includes hidden project %q:\n%s\nbuttons=%#v", hidden, response.Text, response.Buttons)
+		}
+	}
+}
+
+func TestProjectsCommandFollowsCodexSavedWorkspaceRoots(t *testing.T) {
+	t.Parallel()
+
+	state := map[string]any{
+		"project-order": []string{"/Users/example/work/visible"},
+		"electron-saved-workspace-roots": []string{
+			"/Users/example/work/visible",
+		},
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal state failed: %v", err)
+	}
+	statePath := filepath.Join(t.TempDir(), ".codex-global-state.json")
+	if err := os.WriteFile(statePath, data, 0o644); err != nil {
+		t.Fatalf("write codex global state failed: %v", err)
+	}
+
+	service := newTestService(t)
+	service.codexGlobalStatePath = statePath
+	ctx := context.Background()
+	for _, thread := range []model.Thread{
+		{
+			ID:            "visible-thread",
+			Title:         "Visible",
+			CWD:           "/Users/example/work/visible",
+			ProjectName:   "visible-project",
+			DirectoryName: "visible",
+			UpdatedAt:     50,
+			Raw:           json.RawMessage(`{"id":"visible-thread"}`),
+		},
+		{
+			ID:            "removed-thread",
+			Title:         "Removed",
+			CWD:           "/Users/example/work/removed",
+			ProjectName:   "removed-project",
+			DirectoryName: "removed",
+			UpdatedAt:     60,
+			Raw:           json.RawMessage(`{"id":"removed-thread"}`),
+		},
+	} {
+		if err := service.store.UpsertThread(ctx, thread); err != nil {
+			t.Fatalf("UpsertThread(%s) failed: %v", thread.ID, err)
+		}
+	}
+
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/projects", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handleCommand(/projects) failed: %v", err)
+	}
+	if !strings.Contains(response.Text, "visible-project") {
+		t.Fatalf("/projects text =\n%s\nwant visible project", response.Text)
+	}
+	if strings.Contains(response.Text, "removed-project") {
+		t.Fatalf("/projects text =\n%s\nwant removed project hidden", response.Text)
+	}
+}
+
+func TestSyncThreadsHidesProjectsMissingFromCompleteCodexList(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	for _, thread := range []model.Thread{
+		{
+			ID:            "visible-thread",
+			Title:         "Visible",
+			CWD:           "/Users/example/work/visible",
+			ProjectName:   "visible-project",
+			DirectoryName: "visible",
+			UpdatedAt:     50,
+			Raw:           json.RawMessage(`{"id":"visible-thread"}`),
+		},
+		{
+			ID:            "removed-thread",
+			Title:         "Removed",
+			CWD:           "/Users/example/work/removed",
+			ProjectName:   "removed-project",
+			DirectoryName: "removed",
+			UpdatedAt:     60,
+			Raw:           json.RawMessage(`{"id":"removed-thread"}`),
+		},
+	} {
+		if err := service.store.UpsertThread(ctx, thread); err != nil {
+			t.Fatalf("UpsertThread(%s) failed: %v", thread.ID, err)
+		}
+	}
+	stub := &stubSession{
+		threadListResults: []map[string]any{
+			{"threads": []any{map[string]any{
+				"id":        "visible-thread",
+				"title":     "Visible",
+				"cwd":       "/Users/example/work/visible",
+				"updatedAt": float64(70),
+			}}},
+		},
+	}
+	service.live = stub
+	service.liveConnected = true
+
+	service.syncThreads(ctx, 0)
+
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/projects", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handleCommand(/projects) failed: %v", err)
+	}
+	if !strings.Contains(response.Text, "visible") {
+		t.Fatalf("/projects text =\n%s\nwant visible project", response.Text)
+	}
+	if strings.Contains(response.Text, "removed-project") {
+		t.Fatalf("/projects text =\n%s\nwant removed-project hidden", response.Text)
+	}
+	removed, err := service.store.GetThread(ctx, "removed-thread")
+	if err != nil {
+		t.Fatalf("GetThread(removed-thread) failed: %v", err)
+	}
+	if removed == nil || removed.Listed {
+		t.Fatalf("removed thread = %#v, want listed=false", removed)
+	}
+}
+
+func TestSyncThreadsDoesNotHideProjectsWhenThreadListFails(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	if err := service.store.UpsertThread(ctx, model.Thread{
+		ID:            "cached-thread",
+		Title:         "Cached",
+		CWD:           "/Users/example/work/cached",
+		ProjectName:   "cached-project",
+		DirectoryName: "cached",
+		UpdatedAt:     50,
+		Raw:           json.RawMessage(`{"id":"cached-thread"}`),
+	}); err != nil {
+		t.Fatalf("UpsertThread(cached-thread) failed: %v", err)
+	}
+	stub := &stubSession{threadListErr: errors.New("thread list failed")}
+	service.live = stub
+	service.liveConnected = true
+
+	service.syncThreads(ctx, 0)
+
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/projects", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handleCommand(/projects) failed: %v", err)
+	}
+	if !strings.Contains(response.Text, "cached-project") {
+		t.Fatalf("/projects text =\n%s\nwant cached-project kept after list failure", response.Text)
 	}
 }
 
@@ -1065,23 +1292,23 @@ func TestOpenChatsPaginatesAndChatSelectionBindsThread(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleCommand(/projects) failed: %v", err)
 	}
-	openChats := callbackTokenForButton(projects.Buttons, "Open Chats")
+	openChats := callbackTokenForButton(projects.Buttons, "1. Chats")
 	if openChats == "" {
-		t.Fatalf("/projects buttons = %#v, want Open Chats", projects.Buttons)
+		t.Fatalf("/projects buttons = %#v, want Chats project", projects.Buttons)
 	}
 	chats, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, openChats, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("HandleCallback(Open Chats) failed: %v", err)
 	}
-	if !strings.Contains(chats.Text, "Chats") || !strings.Contains(chats.Text, "Page 1/2") || !strings.Contains(chats.Text, "Chat 5") || strings.Contains(chats.Text, "Chat 2") {
-		t.Fatalf("chats text =\n%s\nwant first page of recent chats", chats.Text)
+	if !strings.Contains(chats.Text, "Threads for Chats") || !strings.Contains(chats.Text, "Chat 5") || !strings.Contains(chats.Text, "Chat 1") || !strings.Contains(chats.Text, "New chat") {
+		t.Fatalf("chats text =\n%s\nwant Chats project threads with New chat", chats.Text)
 	}
-	if strings.Contains(chats.Text, "新线程") || callbackTokenForButton(chats.Buttons, "新线程") != "" {
-		t.Fatalf("chats response = %#v, want no New thread action", chats)
+	if callbackTokenForButton(chats.Buttons, "New chat") == "" {
+		t.Fatalf("chats response = %#v, want New chat action", chats)
 	}
-	chatToken := callbackTokenForButton(chats.Buttons, "Chat 1. Chat 5")
+	chatToken := callbackTokenForButton(chats.Buttons, "Open")
 	if chatToken == "" {
-		t.Fatalf("chats buttons = %#v, want first chat button", chats.Buttons)
+		t.Fatalf("chats buttons = %#v, want open chat button", chats.Buttons)
 	}
 	opened, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, chatToken, model.PanelSourceFeishuInput)
 	if err != nil {
@@ -1175,12 +1402,16 @@ func TestProjectOpenShowsInteractiveThreadList(t *testing.T) {
 	if strings.Contains(menu.Text, "Deleted thread") {
 		t.Fatalf("project threads text = %q, want deleted thread hidden", menu.Text)
 	}
-	if len(menu.Sections) != 1 || menu.Sections[0].Text != "project" || len(menu.Sections[0].Rows) != 1 {
-		t.Fatalf("project sections = %#v, want one project section with one visible row", menu.Sections)
+	if len(menu.Sections) != 1 || menu.Sections[0].Text != "project" || len(menu.Sections[0].Rows) != 2 {
+		t.Fatalf("project sections = %#v, want one project section with one visible row and new thread row", menu.Sections)
 	}
 	row := menu.Sections[0].Rows[0]
 	if row.Title != "Menu thread" || row.Trailing == "" || row.Button.Text != "Open" || row.Button.CallbackData == "" {
 		t.Fatalf("project row = %#v, want clickable visible thread row", row)
+	}
+	newThreadRow := menu.Sections[0].Rows[1]
+	if newThreadRow.Title != "New thread" || newThreadRow.BackgroundStyle != "cus-4" || newThreadRow.Button.Text != "New thread" || newThreadRow.Button.CallbackData == "" {
+		t.Fatalf("project new thread row = %#v, want clickable new thread row", newThreadRow)
 	}
 	if callbackTokenForButton(menu.Buttons, "New thread") == "" {
 		t.Fatalf("project buttons = %#v, want New thread action", menu.Buttons)
@@ -1194,7 +1425,7 @@ func TestProjectNewThreadArmsThenFirstPromptCreatesThreadAndFeishuTopic(t *testi
 	t.Parallel()
 
 	service := newTestService(t)
-	sender := &recordingSender{}
+	sender := &recordingThreadTopicSender{}
 	service.SetSender(sender)
 	ctx := context.Background()
 	project := model.Thread{
@@ -1265,8 +1496,353 @@ func TestProjectNewThreadArmsThenFirstPromptCreatesThreadAndFeishuTopic(t *testi
 	if got := stub.turnStartCalls[0]; got.threadID != "new-thread-id" || got.message != "first prompt" || got.cwd != "/Users/example/project" {
 		t.Fatalf("turnStartCall = %#v, want new thread first prompt in project cwd", got)
 	}
+	stored, err := service.store.GetThread(ctx, "new-thread-id")
+	if err != nil {
+		t.Fatalf("GetThread(new-thread-id) failed: %v", err)
+	}
+	if stored == nil || stored.Title != "Real title from first prompt" || stored.LastPreview != "first prompt" {
+		t.Fatalf("stored thread = %#v, want refreshed Codex title and first prompt preview", stored)
+	}
 	if len(sender.messages) == 0 || sender.messages[0].style != model.MessageStyleCodexPanel {
 		t.Fatalf("sender messages = %#v, want Codex panel created for refreshed topic", sender.messages)
+	}
+	if len(sender.ensureTopicThreads) == 0 || sender.ensureTopicThreads[0].Title != "Real title from first prompt" {
+		t.Fatalf("EnsureThreadTopic threads = %#v, want refreshed Codex title", sender.ensureTopicThreads)
+	}
+}
+
+func TestProjectNewThreadUsesDesktopCreateWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	sender := &recordingThreadTopicSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+	if err := service.store.UpsertThread(ctx, model.Thread{
+		ID:            "project-source-thread",
+		Title:         "Source",
+		CWD:           "/Users/example/project",
+		ProjectName:   "project",
+		DirectoryName: "project",
+		UpdatedAt:     10,
+		Raw:           json.RawMessage(`{"id":"project-source-thread"}`),
+	}); err != nil {
+		t.Fatalf("UpsertThread(project) failed: %v", err)
+	}
+	stub := &stubSession{
+		threadListResult: map[string]any{"data": []any{map[string]any{
+			"id":        "desktop-thread-id",
+			"cwd":       "/Users/example/project",
+			"name":      "Desktop title",
+			"preview":   "first prompt",
+			"updatedAt": time.Now().UTC().Format(time.RFC3339),
+		}}},
+		threadReads: map[string]map[string]any{
+			"desktop-thread-id": {
+				"thread": map[string]any{
+					"id":      "desktop-thread-id",
+					"cwd":     "/Users/example/project",
+					"title":   "Real title from first prompt",
+					"preview": "first prompt",
+					"status":  "inProgress",
+					"turns": []any{map[string]any{
+						"id":     "started-turn",
+						"status": "inProgress",
+						"items":  []any{map[string]any{"id": "user-item", "type": "userMessage", "content": []any{map[string]any{"text": "first prompt"}}}},
+					}},
+				},
+			},
+		},
+	}
+	service.live = stub
+	service.liveConnected = true
+	var createdCWD, createdPrompt string
+	var createdProjectless bool
+	service.desktopThreadCreator = func(ctx context.Context, cwd, prompt string, projectless bool) error {
+		createdCWD = cwd
+		createdPrompt = prompt
+		createdProjectless = projectless
+		return nil
+	}
+
+	menu := openOnlyProjectMenu(t, service, ctx)
+	_, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, callbackTokenForButton(menu.Buttons, "New thread"), model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("HandleCallback(New thread) failed: %v", err)
+	}
+	response, err := service.handlePlainTextFromSource(ctx, 123456789, 0, "first prompt", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handlePlainText(first prompt) failed: %v", err)
+	}
+	if response == nil || response.ThreadID != "desktop-thread-id" {
+		t.Fatalf("response = %#v, want desktop-created thread", response)
+	}
+	if createdCWD != "/Users/example/project" || createdPrompt != "first prompt" || createdProjectless {
+		t.Fatalf("desktop create cwd/prompt/projectless = %q/%q/%v, want project cwd, first prompt, and projectless=false", createdCWD, createdPrompt, createdProjectless)
+	}
+	if len(stub.threadStartCalls) != 0 {
+		t.Fatalf("threadStartCalls = %#v, want desktop path without app-server thread/start", stub.threadStartCalls)
+	}
+	if len(stub.turnStartCalls) != 0 {
+		t.Fatalf("turnStartCalls = %#v, want desktop path without app-server turn/start", stub.turnStartCalls)
+	}
+	stored, err := service.store.GetThread(ctx, "desktop-thread-id")
+	if err != nil {
+		t.Fatalf("GetThread(desktop-thread-id) failed: %v", err)
+	}
+	if stored == nil || stored.Title != "Real title from first prompt" || stored.LastPreview != "first prompt" {
+		t.Fatalf("stored thread = %#v, want refreshed app-server metadata", stored)
+	}
+	if len(sender.ensureTopicThreads) == 0 || sender.ensureTopicThreads[0].ID != "desktop-thread-id" {
+		t.Fatalf("EnsureThreadTopic threads = %#v, want desktop-created thread", sender.ensureTopicThreads)
+	}
+	if len(sender.messages) == 0 || sender.messages[0].style != model.MessageStyleCodexPanel {
+		t.Fatalf("sender messages = %#v, want Codex panel", sender.messages)
+	}
+}
+
+func TestProjectNewThreadFallsBackToAppServerWhenDesktopCreateFails(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	ctx := context.Background()
+	if err := service.store.UpsertThread(ctx, model.Thread{
+		ID:            "project-source-thread",
+		Title:         "Source",
+		CWD:           "/Users/example/project",
+		ProjectName:   "project",
+		DirectoryName: "project",
+		UpdatedAt:     10,
+		Raw:           json.RawMessage(`{"id":"project-source-thread"}`),
+	}); err != nil {
+		t.Fatalf("UpsertThread(project) failed: %v", err)
+	}
+	stub := &stubSession{
+		threadStartResult: map[string]any{"thread": map[string]any{"id": "new-thread-id", "cwd": "/Users/example/project"}},
+		threadReads: map[string]map[string]any{
+			"new-thread-id": {
+				"thread": map[string]any{
+					"id":      "new-thread-id",
+					"cwd":     "/Users/example/project",
+					"title":   "Real title from first prompt",
+					"preview": "first prompt",
+					"turns": []any{map[string]any{
+						"id":     "started-turn",
+						"status": "inProgress",
+						"items":  []any{map[string]any{"id": "user-item", "type": "userMessage", "content": []any{map[string]any{"text": "first prompt"}}}},
+					}},
+				},
+			},
+		},
+	}
+	service.live = stub
+	service.liveConnected = true
+	service.desktopThreadCreator = func(ctx context.Context, cwd, prompt string, projectless bool) error {
+		return fmt.Errorf("desktop unavailable")
+	}
+
+	menu := openOnlyProjectMenu(t, service, ctx)
+	_, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, callbackTokenForButton(menu.Buttons, "New thread"), model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("HandleCallback(New thread) failed: %v", err)
+	}
+	response, err := service.handlePlainTextFromSource(ctx, 123456789, 0, "first prompt", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handlePlainText(first prompt) failed: %v", err)
+	}
+	if response == nil || response.ThreadID != "new-thread-id" {
+		t.Fatalf("response = %#v, want fallback app-server thread", response)
+	}
+	if len(stub.threadStartCalls) != 1 || stub.threadStartCalls[0] != "/Users/example/project" {
+		t.Fatalf("threadStartCalls = %#v, want app-server fallback", stub.threadStartCalls)
+	}
+	if len(stub.turnStartCalls) != 1 || stub.turnStartCalls[0].threadID != "new-thread-id" || stub.turnStartCalls[0].message != "first prompt" {
+		t.Fatalf("turnStartCalls = %#v, want first prompt on fallback thread", stub.turnStartCalls)
+	}
+}
+
+func TestProjectNewThreadWithoutCodexTitleKeepsFirstPromptPreview(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	if err := service.store.UpsertThread(ctx, model.Thread{
+		ID:            "project-source-thread",
+		Title:         "Source",
+		CWD:           "/Users/example/project",
+		ProjectName:   "project",
+		DirectoryName: "project",
+		UpdatedAt:     10,
+		Raw:           json.RawMessage(`{"id":"project-source-thread"}`),
+	}); err != nil {
+		t.Fatalf("UpsertThread(project) failed: %v", err)
+	}
+	stub := &stubSession{
+		threadStartResult: map[string]any{"thread": map[string]any{"id": "new-thread-id", "cwd": "/Users/example/project"}},
+		threadReads: map[string]map[string]any{
+			"new-thread-id": {
+				"thread": map[string]any{
+					"id":      "new-thread-id",
+					"cwd":     "/Users/example/project",
+					"title":   "",
+					"preview": "first prompt",
+					"status":  "inProgress",
+					"turns": []any{map[string]any{
+						"id":     "started-turn",
+						"status": "inProgress",
+						"items":  []any{map[string]any{"id": "user-item", "type": "userMessage", "content": []any{map[string]any{"text": "first prompt"}}}},
+					}},
+				},
+			},
+		},
+	}
+	service.live = stub
+	service.liveConnected = true
+
+	menu := openOnlyProjectMenu(t, service, ctx)
+	_, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, callbackTokenForButton(menu.Buttons, "New thread"), model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("HandleCallback(New thread) failed: %v", err)
+	}
+	response, err := service.handlePlainTextFromSource(ctx, 123456789, 0, "first prompt", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handlePlainText(first prompt) failed: %v", err)
+	}
+	if response == nil || response.ThreadID != "new-thread-id" {
+		t.Fatalf("response = %#v, want new thread", response)
+	}
+	stored, err := service.store.GetThread(ctx, "new-thread-id")
+	if err != nil {
+		t.Fatalf("GetThread(new-thread-id) failed: %v", err)
+	}
+	if stored == nil || stored.Title != "" || stored.LastPreview != "first prompt" {
+		t.Fatalf("stored thread = %#v, want empty title and first prompt preview", stored)
+	}
+}
+
+func TestChatsProjectNewThreadCreatesDesktopChatWithoutProjectPath(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	service.cfg.CodexChatsRoot = t.TempDir()
+	ctx := context.Background()
+	service.now = func() time.Time { return time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC) }
+	if err := service.store.UpsertThread(ctx, model.Thread{
+		ID:            "existing-chat-thread",
+		Title:         "Existing Chat",
+		CWD:           filepath.Join(service.cfg.CodexChatsRoot, "2026-06-30", "existing-chat"),
+		ProjectName:   "existing-chat",
+		DirectoryName: "existing-chat",
+		UpdatedAt:     10,
+		Raw:           json.RawMessage(`{"id":"existing-chat-thread"}`),
+	}); err != nil {
+		t.Fatalf("UpsertThread(existing chat) failed: %v", err)
+	}
+	stub := &stubSession{
+		threadListResult: map[string]any{"threads": []any{map[string]any{
+			"id":         "new-chat-thread",
+			"title":      "",
+			"preview":    "临时对话第一条",
+			"status":     "inProgress",
+			"updated_at": time.Now().Unix(),
+		}}},
+		threadReads: map[string]map[string]any{
+			"new-chat-thread": {
+				"thread": map[string]any{
+					"id":      "new-chat-thread",
+					"title":   "",
+					"preview": "临时对话第一条",
+					"status":  "inProgress",
+					"turns": []any{map[string]any{
+						"id":     "started-turn",
+						"status": "inProgress",
+						"items":  []any{map[string]any{"id": "user-item", "type": "userMessage", "content": []any{map[string]any{"text": "临时对话第一条"}}}},
+					}},
+				},
+			},
+		},
+	}
+	service.live = stub
+	service.liveConnected = true
+	var createdCWD, createdPrompt string
+	var createdProjectless bool
+	service.desktopThreadCreator = func(ctx context.Context, cwd, prompt string, projectless bool) error {
+		createdCWD = cwd
+		createdPrompt = prompt
+		createdProjectless = projectless
+		return nil
+	}
+
+	projects, err := service.handleCommandFromSource(ctx, 123456789, 0, "/projects", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handleCommand(/projects) failed: %v", err)
+	}
+	chatsToken := callbackTokenForButton(projects.Buttons, "1. Chats")
+	if chatsToken == "" {
+		t.Fatalf("projects buttons = %#v, want Chats project", projects.Buttons)
+	}
+	chats, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, chatsToken, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("HandleCallback(Chats) failed: %v", err)
+	}
+	newToken := callbackTokenForButton(chats.Buttons, "New chat")
+	if newToken == "" {
+		t.Fatalf("Chats buttons = %#v, want New chat", chats.Buttons)
+	}
+	if _, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 43, 123456789, newToken, model.PanelSourceFeishuInput); err != nil {
+		t.Fatalf("HandleCallback(New thread) failed: %v", err)
+	}
+	response, err := service.handlePlainTextFromSource(ctx, 123456789, 0, "临时对话第一条", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handlePlainText(first prompt) failed: %v", err)
+	}
+	if response == nil || response.ThreadID != "new-chat-thread" {
+		t.Fatalf("response = %#v, want new chat thread", response)
+	}
+	if createdCWD != "" || createdPrompt != "临时对话第一条" || !createdProjectless {
+		t.Fatalf("desktop create cwd/prompt/projectless = %q/%q/%v, want projectless Chat prompt", createdCWD, createdPrompt, createdProjectless)
+	}
+	if len(stub.threadStartCalls) != 0 {
+		t.Fatalf("threadStartCalls = %#v, want no app-server fallback for desktop Chat", stub.threadStartCalls)
+	}
+	stored, err := service.store.GetThread(ctx, "new-chat-thread")
+	if err != nil {
+		t.Fatalf("GetThread(new-chat-thread) failed: %v", err)
+	}
+	if stored == nil || stored.ProjectName != chatsProjectName || stored.CWD != "" {
+		t.Fatalf("stored thread = %#v, want Chats project without cwd", stored)
+	}
+}
+
+func TestChatsProjectNewThreadDoesNotFallbackToAppServerWhenDesktopCreateFails(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	ctx := context.Background()
+	stub := &stubSession{
+		threadStartResult: map[string]any{"thread": map[string]any{"id": "appserver-chat-thread"}},
+	}
+	service.live = stub
+	service.liveConnected = true
+	service.desktopThreadCreator = func(ctx context.Context, cwd, prompt string, projectless bool) error {
+		return fmt.Errorf("desktop unavailable")
+	}
+	response, err := service.createThreadFromProjectPrompt(ctx, 123456789, 0, pendingNewThreadState{
+		Kind:        chatsProjectWorkspaceKey,
+		ProjectName: chatsProjectName,
+	}, "first prompt", model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("createThreadFromProjectPrompt(first prompt) failed: %v", err)
+	}
+	if response == nil || !strings.Contains(response.Text, "Could not create a Codex desktop Chat automatically") {
+		t.Fatalf("response = %#v, want desktop Chat failure", response)
+	}
+	if len(stub.threadStartCalls) != 0 || len(stub.turnStartCalls) != 0 {
+		t.Fatalf("app-server calls = %#v/%#v, want no fallback", stub.threadStartCalls, stub.turnStartCalls)
 	}
 }
 
@@ -1310,26 +1886,26 @@ func TestProjectNewThreadRejectsThreadStartWithoutID(t *testing.T) {
 	}
 }
 
-func TestNewChatCommandCreatesCodexUIChatCWDAndBinds(t *testing.T) {
+func TestNewChatCommandCreatesDesktopChatWithoutProjectPathAndBinds(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
 	sender := &recordingSender{}
 	service.SetSender(sender)
-	chatRoot := t.TempDir()
-	fixedNow := time.Date(2026, 5, 5, 14, 32, 5, 0, time.Local)
-	service.cfg.CodexChatsRoot = chatRoot
-	service.now = func() time.Time { return fixedNow }
-	expectedCWD := filepath.Join(chatRoot, "2026-05-05", "tool-call")
 	ctx := context.Background()
 	stub := &stubSession{
-		threadStartResult: map[string]any{"thread": map[string]any{"id": "new-chat-thread", "title": "New chat"}},
+		threadListResult: map[string]any{"threads": []any{map[string]any{
+			"id":         "new-chat-thread",
+			"title":      "New chat",
+			"preview":    "Проверь tool call по погоде",
+			"updated_at": time.Now().Unix(),
+		}}},
 		threadReads: map[string]map[string]any{
 			"new-chat-thread": {
 				"thread": map[string]any{
 					"id":     "new-chat-thread",
 					"title":  "New chat",
-					"cwd":    expectedCWD,
 					"status": "active",
 					"turns": []any{map[string]any{
 						"id":     "started-turn",
@@ -1342,6 +1918,14 @@ func TestNewChatCommandCreatesCodexUIChatCWDAndBinds(t *testing.T) {
 	}
 	service.live = stub
 	service.liveConnected = true
+	var createdCWD, createdPrompt string
+	var createdProjectless bool
+	service.desktopThreadCreator = func(ctx context.Context, cwd, prompt string, projectless bool) error {
+		createdCWD = cwd
+		createdPrompt = prompt
+		createdProjectless = projectless
+		return nil
+	}
 
 	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/new Проверь tool call по погоде", 0, model.PanelSourceFeishuInput)
 	if err != nil {
@@ -1350,24 +1934,18 @@ func TestNewChatCommandCreatesCodexUIChatCWDAndBinds(t *testing.T) {
 	if response == nil || response.ThreadID != "new-chat-thread" || response.TurnID != "started-turn" {
 		t.Fatalf("response = %#v, want new chat thread/turn", response)
 	}
-	if len(stub.threadStartCalls) != 1 || stub.threadStartCalls[0] != expectedCWD {
-		t.Fatalf("threadStartCalls = %#v, want chat cwd %q", stub.threadStartCalls, expectedCWD)
+	if createdCWD != "" || createdPrompt != "Проверь tool call по погоде" || !createdProjectless {
+		t.Fatalf("desktop create cwd/prompt/projectless = %q/%q/%v, want projectless Chat prompt", createdCWD, createdPrompt, createdProjectless)
 	}
-	if len(stub.turnStartCalls) != 1 {
-		t.Fatalf("turnStartCalls = %#v, want one turn start", stub.turnStartCalls)
-	}
-	if got := stub.turnStartCalls[0]; got.threadID != "new-chat-thread" || got.message != "Проверь tool call по погоде" || got.cwd != expectedCWD {
-		t.Fatalf("turnStartCall = %#v, want new chat first prompt with cwd %q", got, expectedCWD)
-	}
-	if info, err := os.Stat(expectedCWD); err != nil || !info.IsDir() {
-		t.Fatalf("expected chat cwd %q to exist as directory, info=%#v err=%v", expectedCWD, info, err)
+	if len(stub.threadStartCalls) != 0 || len(stub.turnStartCalls) != 0 {
+		t.Fatalf("app-server calls = %#v/%#v, want no fallback", stub.threadStartCalls, stub.turnStartCalls)
 	}
 	thread, err := service.store.GetThread(ctx, "new-chat-thread")
 	if err != nil {
 		t.Fatalf("GetThread failed: %v", err)
 	}
-	if thread == nil || thread.ProjectName != "Chats" || thread.DirectoryName != "tool-call" || thread.CWD != expectedCWD {
-		t.Fatalf("thread = %#v, want stored Chats thread at generated cwd", thread)
+	if thread == nil || thread.ProjectName != "Chats" || thread.CWD != "" {
+		t.Fatalf("thread = %#v, want stored Chats thread without cwd", thread)
 	}
 	catalog, err := service.projectCatalog(ctx)
 	if err != nil {
@@ -1398,61 +1976,6 @@ func TestNewChatCWDUsesFallbackSlugAndCollisionSuffix(t *testing.T) {
 	}
 	if info, err := os.Stat(want); err != nil || !info.IsDir() {
 		t.Fatalf("expected fallback cwd %q to exist as directory, info=%#v err=%v", want, info, err)
-	}
-}
-
-func TestNewChatCommandRejectsMissingThreadID(t *testing.T) {
-	t.Parallel()
-
-	service := newTestService(t)
-	service.cfg.CodexChatsRoot = t.TempDir()
-	ctx := context.Background()
-	stub := &stubSession{threadStartResult: map[string]any{"thread": map[string]any{"title": "New chat"}}}
-	service.live = stub
-	service.liveConnected = true
-
-	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/new first chat prompt", 0, model.PanelSourceFeishuInput)
-	if err != nil {
-		t.Fatalf("handleCommand(/new) failed: %v", err)
-	}
-	if response == nil || !strings.Contains(response.Text, "could not create thread") {
-		t.Fatalf("response = %#v, want missing thread id error", response)
-	}
-	if len(stub.turnStartCalls) != 0 {
-		t.Fatalf("turnStartCalls = %#v, want no turn start without thread id", stub.turnStartCalls)
-	}
-}
-
-func TestNewChatCommandTurnStartFailureSavesAndBindsThread(t *testing.T) {
-	t.Parallel()
-
-	service := newTestService(t)
-	chatRoot := t.TempDir()
-	fixedNow := time.Date(2026, 5, 5, 14, 32, 5, 0, time.Local)
-	service.cfg.CodexChatsRoot = chatRoot
-	service.now = func() time.Time { return fixedNow }
-	expectedCWD := filepath.Join(chatRoot, "2026-05-05", "first-chat-prompt")
-	ctx := context.Background()
-	stub := &stubSession{
-		threadStartResult: map[string]any{"thread": map[string]any{"id": "new-chat-thread", "title": "New chat"}},
-		turnStartErr:      errors.New("turn start failed"),
-	}
-	service.live = stub
-	service.liveConnected = true
-
-	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/new first chat prompt", 0, model.PanelSourceFeishuInput)
-	if err != nil {
-		t.Fatalf("handleCommand(/new) failed: %v", err)
-	}
-	if response == nil || !strings.Contains(response.Text, "Created thread") || !strings.Contains(response.Text, "could not start first turn") {
-		t.Fatalf("response = %#v, want recoverable turn start failure", response)
-	}
-	thread, err := service.store.GetThread(ctx, "new-chat-thread")
-	if err != nil {
-		t.Fatalf("GetThread failed: %v", err)
-	}
-	if thread == nil || thread.ProjectName != "Chats" || thread.CWD != expectedCWD {
-		t.Fatalf("thread = %#v, want saved Chats thread with cwd %q", thread, expectedCWD)
 	}
 }
 
@@ -3789,6 +4312,43 @@ func TestFeishuInputFallsBackWhenDesktopDispatcherUnavailable(t *testing.T) {
 	}
 
 	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", "Fallback", "", model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
+	}
+	if response == nil || response.ThreadID != thread.ID || response.TurnID != "started-turn" {
+		t.Fatalf("response = %#v, want app-server fallback turn", response)
+	}
+	if len(stub.turnStartCalls) != 1 {
+		t.Fatalf("turnStartCalls = %#v, want one fallback start", stub.turnStartCalls)
+	}
+}
+
+func TestFeishuInputFallsBackWhenDesktopHistoryRetryTimesOut(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	service.cfg.RequestTimeout = time.Nanosecond
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "01900000-0000-7000-8000-000000000217",
+		Title:       "Feishu desktop timeout fallback",
+		ProjectName: "Codex",
+		CWD:         "/Users/example/project",
+		Status:      "idle",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	stub := &stubSession{}
+	service.live = stub
+	service.liveConnected = true
+	service.desktopInputDispatcher = &stubDesktopInputDispatcher{loadErr: fmt.Errorf("no-client-found")}
+	service.desktopOpener = func(ctx context.Context, threadID string) error {
+		return nil
+	}
+
+	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", "今天是几月几号？农历，黄道信息给我一下", "", model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
 	}
@@ -6176,6 +6736,8 @@ func (s *startErrorSession) StartCalls() int {
 type stubSession struct {
 	threadReads         map[string]map[string]any
 	threadListResult    map[string]any
+	threadListResults   []map[string]any
+	threadListErr       error
 	threadListCalls     int
 	configReadResult    map[string]any
 	configReadCalls     int
@@ -6227,6 +6789,7 @@ type respondRequestCall struct {
 
 type stubDesktopInputDispatcher struct {
 	loadCalls            []string
+	loadCh               chan string
 	startCalls           []map[string]any
 	steerCalls           []string
 	steerInputs          [][]map[string]any
@@ -6241,6 +6804,12 @@ type stubDesktopInputDispatcher struct {
 
 func (s *stubDesktopInputDispatcher) LoadCompleteHistory(ctx context.Context, threadID string) (map[string]any, error) {
 	s.loadCalls = append(s.loadCalls, threadID)
+	if s.loadCh != nil {
+		select {
+		case s.loadCh <- threadID:
+		default:
+		}
+	}
 	if len(s.loadErrs) > 0 {
 		err := s.loadErrs[0]
 		s.loadErrs = s.loadErrs[1:]
@@ -6285,6 +6854,14 @@ func (s *stubSession) Subscribe() <-chan appserver.Event {
 }
 func (s *stubSession) ThreadList(ctx context.Context, limit int, cursor string) (map[string]any, error) {
 	s.threadListCalls++
+	if s.threadListErr != nil {
+		return nil, s.threadListErr
+	}
+	if len(s.threadListResults) > 0 {
+		result := s.threadListResults[0]
+		s.threadListResults = s.threadListResults[1:]
+		return result, nil
+	}
 	return s.threadListResult, nil
 }
 func (s *stubSession) ThreadRead(ctx context.Context, threadID string, includeTurns bool) (map[string]any, error) {

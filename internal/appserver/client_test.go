@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -183,6 +184,68 @@ func TestControlPlaneSkillsListParams(t *testing.T) {
 	params = skillsListParams(nil, false)
 	if len(params) != 0 {
 		t.Fatalf("empty params = %#v, want empty", params)
+	}
+}
+
+func TestThreadStartMarksUserThreadSource(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake app-server shell script is Unix-only")
+	}
+	root := t.TempDir()
+	logPath := filepath.Join(root, "rpc.log")
+	t.Setenv("CODEX_FEISHU_FAKE_APPSERVER_LOG", logPath)
+	script := writeFakeAppServer(t, root, `#!/bin/sh
+set -eu
+log="${CODEX_FEISHU_FAKE_APPSERVER_LOG:-}"
+if IFS= read -r line; then
+  if [ -n "$log" ]; then printf '%s\n' "$line" >> "$log"; fi
+  printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'
+fi
+if IFS= read -r line; then
+  if [ -n "$log" ]; then printf '%s\n' "$line" >> "$log"; fi
+fi
+if IFS= read -r line; then
+  if [ -n "$log" ]; then printf '%s\n' "$line" >> "$log"; fi
+  printf '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread-1"}}}\n'
+fi
+sleep 5
+`)
+	client := NewClient(script, "stdio", root, 5*time.Second)
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if _, err := client.ThreadStart(ctx, "/tmp/project"); err != nil {
+		t.Fatalf("ThreadStart failed: %v", err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) failed: %v", logPath, err)
+	}
+	var request struct {
+		Method string         `json:"method"`
+		Params map[string]any `json:"params"`
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var candidate struct {
+			Method string         `json:"method"`
+			Params map[string]any `json:"params"`
+		}
+		if err := json.Unmarshal([]byte(line), &candidate); err != nil {
+			t.Fatalf("Unmarshal request failed: %v", err)
+		}
+		if candidate.Method == "thread/start" {
+			request = candidate
+			break
+		}
+	}
+	if request.Method != "thread/start" {
+		t.Fatalf("thread/start request not found in log:\n%s", data)
+	}
+	if got, want := request.Params["threadSource"], "user"; got != want {
+		t.Fatalf("threadSource = %v, want %q; params=%#v", got, want, request.Params)
 	}
 }
 

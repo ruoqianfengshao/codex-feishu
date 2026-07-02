@@ -73,6 +73,7 @@ type Thread struct {
 	PreferredModel  string          `json:"preferred_model,omitempty"`
 	PermissionsMode string          `json:"permissions_mode,omitempty"`
 	Archived        bool            `json:"archived"`
+	Listed          bool            `json:"listed"`
 	Raw             json.RawMessage `json:"raw"`
 }
 
@@ -333,9 +334,10 @@ type MessageSection struct {
 }
 
 type MessageSectionRow struct {
-	Title    string     `json:"title,omitempty"`
-	Trailing string     `json:"trailing,omitempty"`
-	Button   ButtonSpec `json:"button,omitempty"`
+	Title           string     `json:"title,omitempty"`
+	Trailing        string     `json:"trailing,omitempty"`
+	BackgroundStyle string     `json:"background_style,omitempty"`
+	Button          ButtonSpec `json:"button,omitempty"`
 }
 
 type MessageChart struct {

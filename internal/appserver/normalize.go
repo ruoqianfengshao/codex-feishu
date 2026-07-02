@@ -108,6 +108,7 @@ func ThreadFromPayload(payload map[string]any) model.Thread {
 		ActiveTurnID:   activeTurnID,
 		PreferredModel: preferredModel,
 		Archived:       archived,
+		Listed:         true,
 		Raw:            raw,
 	}
 }

@@ -373,6 +373,10 @@ func buildSectionedCardV2(sections []model.MessageSection, style string) (string
 						"light_mode": "rgba(255,224,224,1.000000)",
 						"dark_mode":  "rgba(83,43,43,1.000000)",
 					},
+					"cus-4": map[string]any{
+						"light_mode": "rgba(255,255,255,1.000000)",
+						"dark_mode":  "rgba(255,255,255,1.000000)",
+					},
 				},
 			},
 		},
@@ -628,6 +632,10 @@ func interactiveRowElements(rows []model.MessageSectionRow) []map[string]any {
 		if trailing == "" {
 			trailing = " "
 		}
+		backgroundStyle := strings.TrimSpace(row.BackgroundStyle)
+		if backgroundStyle == "" {
+			backgroundStyle = "cus-0"
+		}
 		columns := []map[string]any{
 			{
 				"tag":              "column",
@@ -653,7 +661,7 @@ func interactiveRowElements(rows []model.MessageSectionRow) []map[string]any {
 		elements = append(elements, map[string]any{
 			"tag":              "interactive_container",
 			"width":            "fill",
-			"background_style": "cus-0",
+			"background_style": backgroundStyle,
 			"has_border":       true,
 			"border_color":     "cus-1",
 			"corner_radius":    "8px",

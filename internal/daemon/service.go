@@ -96,7 +96,9 @@ type Service struct {
 	sender                 Sender
 	notifier               Notifier
 	desktopOpener          func(context.Context, string) error
+	desktopThreadCreator   func(context.Context, string, string, bool) error
 	desktopInputDispatcher desktopInputDispatcher
+	codexGlobalStatePath   string
 	notificationMu         sync.Mutex
 	logger                 *log.Logger
 	diagnosticMu           sync.Mutex
@@ -147,7 +149,9 @@ func New(cfg config.Config) (*Service, error) {
 		appServerListen:        cfg.AppServerListen,
 		notifier:               newSystemNotifier(),
 		desktopOpener:          openCodexDesktopThread,
+		desktopThreadCreator:   createCodexDesktopThreadWithPrompt,
 		desktopInputDispatcher: desktopipc.New("", cfg.RequestTimeout),
+		codexGlobalStatePath:   defaultCodexGlobalStatePath(),
 		logger:                 discardDiagnosticLogger(),
 		diagnosticBy:           map[string]int{},
 		diagnosticLast:         map[string]time.Time{},
@@ -274,7 +278,7 @@ func (s *Service) StatusSnapshot(ctx context.Context) (*DirectResponse, error) {
 	startedAt := s.startedAt
 	lastError := s.lastError
 	s.mu.RUnlock()
-	workspaceCount := len(catalog.Workspaces)
+	workspaceCount := realProjectWorkspaceCount(catalog.Workspaces)
 	chatCount := len(catalog.Chats)
 	connectedCount := 0
 	if liveConnected {
@@ -1217,7 +1221,7 @@ func (s *Service) indexLoop(ctx context.Context) {
 	ticker := time.NewTicker(s.cfg.IndexRefreshInterval)
 	defer ticker.Stop()
 	for {
-		s.syncThreads(ctx, 200)
+		s.syncThreads(ctx, 0)
 		select {
 		case <-ctx.Done():
 			return
@@ -1341,7 +1345,7 @@ func (s *Service) repairSessions(ctx context.Context, reason string) {
 }
 
 func (s *Service) bootstrapTrackedState(ctx context.Context) {
-	s.syncThreads(ctx, 200)
+	s.syncThreads(ctx, 0)
 	s.attachTracked(ctx)
 	s.pollTracked(ctx)
 }
@@ -1362,30 +1366,36 @@ func (s *Service) syncThreads(ctx context.Context, limit int) {
 	if client == nil {
 		return
 	}
-	if limit <= 0 {
-		limit = 100
-	}
 	cursor := ""
-	remaining := limit
 	pageSize := 25
-	for remaining > 0 {
+	seen := map[string]struct{}{}
+	for {
+		requestLimit := pageSize
+		if limit > 0 {
+			if len(seen) >= limit {
+				return
+			}
+			remaining := limit - len(seen)
+			if remaining < requestLimit {
+				requestLimit = remaining
+			}
+		}
 		requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		result, err := client.ThreadList(requestCtx, min(pageSize, remaining), cursor)
+		result, err := client.ThreadList(requestCtx, requestLimit, cursor)
 		cancel()
 		if err != nil {
 			s.noteSessionError(ctx, "thread_list", err)
 			return
 		}
 		threads := appserver.ThreadsFromList(result)
-		if len(threads) == 0 {
-			return
-		}
 		for _, thread := range threads {
+			thread.Listed = true
+			seen[thread.ID] = struct{}{}
 			_ = s.store.UpsertThread(ctx, thread)
 		}
-		remaining -= len(threads)
 		nextCursor, _ := result["nextCursor"].(string)
 		if strings.TrimSpace(nextCursor) == "" {
+			_ = s.store.ReconcileListedThreads(ctx, seen)
 			return
 		}
 		cursor = nextCursor
@@ -3205,10 +3215,7 @@ func (s *Service) threadsOverview(ctx context.Context, rest string) (*DirectResp
 func visibleThreadsForOverview(threads []model.Thread) []model.Thread {
 	out := make([]model.Thread, 0, len(threads))
 	for _, thread := range threads {
-		if thread.Archived {
-			continue
-		}
-		if threadLooksUnavailableForOverview(thread) {
+		if !threadVisibleInProjectCatalog(thread) {
 			continue
 		}
 		out = append(out, thread)

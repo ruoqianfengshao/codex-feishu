@@ -24,7 +24,34 @@ type closeableDesktopInputDispatcher interface {
 const (
 	desktopInputOpenRetryAttempts = 8
 	desktopInputOpenRetryDelay    = 250 * time.Millisecond
+	desktopThreadAdoptionTimeout  = 5 * time.Second
 )
+
+func (s *Service) maybeAdoptCodexDesktopThreadForInput(ctx context.Context, threadID, sourceMode string) {
+	opened := s.maybeOpenCodexDesktopForInput(ctx, threadID, sourceMode)
+	if !opened {
+		return
+	}
+	s.mu.RLock()
+	dispatcher := s.desktopInputDispatcher
+	s.mu.RUnlock()
+	if dispatcher == nil {
+		dispatcher = desktopipc.New("", desktopThreadAdoptionTimeout)
+	}
+	go func() {
+		requestCtx, cancel := context.WithTimeout(context.Background(), desktopThreadAdoptionTimeout)
+		defer cancel()
+		historyResult, err := s.loadDesktopCompleteHistoryForInput(requestCtx, dispatcher, threadID, true)
+		if err != nil {
+			s.logLifecycle("codex_desktop_thread_adoption_unavailable", lifecycleFields{
+				"thread_id": threadID,
+				"error":     sanitizeDiagnosticString(err.Error()),
+			})
+			return
+		}
+		s.logLifecycle("codex_desktop_thread_adopted", desktopInputHistoryFields(threadID, historyResult))
+	}()
+}
 
 func (s *Service) maybeSendFeishuInputViaDesktop(ctx context.Context, chatID, topicID int64, thread *model.Thread, routeTurnID, text, collaborationMode string) (map[string]any, bool, bool, string, error) {
 	if s == nil || !s.cfg.OpenCodexDesktopOnFeishu || thread == nil {
@@ -214,6 +241,9 @@ func (s *Service) loadDesktopCompleteHistoryForInput(ctx context.Context, dispat
 				case <-timer.C:
 				default:
 				}
+			}
+			if desktopInputShouldFallback(lastErr) {
+				return nil, lastErr
 			}
 			return nil, ctx.Err()
 		}

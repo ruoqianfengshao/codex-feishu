@@ -117,10 +117,12 @@ type recordingThreadTopicSender struct {
 	topic              *model.FeishuThreadTopic
 	canonicalByChatID  map[int64]int64
 	ensureTopicChatIDs []int64
+	ensureTopicThreads []model.Thread
 }
 
 func (s *recordingThreadTopicSender) EnsureThreadTopic(ctx context.Context, chatID int64, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) (*model.FeishuThreadTopic, error) {
 	s.ensureTopicChatIDs = append(s.ensureTopicChatIDs, chatID)
+	s.ensureTopicThreads = append(s.ensureTopicThreads, thread)
 	if s.topic == nil {
 		s.topic = &model.FeishuThreadTopic{
 			ChatID:            chatID,
