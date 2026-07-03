@@ -1705,7 +1705,7 @@ func TestHandleMessageEventDeduplicatesFeishuRetries(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = service.Close() })
 	api := &fakeAPIClient{}
-	bot := &Bot{store: store, service: service, api: api}
+	bot := &Bot{store: store, service: service, api: api, logger: log.New(io.Discard, "", 0)}
 	event := newTextMessageEvent("oc_chat", "om_retry", "ou_user", "/status")
 
 	if err := bot.handleMessageEvent(ctx, event); err != nil {
@@ -1811,7 +1811,7 @@ func TestTopicHelpRepliesInThread(t *testing.T) {
 		t.Fatalf("UpsertFeishuThreadTopic failed: %v", err)
 	}
 	api := &fakeAPIClient{}
-	bot := &Bot{store: store, service: service, api: api}
+	bot := &Bot{store: store, service: service, api: api, logger: log.New(io.Discard, "", 0)}
 	event := newTextMessageEvent("oc_topic_group", "om_help", "ou_user", "/help")
 	event.Event.Message.RootId = ptrString("om_root")
 	event.Event.Message.ThreadId = ptrString("omt_topic")
@@ -1860,7 +1860,7 @@ func TestHelpSendRebuildsAPIClientAfterAuthError(t *testing.T) {
 	firstAPI := &fakeAPIClient{sendErrs: []error{fmt.Errorf("feishu send message failed: code=99991663: Invalid access token for authorization")}}
 	secondAPI := &fakeAPIClient{}
 	rebuilds := 0
-	bot := &Bot{store: store, service: service, api: firstAPI}
+	bot := &Bot{store: store, service: service, api: firstAPI, logger: log.New(io.Discard, "", 0)}
 	bot.apiNew = func() apiClient {
 		rebuilds++
 		return secondAPI
@@ -1876,11 +1876,51 @@ func TestHelpSendRebuildsAPIClientAfterAuthError(t *testing.T) {
 	if firstAPI.sendCalls != 1 {
 		t.Fatalf("firstAPI.sendCalls = %d, want failed first send", firstAPI.sendCalls)
 	}
+	if secondAPI.refreshAuthCalls != 1 {
+		t.Fatalf("secondAPI.refreshAuthCalls = %d, want 1", secondAPI.refreshAuthCalls)
+	}
 	if secondAPI.sendCalls != 1 || secondAPI.lastMsgType != "interactive" {
 		t.Fatalf("secondAPI sendCalls=%d msgType=%q, want one interactive retry", secondAPI.sendCalls, secondAPI.lastMsgType)
 	}
 	if !strings.Contains(secondAPI.lastContent, "/projects") || !strings.Contains(secondAPI.lastContent, "/setting") {
 		t.Fatalf("help card missing workspace commands:\n%s", secondAPI.lastContent)
+	}
+}
+
+func TestHelpSendReturnsRefreshErrorAfterAuthError(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	service, err := daemon.New(config.Config{
+		Paths: config.Paths{
+			Home:    t.TempDir(),
+			DataDir: t.TempDir(),
+			LogDir:  t.TempDir(),
+			DBPath:  t.TempDir() + "/service.sqlite",
+		},
+	})
+	if err != nil {
+		t.Fatalf("daemon.New failed: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	store := service.Store()
+	firstAPI := &fakeAPIClient{sendErrs: []error{fmt.Errorf("feishu send message failed: code=99991663: Invalid access token for authorization")}}
+	secondAPI := &fakeAPIClient{refreshAuthErr: fmt.Errorf("refresh tenant access token: rejected")}
+	bot := &Bot{store: store, service: service, api: firstAPI, logger: log.New(io.Discard, "", 0)}
+	bot.apiNew = func() apiClient {
+		return secondAPI
+	}
+	event := newTextMessageEvent("oc_help", "om_help", "ou_user", "/help")
+
+	err = bot.handleMessageEvent(ctx, event)
+	if err == nil || !strings.Contains(err.Error(), "refresh tenant access token") {
+		t.Fatalf("handleMessageEvent error = %v, want refresh failure", err)
+	}
+	if secondAPI.refreshAuthCalls != 1 {
+		t.Fatalf("secondAPI.refreshAuthCalls = %d, want 1", secondAPI.refreshAuthCalls)
+	}
+	if secondAPI.sendCalls != 0 {
+		t.Fatalf("secondAPI.sendCalls = %d, want no retry after refresh failure", secondAPI.sendCalls)
 	}
 }
 
@@ -2019,6 +2059,7 @@ type fakeAPIClient struct {
 	replyCalls                 int
 	deleteCalls                int
 	createThreadRoomCalls      int
+	refreshAuthCalls           int
 	chatModes                  map[string]string
 	downloadedImages           map[string][]byte
 	downloadImageMessageIDs    []string
@@ -2028,6 +2069,12 @@ type fakeAPIClient struct {
 	forceEmptyUploadedImageKey bool
 	sendErrs                   []error
 	replyErrs                  []error
+	refreshAuthErr             error
+}
+
+func (f *fakeAPIClient) RefreshAuth(context.Context) error {
+	f.refreshAuthCalls++
+	return f.refreshAuthErr
 }
 
 func (f *fakeAPIClient) Send(_ context.Context, receiveID, msgType, content string) (sentMessage, error) {

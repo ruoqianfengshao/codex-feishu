@@ -135,6 +135,9 @@ func (b *Bot) withRecoveredAPIClient(ctx context.Context, call func(context.Cont
 	if api == nil {
 		return sentMessage{}, err
 	}
+	if refreshErr := api.RefreshAuth(ctx); refreshErr != nil {
+		return sentMessage{}, authRecoveryError{err: refreshErr}
+	}
 	return call(ctx, api)
 }
 
@@ -669,6 +672,9 @@ func (b *Bot) sendSectionedCardWithOptions(ctx context.Context, chatID int64, se
 	messageID, err := b.sendWithOptions(ctx, chatID, "interactive", card, options)
 	if err == nil || !sectionedCardHasRowsOrCharts(sections) || sectionedCardHasCharts(sections) {
 		return messageID, err
+	}
+	if isFeishuAuthError(err) || isFeishuAuthRecoveryError(err) {
+		return 0, err
 	}
 	b.logger.Printf("feishu json 2.0 card send failed, falling back to legacy card: %v", err)
 	fallbackCard, fallbackErr := buildSectionedCardV1(sections)

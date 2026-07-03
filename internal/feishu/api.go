@@ -3,6 +3,7 @@ package feishu
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -13,6 +14,7 @@ import (
 )
 
 type apiClient interface {
+	RefreshAuth(ctx context.Context) error
 	Send(ctx context.Context, receiveID, msgType, content string) (sentMessage, error)
 	SendToOpenID(ctx context.Context, openID, msgType, content string) (sentMessage, error)
 	Reply(ctx context.Context, openMessageID, msgType, content string, replyInThread bool) (sentMessage, error)
@@ -34,6 +36,21 @@ type sentMessage struct {
 	ThreadID      string
 }
 
+type authRecoveryError struct {
+	err error
+}
+
+func (e authRecoveryError) Error() string {
+	if e.err == nil {
+		return "feishu auth recovery failed"
+	}
+	return "feishu auth recovery failed: " + e.err.Error()
+}
+
+func (e authRecoveryError) Unwrap() error {
+	return e.err
+}
+
 type chatInfo struct {
 	OpenChatID       string
 	Name             string
@@ -42,11 +59,42 @@ type chatInfo struct {
 }
 
 type sdkAPIClient struct {
-	client *lark.Client
+	appID     string
+	appSecret string
+	client    *lark.Client
 }
 
 func newSDKAPIClient(appID, appSecret string) *sdkAPIClient {
-	return &sdkAPIClient{client: lark.NewClient(appID, appSecret)}
+	return &sdkAPIClient{
+		appID:     strings.TrimSpace(appID),
+		appSecret: strings.TrimSpace(appSecret),
+		client:    lark.NewClient(appID, appSecret),
+	}
+}
+
+func (c *sdkAPIClient) RefreshAuth(ctx context.Context) error {
+	if c == nil || c.client == nil {
+		return errors.New("feishu api client is not configured")
+	}
+	resp, err := c.client.GetTenantAccessTokenBySelfBuiltApp(ctx, &larkcore.SelfBuiltTenantAccessTokenReq{
+		AppID:     c.appID,
+		AppSecret: c.appSecret,
+	})
+	if err != nil {
+		return fmt.Errorf("refresh tenant access token: %w", err)
+	}
+	if resp == nil || !resp.Success() || strings.TrimSpace(resp.TenantAccessToken) == "" {
+		code := 0
+		message := ""
+		requestID := ""
+		if resp != nil {
+			code = resp.Code
+			message = resp.Msg
+			requestID = resp.RequestId()
+		}
+		return sdkError("refresh tenant access token", code, message, requestID)
+	}
+	return nil
 }
 
 func (c *sdkAPIClient) Send(ctx context.Context, receiveID, msgType, content string) (sentMessage, error) {
@@ -387,6 +435,11 @@ func isFeishuAuthError(err error) bool {
 		}
 	}
 	return false
+}
+
+func isFeishuAuthRecoveryError(err error) bool {
+	var recoveryErr authRecoveryError
+	return errors.As(err, &recoveryErr)
 }
 
 func value(pointer *string) string {
