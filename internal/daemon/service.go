@@ -864,6 +864,10 @@ func (s *Service) handleLiveEvent(ctx context.Context, live Session, event appse
 	if threadID != "" {
 		_ = s.store.MarkLiveEvent(ctx, threadID, model.NowString())
 	}
+	if isThreadLifecycleEvent(event.Method) {
+		s.handleThreadLifecycleEvent(ctx, threadID, event.Method)
+		return
+	}
 	liveToolSnapshot, hasLiveToolSnapshot := appserver.ToolSnapshotFromLiveNotification(event, model.Thread{ID: threadID})
 	if approval, ok := appserver.PendingApprovalFromServerRequest(event); ok {
 		_ = s.store.SavePendingApproval(ctx, *approval)
@@ -903,6 +907,156 @@ func (s *Service) handleLiveEvent(ctx context.Context, live Session, event appse
 		}
 		s.syncThreadPanel(ctx, threadID)
 	}
+}
+
+func isThreadLifecycleEvent(method string) bool {
+	switch strings.ToLower(strings.TrimSpace(method)) {
+	case "thread/archived", "thread/deleted", "thread/unarchived":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) handleThreadLifecycleEvent(ctx context.Context, threadID, method string) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return
+	}
+	eventName := threadLifecycleEventName(method)
+	thread, err := s.store.GetThread(ctx, threadID)
+	if err != nil {
+		s.setError(ctx, fmt.Errorf("thread lifecycle lookup: %w", err))
+		return
+	}
+	if thread == nil {
+		thread = &model.Thread{ID: threadID}
+	}
+	switch eventName {
+	case "deleted":
+		thread.Archived = true
+		thread.Listed = false
+		thread.Status = "deleted"
+		thread.Raw = lifecycleDeletedRaw(thread.Raw)
+		if err := s.store.MarkThreadLifecycleClosed(ctx, *thread); err != nil {
+			s.setError(ctx, fmt.Errorf("thread lifecycle upsert: %w", err))
+			return
+		}
+	case "archived":
+		thread.Archived = true
+		thread.Listed = false
+		if strings.TrimSpace(thread.Status) == "" {
+			thread.Status = "archived"
+		}
+		if err := s.store.MarkThreadLifecycleClosed(ctx, *thread); err != nil {
+			s.setError(ctx, fmt.Errorf("thread lifecycle upsert: %w", err))
+			return
+		}
+	case "unarchived":
+		thread.Archived = false
+		thread.Listed = true
+		if strings.EqualFold(strings.TrimSpace(thread.Status), "archived") || strings.EqualFold(strings.TrimSpace(thread.Status), "deleted") {
+			thread.Status = "idle"
+		}
+		thread.Raw = lifecycleUndeletedRaw(thread.Raw)
+		if err := s.store.MarkThreadLifecycleOpen(ctx, *thread); err != nil {
+			s.setError(ctx, fmt.Errorf("thread lifecycle upsert: %w", err))
+			return
+		}
+	default:
+		return
+	}
+	s.notifyFeishuThreadLifecycle(ctx, threadID, eventName)
+}
+
+func lifecycleDeletedRaw(raw json.RawMessage) json.RawMessage {
+	return lifecycleRawWithDeleted(raw, true)
+}
+
+func lifecycleUndeletedRaw(raw json.RawMessage) json.RawMessage {
+	return lifecycleRawWithDeleted(raw, false)
+}
+
+func lifecycleRawWithDeleted(raw json.RawMessage, deleted bool) json.RawMessage {
+	var payload map[string]any
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &payload)
+	}
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	if deleted {
+		payload["deleted"] = true
+	} else {
+		delete(payload, "deleted")
+		delete(payload, "isDeleted")
+	}
+	next, err := json.Marshal(payload)
+	if err != nil {
+		return raw
+	}
+	return next
+}
+
+func threadLifecycleEventName(method string) string {
+	switch strings.ToLower(strings.TrimSpace(method)) {
+	case "thread/deleted":
+		return "deleted"
+	case "thread/unarchived":
+		return "unarchived"
+	case "thread/archived":
+		return "archived"
+	default:
+		return ""
+	}
+}
+
+func (s *Service) notifyFeishuThreadLifecycle(ctx context.Context, threadID string, eventName string) {
+	s.mu.RLock()
+	sender := s.sender
+	s.mu.RUnlock()
+	if sender == nil {
+		return
+	}
+	topic, err := s.store.GetAnyFeishuThreadTopicByCodexThread(ctx, threadID)
+	if err != nil || topic == nil || topic.RootMessageID == 0 {
+		return
+	}
+	notifyKey := fmt.Sprintf("feishu.thread_lifecycle_state.%s", hashStrings(threadID)[:12])
+	if sent, _ := s.store.GetState(ctx, notifyKey); strings.TrimSpace(sent) == eventName {
+		return
+	}
+	text := ""
+	switch eventName {
+	case "archived":
+		text = s.t(ctx,
+			"该 Codex 会话已在 Codex 中归档，后续不会继续同步。",
+			"This Codex thread was archived in Codex and will no longer sync.",
+		)
+	case "deleted":
+		text = s.t(ctx,
+			"该 Codex 会话已在 Codex 中删除，后续不会继续同步。",
+			"This Codex thread was deleted in Codex and will no longer sync.",
+		)
+	case "unarchived":
+		text = s.t(ctx,
+			"该 Codex 会话已在 Codex 中重新启用，后续会继续同步。",
+			"This Codex thread was re-enabled in Codex and will continue syncing.",
+		)
+	default:
+		return
+	}
+	_, err = sender.SendMessage(ctx, topic.ChatID, 0, text, nil, model.SendOptions{
+		Silent:                 true,
+		FeishuReplyToMessageID: topic.RootMessageID,
+		FeishuReplyInThread:    true,
+		FeishuCodexThreadID:    threadID,
+	})
+	if err != nil {
+		s.setError(ctx, fmt.Errorf("send thread lifecycle notice: %w", err))
+		return
+	}
+	_ = s.store.SetState(ctx, notifyKey, eventName)
 }
 
 func (s *Service) applyLiveToolSnapshot(ctx context.Context, threadID string, liveTool appserver.ThreadReadSnapshot) bool {

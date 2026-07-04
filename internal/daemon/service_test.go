@@ -5437,6 +5437,139 @@ func TestTransportErrorDiagnosticSanitizesPrivateFields(t *testing.T) {
 	}
 }
 
+func TestThreadArchivedEventNotifiesFeishuTopic(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+	thread := model.Thread{ID: "thread-archived-event", Title: "Archived event", ProjectName: "Codex", UpdatedAt: time.Now().UTC().Unix(), Status: "idle"}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if err := service.store.UpsertFeishuThreadTopic(ctx, model.FeishuThreadTopic{
+		ChatID:            123456789,
+		OpenChatID:        "oc_topic",
+		ThreadID:          thread.ID,
+		RootMessageID:     9001,
+		RootOpenMessageID: "om_root",
+		FeishuThreadID:    "omt_topic",
+	}); err != nil {
+		t.Fatalf("UpsertFeishuThreadTopic failed: %v", err)
+	}
+
+	service.handleLiveEvent(ctx, &stubSession{}, appserver.Event{
+		Channel: "notification",
+		Method:  "thread/archived",
+		Params:  map[string]any{"threadId": thread.ID},
+	})
+
+	if len(sender.messages) != 1 {
+		t.Fatalf("messages = %#v, want one archive notice", sender.messages)
+	}
+	message := sender.messages[0]
+	if message.chatID != 123456789 || message.topicID != 0 || message.options.FeishuReplyToMessageID != 9001 || !message.options.FeishuReplyInThread || message.options.FeishuCodexThreadID != thread.ID {
+		t.Fatalf("message = %#v, want Feishu topic reply", message)
+	}
+	if !strings.Contains(message.text, "archived") && !strings.Contains(message.text, "归档") {
+		t.Fatalf("message text = %q, want archive notice", message.text)
+	}
+	stored, err := service.store.GetThread(ctx, thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread failed: %v", err)
+	}
+	if stored == nil || !stored.Archived || stored.Listed {
+		t.Fatalf("stored thread = %#v, want archived and unlisted", stored)
+	}
+	service.handleLiveEvent(ctx, &stubSession{}, appserver.Event{
+		Channel: "notification",
+		Method:  "thread/archived",
+		Params:  map[string]any{"threadId": thread.ID},
+	})
+	if len(sender.messages) != 1 {
+		t.Fatalf("messages = %#v, want duplicate archive event suppressed", sender.messages)
+	}
+
+	service.handleLiveEvent(ctx, &stubSession{}, appserver.Event{
+		Channel: "notification",
+		Method:  "thread/unarchived",
+		Params:  map[string]any{"threadId": thread.ID},
+	})
+	if len(sender.messages) != 2 {
+		t.Fatalf("messages = %#v, want re-enabled notice after unarchive", sender.messages)
+	}
+	if !strings.Contains(sender.messages[1].text, "重新启用") && !strings.Contains(sender.messages[1].text, "re-enabled") {
+		t.Fatalf("message text = %q, want re-enabled notice", sender.messages[1].text)
+	}
+	stored, err = service.store.GetThread(ctx, thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread(after unarchive) failed: %v", err)
+	}
+	if stored == nil || stored.Archived || !stored.Listed {
+		t.Fatalf("stored thread = %#v, want visible after unarchive", stored)
+	}
+}
+
+func TestThreadDeletedEventNotifiesFeishuTopic(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+	thread := model.Thread{ID: "thread-deleted-event", Title: "Deleted event", ProjectName: "Codex", UpdatedAt: time.Now().UTC().Unix(), Status: "idle", Raw: json.RawMessage(`{"id":"thread-deleted-event"}`)}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if err := service.store.UpsertFeishuThreadTopic(ctx, model.FeishuThreadTopic{
+		ChatID:            123456789,
+		OpenChatID:        "oc_topic",
+		ThreadID:          thread.ID,
+		RootMessageID:     9001,
+		RootOpenMessageID: "om_root",
+		FeishuThreadID:    "omt_topic",
+	}); err != nil {
+		t.Fatalf("UpsertFeishuThreadTopic failed: %v", err)
+	}
+
+	service.handleLiveEvent(ctx, &stubSession{}, appserver.Event{
+		Channel: "notification",
+		Method:  "thread/deleted",
+		Params:  map[string]any{"threadId": thread.ID},
+	})
+
+	if len(sender.messages) != 1 {
+		t.Fatalf("messages = %#v, want one delete notice", sender.messages)
+	}
+	if !strings.Contains(sender.messages[0].text, "deleted") && !strings.Contains(sender.messages[0].text, "删除") {
+		t.Fatalf("message text = %q, want delete notice", sender.messages[0].text)
+	}
+	stored, err := service.store.GetThread(ctx, thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread failed: %v", err)
+	}
+	if stored == nil || !stored.Archived || stored.Listed || !strings.EqualFold(stored.Status, "deleted") || !strings.Contains(string(stored.Raw), `"deleted":true`) {
+		t.Fatalf("stored thread = %#v raw=%s, want deleted state", stored, stored.Raw)
+	}
+
+	service.handleLiveEvent(ctx, &stubSession{}, appserver.Event{
+		Channel: "notification",
+		Method:  "thread/unarchived",
+		Params:  map[string]any{"threadId": thread.ID},
+	})
+	if len(sender.messages) != 2 {
+		t.Fatalf("messages = %#v, want re-enabled notice after deleted state", sender.messages)
+	}
+	stored, err = service.store.GetThread(ctx, thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread(after unarchive) failed: %v", err)
+	}
+	if stored == nil || stored.Archived || !stored.Listed || strings.Contains(string(stored.Raw), `"deleted":true`) {
+		t.Fatalf("stored thread = %#v raw=%s, want re-enabled state", stored, stored.Raw)
+	}
+}
+
 func TestDiagnosticLogsAreRateLimited(t *testing.T) {
 	service := newTestService(t)
 	logs := captureServiceLogs(service)

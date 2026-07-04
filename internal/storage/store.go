@@ -406,6 +406,70 @@ func (s *Store) UpsertThread(ctx context.Context, thread model.Thread) error {
 	return err
 }
 
+func (s *Store) MarkThreadLifecycleClosed(ctx context.Context, thread model.Thread) error {
+	raw := thread.Raw
+	if len(raw) == 0 {
+		raw = []byte("{}")
+	}
+	if strings.TrimSpace(thread.ID) == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+	INSERT INTO threads(thread_id, title, cwd, project_name, directory_name, updated_at, status, last_preview, active_turn_id, preferred_model, permissions_mode, archived, listed, raw_json)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)
+	ON CONFLICT(thread_id) DO UPDATE SET
+		title = excluded.title,
+		cwd = excluded.cwd,
+		project_name = excluded.project_name,
+		directory_name = excluded.directory_name,
+		updated_at = excluded.updated_at,
+		status = excluded.status,
+		last_preview = excluded.last_preview,
+		active_turn_id = excluded.active_turn_id,
+		preferred_model = excluded.preferred_model,
+		permissions_mode = excluded.permissions_mode,
+		archived = 1,
+		listed = 0,
+		raw_json = excluded.raw_json`,
+		thread.ID, thread.Title, nullable(thread.CWD), thread.ProjectName, nullable(thread.DirectoryName), thread.UpdatedAt,
+		nullable(thread.Status), nullable(thread.LastPreview), nullable(thread.ActiveTurnID), nullable(thread.PreferredModel),
+		nullable(thread.PermissionsMode), string(raw),
+	)
+	return err
+}
+
+func (s *Store) MarkThreadLifecycleOpen(ctx context.Context, thread model.Thread) error {
+	raw := thread.Raw
+	if len(raw) == 0 {
+		raw = []byte("{}")
+	}
+	if strings.TrimSpace(thread.ID) == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+	INSERT INTO threads(thread_id, title, cwd, project_name, directory_name, updated_at, status, last_preview, active_turn_id, preferred_model, permissions_mode, archived, listed, raw_json)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?)
+	ON CONFLICT(thread_id) DO UPDATE SET
+		title = excluded.title,
+		cwd = excluded.cwd,
+		project_name = excluded.project_name,
+		directory_name = excluded.directory_name,
+		updated_at = excluded.updated_at,
+		status = excluded.status,
+		last_preview = excluded.last_preview,
+		active_turn_id = excluded.active_turn_id,
+		preferred_model = excluded.preferred_model,
+		permissions_mode = excluded.permissions_mode,
+		archived = 0,
+		listed = 1,
+		raw_json = excluded.raw_json`,
+		thread.ID, thread.Title, nullable(thread.CWD), thread.ProjectName, nullable(thread.DirectoryName), thread.UpdatedAt,
+		nullable(thread.Status), nullable(thread.LastPreview), nullable(thread.ActiveTurnID), nullable(thread.PreferredModel),
+		nullable(thread.PermissionsMode), string(raw),
+	)
+	return err
+}
+
 func (s *Store) GetThread(ctx context.Context, threadID string) (*model.Thread, error) {
 	row := s.db.QueryRowContext(ctx, `
 	SELECT thread_id, title, cwd, project_name, directory_name, updated_at, status, last_preview, active_turn_id, preferred_model, permissions_mode, archived, listed, raw_json

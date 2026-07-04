@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v0.6.13
+
+- Added Codex app-server lifecycle handling for `thread/archived`, `thread/deleted`, and `thread/unarchived` notifications.
+- Sent Feishu topic notices when a bound Codex thread is archived, deleted, or re-enabled in Codex.
+- Kept local thread visibility in sync with Codex archive/delete/unarchive lifecycle events.
+
 ## v0.6.12
 
 - Prevented browsing existing Codex threads from `/projects`, `/chats`, or thread cards from automatically creating or activating Feishu topics.
