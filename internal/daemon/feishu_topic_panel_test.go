@@ -268,8 +268,8 @@ func TestSyncThreadPanelDoesNotSendCompletedSystemNotification(t *testing.T) {
 	}
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
 
-	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
-	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
+	service.syncThreadPanelToTarget(model.WithForcedThreadTopicActivation(ctx), target, thread.ID, false, model.PanelSourceFeishuInput)
+	service.syncThreadPanelToTarget(model.WithForcedThreadTopicActivation(ctx), target, thread.ID, false, model.PanelSourceFeishuInput)
 
 	if len(notifier.notifications) != 0 {
 		t.Fatalf("notifications = %#v, want none after local system notifications were removed", notifier.notifications)
@@ -307,8 +307,8 @@ func TestSyncThreadPanelDoesNotSendFailedSystemNotification(t *testing.T) {
 	}
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
 
-	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
-	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
+	service.syncThreadPanelToTarget(model.WithForcedThreadTopicActivation(ctx), target, thread.ID, false, model.PanelSourceFeishuInput)
+	service.syncThreadPanelToTarget(model.WithForcedThreadTopicActivation(ctx), target, thread.ID, false, model.PanelSourceFeishuInput)
 
 	if len(notifier.notifications) != 0 {
 		t.Fatalf("notifications = %#v, want none after local system notifications were removed", notifier.notifications)
@@ -975,7 +975,7 @@ func TestFeishuTopicSyncSendsCodexDesktopUserNoticeAndFinalAfterFeishuTurn(t *te
 	if err := service.markInputOriginTurn(ctx, thread.ID, "turn-feishu", model.PanelSourceFeishuInput, target.ChatID, target.TopicID); err != nil {
 		t.Fatalf("markInputOriginTurn failed: %v", err)
 	}
-	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
+	service.syncThreadPanelToTarget(model.WithForcedThreadTopicActivation(ctx), target, thread.ID, false, model.PanelSourceFeishuInput)
 	baseMessages := len(sender.messages)
 
 	desktopProgress := appserver.CompactSnapshot(&feishuSnapshot, appserver.ThreadReadSnapshot{
@@ -991,7 +991,7 @@ func TestFeishuTopicSyncSendsCodexDesktopUserNoticeAndFinalAfterFeishuTurn(t *te
 	if err := service.store.UpsertSnapshot(ctx, thread.ID, desktopProgress); err != nil {
 		t.Fatalf("UpsertSnapshot desktop progress failed: %v", err)
 	}
-	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
+	service.syncThreadPanelToTarget(model.WithForcedThreadTopicActivation(ctx), target, thread.ID, false, model.PanelSourceFeishuInput)
 
 	userNoticeFound := false
 	for _, message := range sender.messages[baseMessages:] {
@@ -1035,7 +1035,7 @@ func TestFeishuTopicSyncSendsCodexDesktopUserNoticeAndFinalAfterFeishuTurn(t *te
 	}
 	beforeFinalMessages := len(sender.messages)
 	beforeFinalEdits := len(sender.edits)
-	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
+	service.syncThreadPanelToTarget(model.WithForcedThreadTopicActivation(ctx), target, thread.ID, false, model.PanelSourceFeishuInput)
 
 	if len(sender.messages) != beforeFinalMessages+1 {
 		t.Fatalf("messages = %#v, want standalone final card", sender.messages[beforeFinalMessages:])
@@ -1091,7 +1091,7 @@ func TestFeishuTopicCodexPanelProgressThenFinalEffectGuard(t *testing.T) {
 		t.Fatalf("UpsertSnapshot progress failed: %v", err)
 	}
 
-	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
+	service.syncThreadPanelToTarget(model.WithForcedThreadTopicActivation(ctx), target, thread.ID, false, model.PanelSourceFeishuInput)
 
 	if len(sender.messages) != 1 {
 		t.Fatalf("messages = %#v, want one progress panel", sender.messages)
@@ -1558,7 +1558,7 @@ func TestFeishuThreadTopicSenderRoutesPanelMessagesIntoThread(t *testing.T) {
 	}
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
 
-	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
+	service.syncThreadPanelToTarget(model.WithForcedThreadTopicActivation(ctx), target, thread.ID, false, model.PanelSourceFeishuInput)
 
 	if len(sender.messages) == 0 {
 		t.Fatalf("messages = %#v, want panel messages in topic", sender.messages)
@@ -1611,7 +1611,7 @@ func TestFeishuThreadTopicRouteIsStoredForActualTopicChat(t *testing.T) {
 	}
 	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, TopicID: 0, Enabled: true}
 
-	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
+	service.syncThreadPanelToTarget(model.WithForcedThreadTopicActivation(ctx), target, thread.ID, false, model.PanelSourceFeishuInput)
 
 	originalRoute, err := service.store.ResolveMessageRoute(ctx, target.ChatID, target.TopicID, 9002)
 	if err != nil {
@@ -1750,13 +1750,13 @@ func TestFeishuInputTopicSyncDoesNotRecreatePanelFromOriginalChat(t *testing.T) 
 	}
 	target := model.ObserverTarget{ChatKey: model.ChatKey(1001, 0), ChatID: 1001, TopicID: 0, Enabled: true}
 
-	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
+	service.syncThreadPanelToTarget(model.WithForcedThreadTopicActivation(ctx), target, thread.ID, false, model.PanelSourceFeishuInput)
 	firstMessageCount := len(sender.messages)
 	if firstMessageCount == 0 {
 		t.Fatalf("messages = %#v, want initial panel message", sender.messages)
 	}
 
-	service.syncThreadPanelToTarget(ctx, target, thread.ID, false, model.PanelSourceFeishuInput)
+	service.syncThreadPanelToTarget(model.WithForcedThreadTopicActivation(ctx), target, thread.ID, false, model.PanelSourceFeishuInput)
 
 	if len(sender.messages) != firstMessageCount {
 		t.Fatalf("message count after resync = %d, want %d; messages=%#v", len(sender.messages), firstMessageCount, sender.messages)

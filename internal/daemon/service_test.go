@@ -729,7 +729,7 @@ func TestPlainTextWithoutRouteUsesEnglishWorkspaceHint(t *testing.T) {
 	}
 }
 
-func TestFeishuShowThreadCallbackReturnsVisibleOpenResponse(t *testing.T) {
+func TestFeishuShowThreadCallbackDoesNotActivateTopic(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -758,35 +758,30 @@ func TestFeishuShowThreadCallbackReturnsVisibleOpenResponse(t *testing.T) {
 	}
 	token := service.callbackButton(ctx, "Open 1", "show_thread", thread.ID, "", "", nil).CallbackData
 
-	chatResponse, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, token, model.PanelSourceFeishuInput)
+	response, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, token, model.PanelSourceFeishuInput)
 	if err != nil {
-		t.Fatalf("HandleCallbackFromSource(chat) failed: %v", err)
+		t.Fatalf("HandleCallbackFromSource failed: %v", err)
 	}
-	if chatResponse == nil || strings.TrimSpace(chatResponse.Text) != "" {
-		t.Fatalf("chatResponse = %#v, want legacy empty text response", chatResponse)
+	if response == nil || response.ThreadID != thread.ID {
+		t.Fatalf("response = %#v, want thread response", response)
 	}
-
-	feishuResponse, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, token, model.PanelSourceFeishuInput)
+	if strings.TrimSpace(response.CallbackText) == "Opening topic..." {
+		t.Fatalf("callback text = %q, want no topic opening ack", response.CallbackText)
+	}
+	if len(sender.ensureTopicThreads) != 0 {
+		t.Fatalf("EnsureThreadTopic calls = %#v, want none for browsing an existing thread", sender.ensureTopicThreads)
+	}
+	panel, err := service.store.GetCurrentThreadPanel(ctx, 123456789, 0, thread.ID)
 	if err != nil {
-		t.Fatalf("HandleCallbackFromSource(feishu) failed: %v", err)
-	}
-	if feishuResponse == nil || feishuResponse.CallbackText != "Opening topic..." || feishuResponse.ThreadID != thread.ID {
-		t.Fatalf("feishuResponse = %#v, want immediate opening ack", feishuResponse)
-	}
-	var panel *model.ThreadPanel
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		panel, err = service.store.GetCurrentThreadPanel(ctx, 123456789, 0, thread.ID)
-		if err != nil {
-			t.Fatalf("GetCurrentThreadPanel failed: %v", err)
-		}
-		if panel != nil && panel.SourceMode == model.PanelSourceFeishuInput {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
 	}
 	if panel == nil || panel.SourceMode != model.PanelSourceFeishuInput {
 		t.Fatalf("panel = %#v, want feishu_input panel", panel)
+	}
+	for _, message := range sender.messages {
+		if message.options.FeishuReplyInThread || message.options.FeishuReplyToMessageID != 0 {
+			t.Fatalf("message options = %#v, want plain browse card outside topic", message.options)
+		}
 	}
 }
 
@@ -4118,6 +4113,56 @@ func TestReplyToActiveThreadDoesNotFallbackToTurnStartWhenSteerFails(t *testing.
 	}
 	if len(stub.turnStartCalls) != 0 {
 		t.Fatalf("turnStartCalls = %#v, want no fallback start", stub.turnStartCalls)
+	}
+}
+
+func TestFeishuInputToExistingThreadActivatesTopic(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingThreadTopicSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "existing-feishu-input-thread",
+		Title:       "Existing Feishu input",
+		ProjectName: "Codex",
+		CWD:         "/Users/example/project",
+		Status:      "idle",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "old-turn",
+		LatestTurnStatus: "completed",
+		LatestFinalFP:    "old-final",
+		LatestFinalText:  "Done.",
+	}, time.Now().UTC())); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	stub := &stubSession{}
+	service.live = stub
+	service.liveConnected = true
+
+	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", "continue from Feishu", "", model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
+	}
+	if response == nil || response.ThreadID != thread.ID || response.TurnID != "started-turn" {
+		t.Fatalf("response = %#v, want started turn on existing thread", response)
+	}
+	if len(sender.ensureTopicThreads) == 0 || sender.ensureTopicThreads[0].ID != thread.ID {
+		t.Fatalf("EnsureThreadTopic calls = %#v, want activation for Feishu input", sender.ensureTopicThreads)
+	}
+	if len(sender.messages) == 0 {
+		t.Fatalf("messages = %#v, want panel messages in Feishu topic", sender.messages)
+	}
+	for _, message := range sender.messages {
+		if message.options.FeishuReplyToMessageID != 9001 || !message.options.FeishuReplyInThread || message.options.FeishuCodexThreadID != thread.ID {
+			t.Fatalf("message options = %#v, want Feishu topic reply options", message.options)
+		}
 	}
 }
 

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v0.6.12
+
+- Prevented browsing existing Codex threads from `/projects`, `/chats`, or thread cards from automatically creating or activating Feishu topics.
+- Kept Feishu topic activation for explicit Feishu input and already-bound thread topics.
+- Added regression coverage for browsing-only thread opens and Feishu input topic activation.
+
 ## v0.6.11
 
 - Added supervised Feishu websocket reconnects so the daemon rebuilds the long-lived callback connection after network drops.

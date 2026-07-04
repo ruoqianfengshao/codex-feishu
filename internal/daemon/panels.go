@@ -93,6 +93,9 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 	if isDirectInputSourceMode(sourceMode) && samePanelTurn(existingPanel, snapshot.LatestTurnID) {
 		effectiveForceNew = false
 	}
+	if !s.threadTopicActivationAllowed(ctx, target, *thread, snapshot, existingPanel, sourceMode) {
+		ctx = model.WithSuppressedThreadTopicActivation(ctx)
+	}
 	threadTopic, err := s.ensureThreadTopic(ctx, sender, target, *thread, snapshot, sourceMode)
 	if err != nil {
 		s.setError(ctx, err)
@@ -178,6 +181,9 @@ func (s *Service) finalCardAlreadyRecorded(ctx context.Context, panel *model.Thr
 }
 
 func (s *Service) ensureThreadTopic(ctx context.Context, sender Sender, target model.ObserverTarget, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) (*model.FeishuThreadTopic, error) {
+	if model.SuppressThreadTopicActivation(ctx) {
+		return nil, nil
+	}
 	topicSender, ok := sender.(ThreadTopicSender)
 	if !ok {
 		return nil, nil
@@ -205,6 +211,35 @@ func (s *Service) ensureThreadTopic(ctx context.Context, sender Sender, target m
 		_ = s.store.PutMessageRoute(ctx, route)
 	}
 	return topic, nil
+}
+
+func (s *Service) threadTopicActivationAllowed(ctx context.Context, target model.ObserverTarget, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, existingPanel *model.ThreadPanel, sourceMode string) bool {
+	if model.SuppressThreadTopicActivation(ctx) {
+		return false
+	}
+	if model.ForceThreadTopicActivation(ctx) {
+		return true
+	}
+	if topic, err := s.store.GetFeishuThreadTopicByCodexThread(ctx, target.ChatID, thread.ID); err == nil && topic != nil {
+		return true
+	}
+	if topic, err := s.store.GetAnyFeishuThreadTopicByCodexThread(ctx, thread.ID); err == nil && topic != nil {
+		return true
+	}
+	if normalizeInputSourceMode(sourceMode) != model.PanelSourceFeishuInput || snapshot == nil {
+		return false
+	}
+	turnID := strings.TrimSpace(snapshot.LatestTurnID)
+	if turnID == "" {
+		return false
+	}
+	if isDirectInputSourceMode(s.inputOriginTurnSource(ctx, thread.ID, turnID)) {
+		return true
+	}
+	if existingPanel == nil {
+		return false
+	}
+	return strings.TrimSpace(existingPanel.CurrentTurnID) != turnID
 }
 
 type senderWithThreadTopic struct {

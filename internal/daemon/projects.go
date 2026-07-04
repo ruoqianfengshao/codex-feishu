@@ -879,7 +879,7 @@ func (s *Service) openChatThread(ctx context.Context, chatID, topicID int64, thr
 	if thread == nil || !s.isCodexChatThread(*thread) {
 		return &DirectResponse{Text: s.t(ctx, "这个对话按钮已过期。请用“打开临时对话”刷新。", "This Chat button is stale. Use Open Chats to refresh.")}, nil
 	}
-	response, err := s.showThread(ctx, chatID, topicID, threadID, true, sourceMode)
+	response, err := s.showThread(ctx, chatID, topicID, threadID, false, sourceMode)
 	if err != nil {
 		return nil, err
 	}

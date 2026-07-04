@@ -450,12 +450,6 @@ func (s *Service) HandleCallbackPayloadFromSource(ctx context.Context, chatID, t
 	case "chats_open", "chats_page":
 		return s.chatsPage(ctx, chatID, topicID, messageID, payload)
 	case "chat_open":
-		if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
-			s.openFeishuThreadAsync(ctx, chatID, topicID, route.ThreadID, func(openCtx context.Context) (*DirectResponse, error) {
-				return s.openChatThread(openCtx, chatID, topicID, route.ThreadID, sourceMode)
-			})
-			return &DirectResponse{CallbackText: s.t(ctx, "正在打开话题…", "Opening topic..."), ThreadID: route.ThreadID}, nil
-		}
 		response, err := s.openChatThread(ctx, chatID, topicID, route.ThreadID, sourceMode)
 		if err != nil {
 			return nil, err
@@ -468,13 +462,7 @@ func (s *Service) HandleCallbackPayloadFromSource(ctx context.Context, chatID, t
 	case "project_threads":
 		return s.projectThreads(ctx, payload)
 	case "show_thread":
-		if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
-			s.openFeishuThreadAsync(ctx, chatID, topicID, route.ThreadID, func(openCtx context.Context) (*DirectResponse, error) {
-				return s.showThread(openCtx, chatID, topicID, route.ThreadID, true, sourceMode)
-			})
-			return &DirectResponse{CallbackText: s.t(ctx, "正在打开话题…", "Opening topic..."), ThreadID: route.ThreadID}, nil
-		}
-		response, err := s.showThread(ctx, chatID, topicID, route.ThreadID, true, sourceMode)
+		response, err := s.showThread(ctx, chatID, topicID, route.ThreadID, false, sourceMode)
 		if err != nil {
 			return nil, err
 		}
@@ -2520,7 +2508,11 @@ func (s *Service) desktopInputHandledResponse(ctx context.Context, chatID, topic
 		TopicID: topicID,
 		Enabled: true,
 	}
-	s.syncThreadPanelToTarget(ctx, explicitTarget, threadID, true, sourceMode)
+	syncCtx := ctx
+	if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
+		syncCtx = model.WithForcedThreadTopicActivation(ctx)
+	}
+	s.syncThreadPanelToTarget(syncCtx, explicitTarget, threadID, true, sourceMode)
 	s.logLifecycle("codex_desktop_input_dispatched", lifecycleFields{
 		"chat_key":    model.ChatKey(chatID, topicID),
 		"source_mode": sourceMode,
@@ -2722,7 +2714,11 @@ func (s *Service) sendInputToThreadTurnFromSource(ctx context.Context, chatID, t
 		TopicID: topicID,
 		Enabled: true,
 	}
-	s.syncThreadPanelToTarget(ctx, explicitTarget, threadID, true, sourceMode)
+	syncCtx := ctx
+	if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
+		syncCtx = model.WithForcedThreadTopicActivation(ctx)
+	}
+	s.syncThreadPanelToTarget(syncCtx, explicitTarget, threadID, true, sourceMode)
 	s.logLifecycle("chat_turn_input_dispatched", lifecycleFields{
 		"chat_key":    model.ChatKey(chatID, topicID),
 		"source_mode": sourceMode,
@@ -3270,6 +3266,8 @@ func (s *Service) showThread(ctx context.Context, chatID, topicID int64, threadI
 	}
 	if forceNew && normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
 		ctx = model.WithForcedThreadTopicActivation(ctx)
+	} else if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
+		ctx = model.WithSuppressedThreadTopicActivation(ctx)
 	}
 	s.syncThreadPanelToTarget(ctx, target, thread.ID, forceNew, sourceMode)
 	return &DirectResponse{ThreadID: thread.ID}, nil
