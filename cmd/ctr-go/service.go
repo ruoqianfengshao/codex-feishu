@@ -156,13 +156,16 @@ func runServiceInstall(args []string, in io.Reader, out io.Writer) error {
 		Label:      serviceLabel,
 		BinaryPath: values["CTR_GO_CTR_GO_BIN"],
 		ConfigPath: opts.ConfigPath,
-		WorkingDir: values["CTR_GO_DEFAULT_CWD"],
+		WorkingDir: paths.Home,
 		StdoutPath: filepath.Join(paths.LogDir, "daemon.out.log"),
 		StderrPath: filepath.Join(paths.LogDir, "daemon.err.log"),
 		KeepAlive:  true,
 		RunAtLoad:  true,
 	})
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(paths.Home, 0o755); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(paths.ServiceDir, 0o755); err != nil {

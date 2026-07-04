@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
@@ -139,6 +140,51 @@ func TestImageMessageTextDownloadsImageAndReturnsLocalPath(t *testing.T) {
 	}
 	if api.downloadImageMessageIDs[0] != "om_image" || api.downloadImageKeys[0] != "img_test" {
 		t.Fatalf("download image calls = messages %#v keys %#v, want om_image/img_test", api.downloadImageMessageIDs, api.downloadImageKeys)
+	}
+}
+
+func TestBotRunReconnectsWebSocketAfterDisconnect(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first := &fakeWSClient{err: fmt.Errorf("temporary websocket disconnect")}
+	secondStarted := make(chan struct{})
+	second := &fakeWSClient{started: secondStarted}
+	created := 0
+	bot := &Bot{logger: log.New(io.Discard, "", 0)}
+	bot.wsNew = func() wsClient {
+		created++
+		if created == 1 {
+			return first
+		}
+		return second
+	}
+	bot.ws = bot.wsNew()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- bot.Run(ctx)
+	}()
+
+	select {
+	case <-secondStarted:
+	case err := <-done:
+		t.Fatalf("Run returned before reconnect: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for websocket reconnect")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned error after cancel: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not stop after cancel")
+	}
+	if first.starts != 1 || second.starts != 1 {
+		t.Fatalf("starts first=%d second=%d, want 1/1", first.starts, second.starts)
 	}
 }
 
@@ -2040,6 +2086,24 @@ func newDirectPostImageMessageEvent(openChatID, openMessageID, openUserID, text,
 
 func ptrString(value string) *string {
 	return &value
+}
+
+type fakeWSClient struct {
+	started chan struct{}
+	err     error
+	starts  int
+}
+
+func (f *fakeWSClient) Start(ctx context.Context) error {
+	f.starts++
+	if f.started != nil {
+		close(f.started)
+	}
+	if f.err != nil {
+		return f.err
+	}
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 type fakeAPIClient struct {

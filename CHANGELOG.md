@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v0.6.11
+
+- Added supervised Feishu websocket reconnects so the daemon rebuilds the long-lived callback connection after network drops.
+- Made local `ctr-go repair` restart the macOS LaunchAgent when the service is loaded, giving users a recovery path when Feishu callbacks cannot reach the local daemon.
+
 ## v0.6.10
 
 - Added Feishu OpenAPI auth recovery: when a send fails because the access token is invalid or expired, the bot rebuilds the API client, refreshes the tenant access token, and retries the original send once.

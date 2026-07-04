@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ruoqianfengshao/codex-feishu/internal/config"
 )
 
 func TestServiceInstallNonInteractiveWritesConfigAndLaunchAgent(t *testing.T) {
@@ -87,10 +89,15 @@ func TestServiceInstallNonInteractiveWritesConfigAndLaunchAgent(t *testing.T) {
 		"<string>" + binary + "</string>",
 		"<string>daemon</string>",
 		"<string>run</string>",
+		"<key>WorkingDirectory</key>",
+		"<string>" + home + "</string>",
 	} {
 		if !strings.Contains(plistText, want) {
 			t.Fatalf("plist missing %q:\n%s", want, plistText)
 		}
+	}
+	if strings.Contains(plistText, "<string>"+dir+"</string>") {
+		t.Fatalf("plist should not use project/default cwd as WorkingDirectory:\n%s", plistText)
 	}
 }
 
@@ -411,6 +418,52 @@ func TestServiceStartAcceptsKickstartFailureWhenServiceLoaded(t *testing.T) {
 	joined := strings.Join(fake.calls, "\n")
 	if !strings.Contains(joined, "launchctl print gui/501/"+serviceLabel) {
 		t.Fatalf("start did not re-check loaded service after kickstart failure:\n%s", joined)
+	}
+}
+
+func TestRunRepairRestartsLoadedService(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CTR_GO_HOME", filepath.Join(dir, "home"))
+	t.Setenv("HOME", dir)
+	paths, err := defaultServicePaths(filepath.Join(dir, "config.env"))
+	if err != nil {
+		t.Fatalf("defaultServicePaths failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.ServicePlistPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	if err := os.WriteFile(paths.ServicePlistPath, []byte("plist"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	fake := &fakeServiceRunner{loaded: true}
+	oldRunner, oldGOOS, oldUID := serviceRunner, serviceGOOS, serviceUID
+	serviceRunner = fake
+	serviceGOOS = "darwin"
+	serviceUID = func() int { return 501 }
+	defer func() {
+		serviceRunner = oldRunner
+		serviceGOOS = oldGOOS
+		serviceUID = oldUID
+	}()
+
+	var out bytes.Buffer
+	if err := runRepair(config.Config{}, &out); err != nil {
+		t.Fatalf("runRepair failed: %v", err)
+	}
+	joined := strings.Join(fake.calls, "\n")
+	for _, want := range []string{
+		"launchctl print gui/501/" + serviceLabel,
+		"launchctl bootout gui/501/" + serviceLabel,
+		"launchctl bootstrap gui/501 " + paths.ServicePlistPath,
+		"launchctl kickstart -k gui/501/" + serviceLabel,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing launchctl call %q:\n%s", want, joined)
+		}
+	}
+	if !strings.Contains(out.String(), "Repair completed by restarting codex-feishu service.") {
+		t.Fatalf("repair output missing restart completion:\n%s", out.String())
 	}
 }
 

@@ -44,7 +44,9 @@ type Bot struct {
 	api     apiClient
 	apiNew  func() apiClient
 	logger  *log.Logger
+	wsMu    sync.Mutex
 	ws      wsClient
+	wsNew   func() wsClient
 }
 
 type wsClient interface {
@@ -68,7 +70,8 @@ func NewBot(cfg config.Config, service *daemon.Service, store *storage.Store, lo
 		return newSDKAPIClient(cfg.FeishuAppID, cfg.FeishuAppSecret)
 	}
 	bot.api = bot.apiNew()
-	bot.ws = bot.newWSClient()
+	bot.wsNew = bot.newWSClient
+	bot.ws = bot.wsNew()
 	return bot, nil
 }
 
@@ -81,13 +84,64 @@ func (b *Bot) Start(ctx context.Context) error {
 }
 
 func (b *Bot) Run(ctx context.Context) error {
-	if b.ws == nil {
+	const maxDelay = 30 * time.Second
+	delay := time.Second
+	for {
+		ws := b.currentWSClient()
+		if ws == nil {
+			return nil
+		}
+		err := ws.Start(ctx)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if b.logger != nil {
+			b.logger.Printf("feishu websocket disconnected; reconnecting after %s: %v", delay, err)
+		}
+		if !sleepContext(ctx, delay) {
+			return nil
+		}
+		b.rebuildWSClient()
+		if delay < maxDelay {
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+		}
+	}
+}
+
+func (b *Bot) currentWSClient() wsClient {
+	if b == nil {
 		return nil
 	}
-	if err := b.ws.Start(ctx); err != nil && ctx.Err() == nil {
-		return err
+	b.wsMu.Lock()
+	defer b.wsMu.Unlock()
+	return b.ws
+}
+
+func (b *Bot) rebuildWSClient() wsClient {
+	if b == nil {
+		return nil
 	}
-	return nil
+	b.wsMu.Lock()
+	defer b.wsMu.Unlock()
+	if b.wsNew == nil {
+		b.wsNew = b.newWSClient
+	}
+	b.ws = b.wsNew()
+	return b.ws
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func (b *Bot) String() string {

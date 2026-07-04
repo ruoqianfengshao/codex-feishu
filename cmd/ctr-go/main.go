@@ -498,6 +498,14 @@ func runDoctor(cfg config.Config, out io.Writer) error {
 }
 
 func runRepair(cfg config.Config, out io.Writer) error {
+	if serviceGOOS == "darwin" && serviceIsLoaded(context.Background(), launchctlTarget()) {
+		if err := runServiceRestart(out); err == nil {
+			_, _ = fmt.Fprintln(out, "Repair completed by restarting codex-feishu service.")
+			return nil
+		} else {
+			_, _ = fmt.Fprintf(out, "Service restart unavailable, falling back to in-daemon repair: %v\n", err)
+		}
+	}
 	service, err := daemon.New(cfg)
 	if err != nil {
 		return err
