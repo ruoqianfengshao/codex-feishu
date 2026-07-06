@@ -253,6 +253,9 @@ func (s *Service) Start(ctx context.Context) error {
 	s.spawn(runCtx, s.pollLoop)
 	s.spawn(runCtx, s.deliveryLoop)
 	s.spawn(runCtx, s.controlLoop)
+	if s.cfg.AutoUpdate {
+		s.spawn(runCtx, s.autoUpdateLoop)
+	}
 	return nil
 }
 
@@ -421,6 +424,10 @@ func (s *Service) HandleCallbackPayloadFromSource(ctx context.Context, chatID, t
 		}
 		response.CallbackText = s.t(ctx, "状态", "Status")
 		return response, nil
+	case "update_check":
+		return s.checkUpdateCallback(ctx, chatID, topicID)
+	case "update_apply":
+		return s.applyUpdateCallback(ctx, chatID, topicID)
 	case "help_command":
 		command := payloadMapString(payload, "command")
 		if command == "" {
@@ -1864,6 +1871,7 @@ func (s *Service) workspaceHelpCommand(ctx context.Context) *DirectResponse {
 			s.helpCommandRow(ctx, lang, "/setting", "/setting", localized(lang, "调整模型、推理强度和语言", "Adjust model, reasoning, and language")),
 			s.helpCommandRow(ctx, lang, "/status", "/status", localized(lang, "查看服务状态", "Show service status")),
 			s.helpCommandRow(ctx, lang, "/repair", "/repair", localized(lang, "重建 App-server 会话", "Recreate app-server sessions")),
+			s.helpUpdateRow(ctx, lang),
 		}},
 	}
 	return &DirectResponse{

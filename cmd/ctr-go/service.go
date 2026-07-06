@@ -86,6 +86,7 @@ type serviceInstallOptions struct {
 	NotifyNewRun     string
 	NotifySystem     string
 	OpenCodexDesktop string
+	AutoUpdate       string
 	CTRGoBinaryPath  string
 }
 
@@ -115,6 +116,7 @@ func parseServiceInstallOptions(args []string) (serviceInstallOptions, error) {
 	fs.StringVar(&opts.NotifyNewRun, "notify-new-run", "", "notify on New run")
 	fs.StringVar(&opts.NotifySystem, "notify-system", "", "send macOS system notifications for completion, failure, and approval")
 	fs.StringVar(&opts.OpenCodexDesktop, "open-codex-desktop", "", "open Codex Desktop to the target thread after Feishu input")
+	fs.StringVar(&opts.AutoUpdate, "auto-update", "", "enable automatic codex-feishu updates")
 	fs.StringVar(&opts.CTRGoBinaryPath, "ctr-go-bin", opts.CTRGoBinaryPath, "ctr-go binary path for LaunchAgent")
 	if err := fs.Parse(args); err != nil {
 		return opts, fmt.Errorf("usage: ctr-go service install [flags]")
@@ -211,6 +213,7 @@ func runServiceInstall(args []string, in io.Reader, out io.Writer) error {
 	_, _ = fmt.Fprintf(out, "  New run notifications: %s\n", values["CTR_GO_NOTIFY_NEW_RUN"])
 	_, _ = fmt.Fprintf(out, "  macOS system notifications: %s\n", values["CTR_GO_NOTIFY_SYSTEM"])
 	_, _ = fmt.Fprintf(out, "  Open Codex Desktop on Feishu input: %s\n", values["CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU"])
+	_, _ = fmt.Fprintf(out, "  Auto update: %s\n", values["CTR_GO_AUTO_UPDATE"])
 	_, _ = fmt.Fprintln(out, "\nNext steps")
 	_, _ = fmt.Fprintln(out, "  ctr-go service status")
 	_, _ = fmt.Fprintln(out, "  ctr-go doctor")
@@ -282,6 +285,7 @@ func collectServiceInstallValues(opts serviceInstallOptions, existing map[string
 	values["CTR_GO_NOTIFY_NEW_RUN"] = strings.TrimSpace(firstNonEmpty(opts.NotifyNewRun, existing["CTR_GO_NOTIFY_NEW_RUN"], "true"))
 	values["CTR_GO_NOTIFY_SYSTEM"] = strings.TrimSpace(firstNonEmpty(opts.NotifySystem, existing["CTR_GO_NOTIFY_SYSTEM"], "false"))
 	values["CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU"] = strings.TrimSpace(firstNonEmpty(opts.OpenCodexDesktop, existing["CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU"], "false"))
+	values["CTR_GO_AUTO_UPDATE"] = strings.TrimSpace(firstNonEmpty(opts.AutoUpdate, existing["CTR_GO_AUTO_UPDATE"], "true"))
 	values["CTR_GO_CTR_GO_BIN"] = strings.TrimSpace(firstNonEmpty(opts.CTRGoBinaryPath, existing["CTR_GO_CTR_GO_BIN"]))
 	for _, key := range config.RuntimeEnvPassthroughKeys() {
 		if strings.TrimSpace(values[key]) != "" {
@@ -368,6 +372,13 @@ func runServiceWizard(values map[string]string, in io.Reader, out io.Writer) (ma
 			Key:      "CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU",
 			Label:    "Open Codex Desktop on Feishu input",
 			Help:     "Use true/false. Opens codex://threads/<id> locally after Feishu input.",
+			Required: true,
+			Validate: validateBoolText,
+		},
+		wizardField{
+			Key:      "CTR_GO_AUTO_UPDATE",
+			Label:    "Auto update codex-feishu",
+			Help:     "Use true/false. The user LaunchAgent can update and restart without sudo.",
 			Required: true,
 			Validate: validateBoolText,
 		},
@@ -468,6 +479,7 @@ func validateServiceValues(values map[string]string) (map[string]string, error) 
 		"CTR_GO_NOTIFY_NEW_RUN":               "--notify-new-run",
 		"CTR_GO_NOTIFY_SYSTEM":                "--notify-system",
 		"CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU": "--open-codex-desktop",
+		"CTR_GO_AUTO_UPDATE":                  "--auto-update",
 		"CTR_GO_CTR_GO_BIN":                   "--ctr-go-bin",
 		"CTR_GO_FEISHU_APP_ID":                "--feishu-app-id",
 		"CTR_GO_FEISHU_APP_SECRET":            "--feishu-app-secret",
@@ -498,6 +510,7 @@ func validateServiceValues(values map[string]string) (map[string]string, error) 
 		{"CTR_GO_NOTIFY_NEW_RUN", validateBoolText},
 		{"CTR_GO_NOTIFY_SYSTEM", validateBoolText},
 		{"CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU", validateBoolText},
+		{"CTR_GO_AUTO_UPDATE", validateBoolText},
 	}
 	for _, check := range checks {
 		if err := check.fn(values[check.key]); err != nil {

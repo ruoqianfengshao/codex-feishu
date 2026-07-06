@@ -65,7 +65,7 @@ On macOS, use the tarball from
 and install it into your user bin directory. This does not need `sudo`:
 
 ```bash
-VERSION="v0.6.4"
+VERSION="$(curl -fsSL https://api.github.com/repos/ruoqianfengshao/codex-feishu/releases/latest | sed -n 's/.*"tag_name": "\(v[^"]*\)".*/\1/p')"
 ARCH="$(uname -m)"
 if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; fi
 mkdir -p "$HOME/.local/bin"
@@ -86,7 +86,10 @@ ctr-go doctor
 ```
 
 The service is installed as a user LaunchAgent and does not require `sudo`.
-The installed CLI is still named `ctr-go`.
+The installed CLI is still named `ctr-go`. `ctr-go service install` enables
+automatic codex-feishu updates by default; the daemon checks GitHub Releases,
+verifies `SHA256SUMS`, replaces the user-level binary, and restarts through the
+LaunchAgent. Use `ctr-go update --check` to inspect the latest release manually.
 
 For a source build:
 

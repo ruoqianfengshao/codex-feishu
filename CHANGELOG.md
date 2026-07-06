@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added `ctr-go update` for GitHub Release self-updates with asset selection and `SHA256SUMS` verification.
+- Enabled automatic codex-feishu updates for installed user LaunchAgent services by default.
+- Added `/help` version information, styled update checking cards, interactive update action, and Feishu completion notice after manual updates.
+- Updated install docs to resolve the latest GitHub Release tag dynamically instead of hard-coding an older version.
+
 ## v0.6.13
 
 - Added Codex app-server lifecycle handling for `thread/archived`, `thread/deleted`, and `thread/unarchived` notifications.

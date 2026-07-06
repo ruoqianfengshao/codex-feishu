@@ -26,6 +26,7 @@ import (
 	"github.com/ruoqianfengshao/codex-feishu/internal/config"
 	"github.com/ruoqianfengshao/codex-feishu/internal/daemon"
 	"github.com/ruoqianfengshao/codex-feishu/internal/feishu"
+	"github.com/ruoqianfengshao/codex-feishu/internal/updater"
 	"github.com/ruoqianfengshao/codex-feishu/internal/version"
 )
 
@@ -80,6 +81,8 @@ func runWithIO(args []string, in io.Reader, out io.Writer) error {
 			return err
 		}
 		return runRepair(cfg, out)
+	case "update":
+		return runUpdate(args[1:], out)
 	case "version":
 		_, _ = fmt.Fprintf(out, "ctr-go v%s\n", version.Version)
 		return nil
@@ -521,6 +524,45 @@ func runRepair(cfg config.Config, out io.Writer) error {
 	return nil
 }
 
+func runUpdate(args []string, out io.Writer) error {
+	opts := updater.Options{
+		CurrentVersion: version.Version,
+	}
+	fs := flagSet("ctr-go update")
+	fs.BoolVar(&opts.CheckOnly, "check", false, "check for updates without installing")
+	fs.StringVar(&opts.Repo, "repo", "", "GitHub repo in owner/name form")
+	fs.StringVar(&opts.TargetVersion, "version", "", "install a specific version, such as v0.6.13")
+	fs.StringVar(&opts.TargetPath, "target", "", "binary path to update; defaults to the running ctr-go binary")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("usage: ctr-go update [--check] [--repo owner/name] [--version vX.Y.Z] [--target path]")
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: ctr-go update [--check] [--repo owner/name] [--version vX.Y.Z] [--target path]")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	result, err := updater.Update(ctx, opts)
+	if err != nil {
+		return err
+	}
+	if opts.CheckOnly {
+		if result.AlreadyLatest {
+			_, _ = fmt.Fprintf(out, "ctr-go is up to date: v%s\n", result.CurrentVersion)
+			return nil
+		}
+		_, _ = fmt.Fprintf(out, "Update available: v%s -> v%s\n", result.CurrentVersion, result.LatestVersion)
+		_, _ = fmt.Fprintf(out, "Asset: %s\n", result.AssetName)
+		return nil
+	}
+	if result.AlreadyLatest {
+		_, _ = fmt.Fprintf(out, "ctr-go is already up to date: v%s\n", result.CurrentVersion)
+		return nil
+	}
+	_, _ = fmt.Fprintf(out, "Updated ctr-go: v%s -> v%s\n", result.CurrentVersion, result.LatestVersion)
+	_, _ = fmt.Fprintf(out, "Installed: %s\n", result.TargetPath)
+	return nil
+}
+
 func runInit(args []string, in io.Reader, out io.Writer) error {
 	force := false
 	for _, arg := range args {
@@ -689,6 +731,7 @@ func printUsage(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "  ctr-go status")
 	_, _ = fmt.Fprintln(out, "  ctr-go doctor")
 	_, _ = fmt.Fprintln(out, "  ctr-go repair")
+	_, _ = fmt.Fprintln(out, "  ctr-go update [--check]")
 	_, _ = fmt.Fprintln(out, "  ctr-go version")
 }
 

@@ -34,7 +34,7 @@ is installing for you. The tarball installs into your user directory and does
 not need `sudo`:
 
 ```bash
-VERSION="v0.6.4"
+VERSION="$(curl -fsSL https://api.github.com/repos/ruoqianfengshao/codex-feishu/releases/latest | sed -n 's/.*"tag_name": "\(v[^"]*\)".*/\1/p')"
 ARCH="$(uname -m)"
 if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; fi
 mkdir -p "$HOME/.local/bin"
@@ -51,6 +51,10 @@ ctr-go service install --start --start-at-login
 ctr-go feishu setup
 ctr-go doctor
 ```
+
+The installed service enables automatic codex-feishu updates by default. The
+daemon checks GitHub Releases, verifies `SHA256SUMS`, updates the user-level
+binary, and lets the LaunchAgent restart it without `sudo`.
 
 Manual/source run:
 

@@ -17,6 +17,7 @@ import (
 	"github.com/ruoqianfengshao/codex-feishu/internal/appserver"
 	"github.com/ruoqianfengshao/codex-feishu/internal/config"
 	"github.com/ruoqianfengshao/codex-feishu/internal/model"
+	"github.com/ruoqianfengshao/codex-feishu/internal/updater"
 )
 
 func TestResolveRoutePrecedenceExplicitThenReplyThenNone(t *testing.T) {
@@ -5828,6 +5829,10 @@ func TestHelpHidesDefaultModeFallback(t *testing.T) {
 	if countInteractiveRows(response.Sections) < 7 {
 		t.Fatalf("/help sections = %#v, want workspace command rows with callback buttons", response.Sections)
 	}
+	updateToken := callbackTokenForHelpCommand(response.Sections, "Version")
+	if updateToken == "" {
+		t.Fatalf("/help sections = %#v, want version check row callback", response.Sections)
+	}
 	if callbackTokenForHelpCommand(response.Sections, "/plan <文本>") != "" || callbackTokenForHelpCommand(response.Sections, "/goal <目标>") != "" || callbackTokenForHelpCommand(response.Sections, "/stop") != "" {
 		t.Fatalf("/help sections = %#v, want topic-only commands to be non-interactive in workspace help", response.Sections)
 	}
@@ -5841,6 +5846,71 @@ func TestHelpHidesDefaultModeFallback(t *testing.T) {
 	}
 	if statusResponse == nil || !strings.Contains(helpResponseText(statusResponse), "Status") {
 		t.Fatalf("/status help callback response = %#v, want status response", statusResponse)
+	}
+}
+
+func TestHelpVersionCheckAndUpdateCallbacks(t *testing.T) {
+	service := newTestService(t)
+	sender := &recordingSender{}
+	service.SetSender(sender)
+	oldCheckForUpdate := checkForUpdate
+	oldApplyUpdate := applyUpdate
+	oldExitAfterAutoUpdate := exitAfterAutoUpdate
+	t.Cleanup(func() {
+		checkForUpdate = oldCheckForUpdate
+		applyUpdate = oldApplyUpdate
+		exitAfterAutoUpdate = oldExitAfterAutoUpdate
+	})
+	checkForUpdate = func(ctx context.Context, opts updater.Options) (updater.Result, error) {
+		return updater.Result{
+			CurrentVersion: opts.CurrentVersion,
+			LatestVersion:  "9.9.9",
+			ReleaseURL:     "https://example.test/release",
+		}, nil
+	}
+	applyUpdate = func(ctx context.Context, opts updater.Options) (updater.Result, error) {
+		return updater.Result{
+			CurrentVersion: opts.CurrentVersion,
+			LatestVersion:  "9.9.9",
+			Updated:        true,
+		}, nil
+	}
+	exited := false
+	exitAfterAutoUpdate = func(code int) { exited = true }
+
+	help := service.workspaceHelpCommand(context.Background())
+	checkToken := callbackTokenForHelpCommand(help.Sections, "Version")
+	if checkToken == "" {
+		t.Fatalf("/help sections = %#v, want Version callback", help.Sections)
+	}
+	checked, err := service.HandleCallbackFromSource(context.Background(), 123456789, 0, 42, 123456789, checkToken, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("HandleCallback(update_check) failed: %v", err)
+	}
+	if checked == nil || !strings.Contains(helpResponseText(checked), "9.9.9") {
+		t.Fatalf("checked response = %#v, want latest version", checked)
+	}
+	updateToken := callbackTokenForButton(checked.Buttons, "Update now")
+	if updateToken == "" {
+		t.Fatalf("checked buttons = %#v, want Update button", checked.Buttons)
+	}
+	if len(checked.Sections) < 2 || len(checked.Sections[1].Rows) < 2 || checked.Sections[1].Rows[1].BackgroundStyle == "" {
+		t.Fatalf("checked sections = %#v, want styled version rows", checked.Sections)
+	}
+
+	updated, err := service.HandleCallbackFromSource(context.Background(), 123456789, 0, 42, 123456789, updateToken, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("HandleCallback(update_apply) failed: %v", err)
+	}
+	if updated == nil || !strings.Contains(helpResponseText(updated), "Updated") {
+		t.Fatalf("updated response = %#v, want updated status", updated)
+	}
+	if len(sender.messages) != 1 || !strings.Contains(sender.messages[0].text, "Update complete") {
+		t.Fatalf("sender messages = %#v, want update completion message", sender.messages)
+	}
+	time.Sleep(2200 * time.Millisecond)
+	if !exited {
+		t.Fatal("exitAfterAutoUpdate was not called after update")
 	}
 }
 

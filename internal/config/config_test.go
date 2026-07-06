@@ -21,10 +21,29 @@ func TestFromEnvReadsCodexChatsRoot(t *testing.T) {
 	}
 }
 
-func TestMarshalJSONIncludesDesktopOpenSettings(t *testing.T) {
+func TestFromEnvReadsAutoUpdateConfig(t *testing.T) {
+	t.Setenv("CTR_GO_CONFIG", filepath.Join(t.TempDir(), "missing.env"))
+	t.Setenv("CTR_GO_AUTO_UPDATE", "true")
+	t.Setenv("CTR_GO_UPDATE_REPO", "owner/repo")
+	t.Setenv("CTR_GO_UPDATE_CHECK_SECONDS", "3600")
+
+	cfg := FromEnv()
+
+	if !cfg.AutoUpdate {
+		t.Fatal("AutoUpdate = false, want true")
+	}
+	if cfg.UpdateRepo != "owner/repo" {
+		t.Fatalf("UpdateRepo = %q, want owner/repo", cfg.UpdateRepo)
+	}
+	if cfg.UpdateCheckInterval.Seconds() != 3600 {
+		t.Fatalf("UpdateCheckInterval = %s, want 1h", cfg.UpdateCheckInterval)
+	}
+}
+
+func TestMarshalJSONIncludesRuntimeSettings(t *testing.T) {
 	t.Parallel()
 
-	data, err := json.Marshal(Config{NotifyNewRun: true, NotifySystem: true, OpenCodexDesktopOnFeishu: true})
+	data, err := json.Marshal(Config{NotifyNewRun: true, NotifySystem: true, OpenCodexDesktopOnFeishu: true, AutoUpdate: true, UpdateRepo: "owner/repo"})
 	if err != nil {
 		t.Fatalf("json.Marshal failed: %v", err)
 	}
@@ -40,6 +59,12 @@ func TestMarshalJSONIncludesDesktopOpenSettings(t *testing.T) {
 	}
 	if got["open_codex_desktop_on_feishu"] != true {
 		t.Fatalf("open_codex_desktop_on_feishu = %#v, want true", got["open_codex_desktop_on_feishu"])
+	}
+	if got["auto_update"] != true {
+		t.Fatalf("auto_update = %#v, want true", got["auto_update"])
+	}
+	if got["update_repo"] != "owner/repo" {
+		t.Fatalf("update_repo = %#v, want owner/repo", got["update_repo"])
 	}
 }
 

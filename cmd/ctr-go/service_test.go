@@ -59,6 +59,7 @@ func TestServiceInstallNonInteractiveWritesConfigAndLaunchAgent(t *testing.T) {
 		`CTR_GO_NOTIFY_NEW_RUN="false"`,
 		`CTR_GO_NOTIFY_SYSTEM="false"`,
 		`CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU="false"`,
+		`CTR_GO_AUTO_UPDATE="true"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("config missing %q:\n%s", want, text)
@@ -145,6 +146,7 @@ func TestServiceInstallNonInteractiveWritesFeishuConfig(t *testing.T) {
 		`CTR_GO_FEISHU_ALLOWED_OPEN_IDS="ou_1,ou_2"`,
 		`CTR_GO_FEISHU_ALLOWED_CHAT_IDS="oc_chat"`,
 		`CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU="true"`,
+		`CTR_GO_AUTO_UPDATE="true"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("config missing %q:\n%s", want, text)
@@ -264,6 +266,7 @@ func TestServiceInstallInteractiveWizardRetriesInvalidValues(t *testing.T) {
 		"true",
 		"true",
 		"true",
+		"true",
 		"",
 	}, "\n")
 	var out bytes.Buffer
@@ -282,8 +285,8 @@ func TestServiceInstallInteractiveWizardRetriesInvalidValues(t *testing.T) {
 	}
 	for _, want := range []string{
 		"codex-feishu service setup",
-		"[1/10] Feishu app id",
-		"[2/10] Feishu app secret",
+		"[1/11] Feishu app id",
+		"[2/11] Feishu app secret",
 		"value must be true or false",
 		"Next steps",
 		"/start",

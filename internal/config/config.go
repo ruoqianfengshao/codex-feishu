@@ -60,8 +60,11 @@ type Config struct {
 	NotifyNewRun                bool
 	NotifySystem                bool
 	OpenCodexDesktopOnFeishu    bool
+	AutoUpdate                  bool
+	UpdateRepo                  string
 	ObserverPollInterval        time.Duration
 	RequestTimeout              time.Duration
+	UpdateCheckInterval         time.Duration
 	IndexRefreshInterval        time.Duration
 	AttachRefreshInterval       time.Duration
 	DeliveryRetryBase           time.Duration
@@ -147,8 +150,11 @@ func fromSource(source envSource) Config {
 		NotifyNewRun:                source.bool("CTR_GO_NOTIFY_NEW_RUN", true),
 		NotifySystem:                source.bool("CTR_GO_NOTIFY_SYSTEM", false),
 		OpenCodexDesktopOnFeishu:    source.bool("CTR_GO_OPEN_CODEX_DESKTOP_ON_FEISHU", false),
+		AutoUpdate:                  source.bool("CTR_GO_AUTO_UPDATE", false),
+		UpdateRepo:                  source.string("CTR_GO_UPDATE_REPO", "ruoqianfengshao/codex-feishu"),
 		ObserverPollInterval:        source.durationSeconds("CTR_GO_OBSERVER_POLL_SECONDS", 5*time.Second),
 		RequestTimeout:              source.durationSeconds("CTR_GO_REQUEST_TIMEOUT_SECONDS", 30*time.Second),
+		UpdateCheckInterval:         source.durationSeconds("CTR_GO_UPDATE_CHECK_SECONDS", 24*time.Hour),
 		IndexRefreshInterval:        source.durationSeconds("CTR_GO_INDEX_REFRESH_SECONDS", 45*time.Second),
 		AttachRefreshInterval:       source.durationSeconds("CTR_GO_ATTACH_REFRESH_SECONDS", 20*time.Second),
 		DeliveryRetryBase:           source.durationSeconds("CTR_GO_DELIVERY_RETRY_SECONDS", 5*time.Second),
@@ -176,8 +182,11 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		NotifyNewRun                bool     `json:"notify_new_run"`
 		NotifySystem                bool     `json:"notify_system"`
 		OpenCodexDesktopOnFeishu    bool     `json:"open_codex_desktop_on_feishu"`
+		AutoUpdate                  bool     `json:"auto_update"`
+		UpdateRepo                  string   `json:"update_repo"`
 		ObserverPollSeconds         float64  `json:"observer_poll_seconds"`
 		RequestTimeoutSeconds       float64  `json:"request_timeout_seconds"`
+		UpdateCheckSeconds          float64  `json:"update_check_seconds"`
 		ProjectsProjectPreviewLimit int      `json:"projects_project_preview_limit"`
 		ProjectsChatPreviewLimit    int      `json:"projects_chat_preview_limit"`
 		ChatsPageSize               int      `json:"chats_page_size"`
@@ -199,8 +208,11 @@ func (c Config) MarshalJSON() ([]byte, error) {
 		NotifyNewRun:                c.NotifyNewRun,
 		NotifySystem:                c.NotifySystem,
 		OpenCodexDesktopOnFeishu:    c.OpenCodexDesktopOnFeishu,
+		AutoUpdate:                  c.AutoUpdate,
+		UpdateRepo:                  c.UpdateRepo,
 		ObserverPollSeconds:         c.ObserverPollInterval.Seconds(),
 		RequestTimeoutSeconds:       c.RequestTimeout.Seconds(),
+		UpdateCheckSeconds:          c.UpdateCheckInterval.Seconds(),
 		ProjectsProjectPreviewLimit: positiveOrDefault(c.ProjectsProjectPreviewLimit, 7),
 		ProjectsChatPreviewLimit:    positiveOrDefault(c.ProjectsChatPreviewLimit, 3),
 		ChatsPageSize:               positiveOrDefault(c.ChatsPageSize, 8),

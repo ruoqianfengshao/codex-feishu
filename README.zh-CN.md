@@ -61,7 +61,7 @@ macOS 推荐从
 下载 tarball 并安装到用户 bin 目录。这个方式不需要 `sudo`：
 
 ```bash
-VERSION="v0.6.4"
+VERSION="$(curl -fsSL https://api.github.com/repos/ruoqianfengshao/codex-feishu/releases/latest | sed -n 's/.*"tag_name": "\(v[^"]*\)".*/\1/p')"
 ARCH="$(uname -m)"
 if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; fi
 mkdir -p "$HOME/.local/bin"
@@ -82,7 +82,9 @@ ctr-go doctor
 ```
 
 服务会安装为用户 LaunchAgent，不需要 `sudo`。当前安装后的 CLI 名称仍为
-`ctr-go`。
+`ctr-go`。`ctr-go service install` 默认开启 codex-feishu 自动更新；daemon 会检查
+GitHub Releases、校验 `SHA256SUMS`、替换用户级二进制，并通过 LaunchAgent 重启。
+可以用 `ctr-go update --check` 手动查看最新版本。
 
 从源码运行：
 
