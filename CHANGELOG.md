@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.6.14
+
 - Added `ctr-go update` for GitHub Release self-updates with asset selection and `SHA256SUMS` verification.
 - Enabled automatic codex-feishu updates for installed user LaunchAgent services by default.
 - Added `/help` version information, styled update checking cards, interactive update action, and Feishu completion notice after manual updates.
