@@ -23,7 +23,7 @@ for arch in $ARCHES; do
   app="$payload/Applications/codex-feishu.app"
   mkdir -p "$payload/usr/local/bin" "$app/Contents/MacOS" "$app/Contents/Resources"
 
-  env CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" \
+  env CGO_ENABLED=1 GOOS=darwin GOARCH="$arch" \
     go build -trimpath -ldflags="-s -w" -buildvcs=false \
     -o "$payload/usr/local/bin/ctr-go" "$ROOT_DIR/cmd/ctr-go"
 
