@@ -521,6 +521,9 @@ func TestChatsCommandShowsGreenChatsProjectList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal codex projects failed: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Dir(service.codexGlobalStatePath), 0o700); err != nil {
+		t.Fatalf("Mkdir codex global state dir failed: %v", err)
+	}
 	if err := os.WriteFile(service.codexGlobalStatePath, stateBytes, 0o600); err != nil {
 		t.Fatalf("Write codex global state failed: %v", err)
 	}

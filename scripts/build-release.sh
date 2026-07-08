@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export COPYFILE_DISABLE=1
+export LC_ALL=C
+export LANG=C
+export LC_CTYPE=C
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${DIST_DIR:-"$ROOT_DIR/dist"}"
@@ -8,13 +12,17 @@ VERSION="${VERSION:-"$(git -C "$ROOT_DIR" describe --tags --always --dirty)"}"
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
 
-targets=(
-  "darwin/amd64"
-  "darwin/arm64"
-  "linux/amd64"
-  "linux/arm64"
-  "windows/amd64"
-)
+if [[ -n "${RELEASE_TARGETS:-}" ]]; then
+  read -r -a targets <<<"$RELEASE_TARGETS"
+else
+  targets=(
+    "darwin/amd64"
+    "darwin/arm64"
+    "linux/amd64"
+    "linux/arm64"
+    "windows/amd64"
+  )
+fi
 
 for target in "${targets[@]}"; do
   goos="${target%/*}"
