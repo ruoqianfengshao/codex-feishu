@@ -4,6 +4,7 @@ import "context"
 
 type forceThreadTopicActivationKey struct{}
 type suppressThreadTopicActivationKey struct{}
+type silentThreadTopicActivationKey struct{}
 
 func WithForcedThreadTopicActivation(ctx context.Context) context.Context {
 	return context.WithValue(ctx, forceThreadTopicActivationKey{}, true)
@@ -21,4 +22,13 @@ func WithSuppressedThreadTopicActivation(ctx context.Context) context.Context {
 func SuppressThreadTopicActivation(ctx context.Context) bool {
 	suppress, _ := ctx.Value(suppressThreadTopicActivationKey{}).(bool)
 	return suppress
+}
+
+func WithSilentThreadTopicActivation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, silentThreadTopicActivationKey{}, true)
+}
+
+func SilentThreadTopicActivation(ctx context.Context) bool {
+	silent, _ := ctx.Value(silentThreadTopicActivationKey{}).(bool)
+	return silent
 }

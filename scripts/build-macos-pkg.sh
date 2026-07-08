@@ -32,6 +32,10 @@ for arch in $ARCHES; do
     -o "$app/Contents/MacOS/ctr-go-tray" "$ROOT_DIR/cmd/ctr-go-tray"
 
   chmod 0755 "$payload/usr/local/bin/ctr-go" "$app/Contents/MacOS/ctr-go-tray"
+  if command -v codesign >/dev/null 2>&1; then
+    codesign --force --sign - --identifier "tech.mideco.codex-feishu.ctr-go" "$payload/usr/local/bin/ctr-go"
+    codesign --force --sign - --identifier "tech.mideco.codex-feishu.tray" "$app/Contents/MacOS/ctr-go-tray"
+  fi
   cat >"$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

@@ -363,13 +363,42 @@ func (s *Service) HandleMessageFromSource(ctx context.Context, chatID, topicID, 
 		return nil, nil
 	}
 	text = strings.TrimSpace(text)
+	var response *DirectResponse
+	var err error
 	if text == "" {
-		return &DirectResponse{Text: s.t(ctx, "目前只支持纯文本消息。请发送文本，或使用 /context 查看路由。", "Plain text messages only right now. Send text, or use /context for routing help.")}, nil
+		response = &DirectResponse{Text: s.t(ctx, "目前只支持纯文本消息。请发送文本，或使用 /context 查看路由。", "Plain text messages only right now. Send text, or use /context for routing help.")}
+	} else if strings.HasPrefix(text, "/") && !s.shouldTreatSlashTextAsThreadInput(ctx, chatID, topicID, text, replyToMessageID, sourceMode) {
+		response, err = s.handleCommandFromSource(ctx, chatID, topicID, text, replyToMessageID, sourceMode)
+	} else {
+		response, err = s.handlePlainTextFromSource(ctx, chatID, topicID, text, replyToMessageID, sourceMode)
 	}
-	if strings.HasPrefix(text, "/") {
-		return s.handleCommandFromSource(ctx, chatID, topicID, text, replyToMessageID, sourceMode)
+	return responseForSourceTopic(response, topicID, sourceMode), err
+}
+
+func (s *Service) shouldTreatSlashTextAsThreadInput(ctx context.Context, chatID, topicID int64, text string, replyToMessageID int64, sourceMode string) bool {
+	if topicID == 0 || normalizeInputSourceMode(sourceMode) != model.PanelSourceFeishuInput {
+		return false
 	}
-	return s.handlePlainTextFromSource(ctx, chatID, topicID, text, replyToMessageID, sourceMode)
+	trimmed := strings.TrimSpace(text)
+	if !strings.Contains(trimmed, " ") {
+		return false
+	}
+	parts := strings.SplitN(trimmed, " ", 2)
+	command := strings.ToLower(strings.SplitN(parts[0], "@", 2)[0])
+	if isFeishuTopicCommand(command) {
+		return false
+	}
+	decision, err := s.resolveRouteFromSource(ctx, chatID, topicID, "", replyToMessageID, sourceMode)
+	return err == nil && strings.TrimSpace(decision.ThreadID) != ""
+}
+
+func isFeishuTopicCommand(command string) bool {
+	switch command {
+	case "/help", "/context", "/whereami", "/default", "/default_mode", "/plan", "/plan_mode", "/goal", "/stop", "/approve", "/deny":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) HandleCallbackFromSource(ctx context.Context, chatID, topicID, messageID, userID int64, token, sourceMode string) (*DirectResponse, error) {
@@ -385,7 +414,8 @@ func (s *Service) HandleCallbackPayloadFromSource(ctx context.Context, chatID, t
 		return nil, err
 	}
 	if route == nil || route.Status != model.CallbackStatusActive {
-		return &DirectResponse{Text: s.t(ctx, "这个按钮已过期。请使用 /show <thread> 或 /repair。", "This button is stale. Use /show <thread> or /repair.")}, nil
+		response := &DirectResponse{Text: s.t(ctx, "这个按钮已过期。请使用 /show <thread> 或 /repair。", "This button is stale. Use /show <thread> or /repair.")}
+		return responseForSourceTopic(response, topicID, sourceMode), nil
 	}
 	var payload map[string]any
 	if route.PayloadJSON != "" {
@@ -400,6 +430,20 @@ func (s *Service) HandleCallbackPayloadFromSource(ctx context.Context, chatID, t
 		}
 		payload[key] = value
 	}
+	s.logLifecycle("feishu_callback_route", lifecycleFields{
+		"action":      route.Action,
+		"thread_id":   route.ThreadID,
+		"turn_id":     route.TurnID,
+		"chat_id":     chatID,
+		"topic_id":    topicID,
+		"message_id":  messageID,
+		"source_mode": sourceMode,
+	})
+	response, err := s.handleCallbackRoutePayload(ctx, chatID, topicID, messageID, route, payload, sourceMode)
+	return responseForSourceTopic(response, topicID, sourceMode), err
+}
+
+func (s *Service) handleCallbackRoutePayload(ctx context.Context, chatID, topicID, messageID int64, route *model.CallbackRoute, payload map[string]any, sourceMode string) (*DirectResponse, error) {
 	switch route.Action {
 	case "details_open", "details_prev", "details_next", "details_back", "details_tool_toggle":
 		return s.handleDetailsCallback(ctx, chatID, topicID, messageID, route, payload)
@@ -469,6 +513,15 @@ func (s *Service) HandleCallbackPayloadFromSource(ctx context.Context, chatID, t
 	case "project_threads":
 		return s.projectThreads(ctx, payload)
 	case "show_thread":
+		if topicID == 0 && isDirectInputSourceMode(sourceMode) {
+			thread, getErr := s.store.GetThread(ctx, route.ThreadID)
+			if getErr != nil {
+				return nil, getErr
+			}
+			if thread != nil {
+				return s.openThreadTopic(ctx, chatID, topicID, *thread, sourceMode)
+			}
+		}
 		response, err := s.showThread(ctx, chatID, topicID, route.ThreadID, false, sourceMode)
 		if err != nil {
 			return nil, err
@@ -515,6 +568,20 @@ func (s *Service) HandleCallbackPayloadFromSource(ctx context.Context, chatID, t
 	default:
 		return &DirectResponse{Text: s.t(ctx, "这个按钮暂未在 Go core 中实现。", "This button is not implemented in the Go core yet.")}, nil
 	}
+}
+
+func responseForSourceTopic(response *DirectResponse, topicID int64, sourceMode string) *DirectResponse {
+	if response == nil || topicID == 0 || normalizeInputSourceMode(sourceMode) != model.PanelSourceFeishuInput {
+		return response
+	}
+	if response.DeliveryTopicID == 0 {
+		response.DeliveryTopicID = topicID
+	}
+	if response.Options.FeishuReplyToMessageID == 0 {
+		response.Options.FeishuReplyToMessageID = topicID
+	}
+	response.Options.FeishuReplyInThread = true
+	return response
 }
 
 func (s *Service) feishuVisibleOpenResponse(ctx context.Context, response *DirectResponse, threadID string) *DirectResponse {
@@ -1723,7 +1790,7 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 	case "/setting", "/settings":
 		return s.codexSettingsOverview(ctx)
 	case "/chats":
-		return s.threadsOverview(ctx, rest)
+		return s.chatsProjectThreads(ctx)
 	case "/projects":
 		return s.projectsOverview(ctx)
 	case "/new":
@@ -2672,7 +2739,7 @@ func (s *Service) desktopInputHandledResponse(ctx context.Context, chatID, topic
 	}
 	syncCtx := ctx
 	if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
-		syncCtx = model.WithForcedThreadTopicActivation(ctx)
+		syncCtx = model.WithSilentThreadTopicActivation(ctx)
 	}
 	s.syncThreadPanelToTarget(syncCtx, explicitTarget, threadID, true, sourceMode)
 	s.logLifecycle("codex_desktop_input_dispatched", lifecycleFields{
@@ -2878,7 +2945,7 @@ func (s *Service) sendInputToThreadTurnFromSource(ctx context.Context, chatID, t
 	}
 	syncCtx := ctx
 	if normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
-		syncCtx = model.WithForcedThreadTopicActivation(ctx)
+		syncCtx = model.WithSilentThreadTopicActivation(ctx)
 	}
 	s.syncThreadPanelToTarget(syncCtx, explicitTarget, threadID, true, sourceMode)
 	s.logLifecycle("chat_turn_input_dispatched", lifecycleFields{
@@ -3491,19 +3558,44 @@ func (s *Service) resolveRouteFromSource(ctx context.Context, chatID, topicID in
 }
 
 func (s *Service) resolveMessageRouteFromSource(ctx context.Context, chatID, topicID, messageID int64, sourceMode string) (*model.MessageRoute, error) {
+	if topicID != 0 && normalizeInputSourceMode(sourceMode) == model.PanelSourceFeishuInput {
+		route, err := s.store.ResolveMessageRoute(ctx, chatID, 0, messageID)
+		s.logMessageRouteResolution(chatID, topicID, messageID, sourceMode, "rootless_primary", route, err)
+		if err != nil || route != nil {
+			return route, err
+		}
+	}
 	route, err := s.store.ResolveMessageRoute(ctx, chatID, topicID, messageID)
 	if err != nil || route != nil || topicID == 0 || normalizeInputSourceMode(sourceMode) != model.PanelSourceFeishuInput {
+		s.logMessageRouteResolution(chatID, topicID, messageID, sourceMode, "primary", route, err)
 		return route, err
 	}
-	return s.store.ResolveMessageRoute(ctx, chatID, 0, messageID)
+	return nil, nil
+}
+
+func (s *Service) logMessageRouteResolution(chatID, topicID, messageID int64, sourceMode, lookup string, route *model.MessageRoute, err error) {
+	fields := lifecycleFields{
+		"chat_key":        model.ChatKey(chatID, topicID),
+		"message_id":      messageID,
+		"source_mode":     normalizeInputSourceMode(sourceMode),
+		"lookup":          lookup,
+		"resolved":        route != nil,
+		"resolved_thread": "",
+		"resolved_turn":   "",
+	}
+	if route != nil {
+		fields["resolved_thread"] = route.ThreadID
+		fields["resolved_turn"] = route.TurnID
+		fields["route_topic_id"] = route.TopicID
+	}
+	if err != nil {
+		fields["error"] = sanitizeDiagnosticString(err.Error())
+	}
+	s.logLifecycle("feishu_message_route_resolved", fields)
 }
 
 func (s *Service) latestCurrentPanelFromSource(ctx context.Context, chatID, topicID int64, sourceMode string) (*model.ThreadPanel, error) {
-	panel, err := s.store.GetLatestCurrentPanelForChat(ctx, chatID, topicID)
-	if err != nil || panel != nil || topicID == 0 || normalizeInputSourceMode(sourceMode) != model.PanelSourceFeishuInput {
-		return panel, err
-	}
-	return s.store.GetLatestCurrentPanelForChat(ctx, chatID, 0)
+	return s.store.GetLatestCurrentPanelForChat(ctx, chatID, topicID)
 }
 
 func (s *Service) respondUserInputRequest(ctx context.Context, requestID, text string) (*DirectResponse, error) {

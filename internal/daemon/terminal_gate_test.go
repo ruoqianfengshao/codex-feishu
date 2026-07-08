@@ -334,12 +334,34 @@ func TestChatEmptyInterruptedGateGraceExpiryAccepts(t *testing.T) {
 	if decision.Grace != 90*time.Second {
 		t.Fatalf("Grace = %v, want 90s default", decision.Grace)
 	}
-	state := loadTerminalGateState(t, service, ctx, terminalGateDeferKey("thread-expiry", "turn-expiry"))
-	if state.LastDecision != string(terminalGateAccept) || state.LastReason != "grace_expired" {
-		t.Fatalf("expired state decision/reason = %q/%q, want accept/grace_expired", state.LastDecision, state.LastReason)
+	value, err := service.store.GetState(ctx, terminalGateDeferKey("thread-expiry", "turn-expiry"))
+	if err != nil {
+		t.Fatalf("GetState(defer key) failed: %v", err)
 	}
-	if state.EmptyInterruptedSeenCount != 2 {
-		t.Fatalf("EmptyInterruptedSeenCount = %d, want 2", state.EmptyInterruptedSeenCount)
+	if value != "" {
+		t.Fatalf("defer state = %q, want cleared after grace expiry", value)
+	}
+	logged, err := service.hasChatOriginTerminalLogged(ctx, "thread-expiry", "turn-expiry")
+	if err != nil {
+		t.Fatalf("hasChatOriginTerminalLogged failed: %v", err)
+	}
+	if !logged {
+		t.Fatal("terminal logged = false, want true after grace expiry")
+	}
+
+	decision, err = service.decideChatOriginEmptyInterruptedTerminal(ctx, &snapshot, now.Add(92*time.Second))
+	if err != nil {
+		t.Fatalf("decideChatOriginEmptyInterruptedTerminal(after logged) failed: %v", err)
+	}
+	if decision.Action != terminalGateAccept || decision.Reason != "terminal_already_logged" {
+		t.Fatalf("decision after logged = %#v, want terminal_already_logged accept", decision)
+	}
+	value, err = service.store.GetState(ctx, terminalGateDeferKey("thread-expiry", "turn-expiry"))
+	if err != nil {
+		t.Fatalf("GetState(defer key after logged) failed: %v", err)
+	}
+	if value != "" {
+		t.Fatalf("defer state after logged = %q, want still cleared", value)
 	}
 }
 

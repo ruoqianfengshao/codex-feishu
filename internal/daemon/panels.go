@@ -90,7 +90,8 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 	existingPanel, _ := s.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
 	renderSourceMode := s.effectivePanelRenderSourceMode(ctx, existingPanel, thread.ID, snapshot.LatestTurnID, sourceMode)
 	effectiveForceNew := forceNew
-	if isDirectInputSourceMode(sourceMode) && samePanelTurn(existingPanel, snapshot.LatestTurnID) {
+	forceTopicOpen := forceNew && model.ForceThreadTopicActivation(ctx)
+	if !forceTopicOpen && isDirectInputSourceMode(sourceMode) && samePanelTurn(existingPanel, snapshot.LatestTurnID) {
 		effectiveForceNew = false
 	}
 	if !s.threadTopicActivationAllowed(ctx, target, *thread, snapshot, existingPanel, sourceMode) {
@@ -107,7 +108,7 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 		target.ChatKey = model.ChatKey(target.ChatID, target.TopicID)
 		existingPanel, _ = s.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
 		renderSourceMode = s.effectivePanelRenderSourceMode(ctx, existingPanel, thread.ID, snapshot.LatestTurnID, sourceMode)
-		if isDirectInputSourceMode(sourceMode) && samePanelTurn(existingPanel, snapshot.LatestTurnID) {
+		if !forceTopicOpen && isDirectInputSourceMode(sourceMode) && samePanelTurn(existingPanel, snapshot.LatestTurnID) {
 			effectiveForceNew = false
 		}
 	}
@@ -200,7 +201,7 @@ func (s *Service) ensureThreadTopic(ctx context.Context, sender Sender, target m
 		TopicID:   target.TopicID,
 		MessageID: topic.RootMessageID,
 		ThreadID:  thread.ID,
-		TurnID:    firstNonEmpty(strings.TrimSpace(snapshot.LatestTurnID), strings.TrimSpace(thread.ActiveTurnID)),
+		TurnID:    threadTopicRouteTurnID(thread, snapshot),
 		EventID:   "feishu.thread_topic.root." + strings.TrimSpace(thread.ID),
 		CreatedAt: model.NowString(),
 	}
@@ -211,6 +212,13 @@ func (s *Service) ensureThreadTopic(ctx context.Context, sender Sender, target m
 		_ = s.store.PutMessageRoute(ctx, route)
 	}
 	return topic, nil
+}
+
+func threadTopicRouteTurnID(thread model.Thread, snapshot *appserver.ThreadReadSnapshot) string {
+	if snapshot != nil {
+		return firstNonEmpty(strings.TrimSpace(snapshot.LatestTurnID), strings.TrimSpace(thread.ActiveTurnID))
+	}
+	return strings.TrimSpace(thread.ActiveTurnID)
 }
 
 func (s *Service) threadTopicActivationAllowed(ctx context.Context, target model.ObserverTarget, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, existingPanel *model.ThreadPanel, sourceMode string) bool {

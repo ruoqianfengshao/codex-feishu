@@ -879,15 +879,64 @@ func (s *Service) openChatThread(ctx context.Context, chatID, topicID int64, thr
 	if thread == nil || !s.isCodexChatThread(*thread) {
 		return &DirectResponse{Text: s.t(ctx, "这个对话按钮已过期。请用“打开临时对话”刷新。", "This Chat button is stale. Use Open Chats to refresh.")}, nil
 	}
-	response, err := s.showThread(ctx, chatID, topicID, threadID, false, sourceMode)
-	if err != nil {
-		return nil, err
+	return s.openThreadTopic(ctx, chatID, topicID, *thread, sourceMode)
+}
+
+func (s *Service) openThreadTopic(ctx context.Context, chatID, topicID int64, thread model.Thread, sourceMode string) (*DirectResponse, error) {
+	s.openThreadTopicAsync(ctx, chatID, topicID, thread, sourceMode)
+	return &DirectResponse{
+		CallbackText: s.t(ctx, "正在打开话题", "Opening topic"),
+		ThreadID:     thread.ID,
+	}, nil
+}
+
+func (s *Service) openThreadTopicAsync(ctx context.Context, chatID, topicID int64, thread model.Thread, sourceMode string) {
+	timeout := s.cfg.RequestTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
 	}
-	if response == nil {
-		response = &DirectResponse{}
+	s.spawn(context.Background(), func(context.Context) {
+		openCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		openCtx = model.WithSilentThreadTopicActivation(openCtx)
+		s.mu.RLock()
+		sender := s.sender
+		s.mu.RUnlock()
+		var topic *model.FeishuThreadTopic
+		if sender != nil {
+			target := model.ObserverTarget{
+				ChatKey: model.ChatKey(chatID, topicID),
+				ChatID:  chatID,
+				TopicID: topicID,
+				Enabled: true,
+			}
+			createdTopic, err := s.ensureThreadTopic(openCtx, sender, target, thread, nil, sourceMode)
+			if err != nil {
+				s.setError(ctx, err)
+				return
+			}
+			topic = createdTopic
+		}
+		response, err := s.showThread(openCtx, chatID, topicID, thread.ID, true, sourceMode)
+		if err != nil {
+			s.setError(ctx, err)
+			return
+		}
+		if response == nil {
+			response = &DirectResponse{}
+		}
+		bindDirectResponseToThreadTopic(response, topic)
+	})
+}
+
+func bindDirectResponseToThreadTopic(response *DirectResponse, topic *model.FeishuThreadTopic) {
+	if response == nil || topic == nil || topic.ChatID == 0 || topic.RootMessageID == 0 {
+		return
 	}
-	response.CallbackText = "Opened Chat."
-	return response, nil
+	response.DeliveryTopicID = 0
+	response.Options.FeishuReplyToMessageID = topic.RootMessageID
+	response.Options.FeishuReplyInThread = true
+	response.Options.FeishuCodexThreadID = topic.ThreadID
 }
 
 func (s *Service) projectMenu(ctx context.Context, payload map[string]any) (*DirectResponse, error) {
@@ -941,7 +990,11 @@ func (s *Service) projectThreads(ctx context.Context, payload map[string]any) (*
 			label = pinnedDisplayLabel(lang, label)
 		}
 		updatedAt := threadUpdatedAtLabel(thread.UpdatedAt, s.now)
-		button := s.callbackButton(ctx, localized(lang, "打开", "Open"), "show_thread", thread.ID, "", "", nil)
+		action := "show_thread"
+		if strings.EqualFold(strings.TrimSpace(workspace.ProjectName), chatsProjectName) || strings.TrimSpace(workspace.Key) == chatsProjectWorkspaceKey {
+			action = "chat_open"
+		}
+		button := s.callbackButton(ctx, localized(lang, "打开", "Open"), action, thread.ID, "", "", nil)
 		lines = append(lines, fmt.Sprintf("- %s    %s", label, updatedAt))
 		buttons = append(buttons, []model.ButtonSpec{button})
 		visibleThreadCount++
@@ -967,6 +1020,15 @@ func (s *Service) projectThreads(ctx context.Context, payload map[string]any) (*
 		lines = append(lines, localized(lang, "这个项目还没有缓存会话。", "No cached threads for this project."))
 	}
 	return &DirectResponse{Text: strings.Join(lines, "\n"), Sections: []model.MessageSection{section}, Buttons: buttons}, nil
+}
+
+func (s *Service) chatsProjectThreads(ctx context.Context) (*DirectResponse, error) {
+	return s.projectThreads(ctx, projectWorkspacePayload(projectWorkspace{
+		Key:           chatsProjectWorkspaceKey,
+		ProjectName:   chatsProjectName,
+		DirectoryName: chatsProjectName,
+		CWD:           s.codexChatsRoot(),
+	}))
 }
 
 func (s *Service) threadBelongsToProjectWorkspace(thread model.Thread, workspace projectWorkspace) bool {
@@ -1003,6 +1065,15 @@ func (s *Service) armProjectNewThread(ctx context.Context, chatID, topicID int64
 	if err := s.store.SetState(ctx, newThreadStateKey(chatID, topicID), string(payloadBytes)); err != nil {
 		return nil, err
 	}
+	if err := s.store.SetState(ctx, newThreadFallbackStateKey(chatID), string(payloadBytes)); err != nil {
+		return nil, err
+	}
+	s.logLifecycle("project_new_thread_armed", lifecycleFields{
+		"chat_key":     model.ChatKey(chatID, topicID),
+		"fallback_key": newThreadFallbackStateKey(chatID),
+		"project_name": state.ProjectName,
+		"kind":         state.Kind,
+	})
 	return &DirectResponse{Text: fmt.Sprintf(localized(lang, "%s 的新线程。\n请在当前聊天中发送第一条提示词；我会用这条消息创建 Codex 会话和话题。", "New thread for %s.\nSend the first prompt in this chat. I will create the Codex session and topic from that message."), projectWorkspaceDisplayLabel(lang, workspace))}, nil
 }
 
@@ -1153,10 +1224,18 @@ func (s *Service) maybeConsumeNewThreadPromptFromSource(ctx context.Context, cha
 		return nil, false, nil
 	}
 	if expired {
-		_ = s.store.DeleteState(ctx, newThreadStateKey(chatID, topicID))
+		s.clearPendingNewThreadState(ctx, chatID, topicID)
+		s.logLifecycle("project_new_thread_expired", lifecycleFields{"chat_key": model.ChatKey(chatID, topicID)})
 		return &DirectResponse{Text: localized(lang, "新线程请求已过期。请重新进入 /projects 并点击新线程。", "New thread request expired. Use /projects and New thread again.")}, true, nil
 	}
-	_ = s.store.DeleteState(ctx, newThreadStateKey(chatID, topicID))
+	s.clearPendingNewThreadState(ctx, chatID, topicID)
+	s.logLifecycle("project_new_thread_prompt_consumed", lifecycleFields{
+		"chat_key":     model.ChatKey(chatID, topicID),
+		"project_name": state.ProjectName,
+		"kind":         state.Kind,
+		"text_len":     len([]rune(text)),
+		"text_sha256":  shortTextHash(text),
+	})
 	response, err := s.createThreadFromProjectPrompt(ctx, chatID, topicID, state, strings.TrimSpace(text), sourceMode)
 	return response, true, err
 }
@@ -1167,7 +1246,13 @@ func (s *Service) pendingNewThreadState(ctx context.Context, chatID, topicID int
 		return pendingNewThreadState{}, false, false, err
 	}
 	if strings.TrimSpace(raw) == "" {
-		return pendingNewThreadState{}, false, false, nil
+		raw, err = s.store.GetState(ctx, newThreadFallbackStateKey(chatID))
+		if err != nil {
+			return pendingNewThreadState{}, false, false, err
+		}
+		if strings.TrimSpace(raw) == "" {
+			return pendingNewThreadState{}, false, false, nil
+		}
 	}
 	var state pendingNewThreadState
 	if err := json.Unmarshal([]byte(raw), &state); err != nil {
@@ -1178,6 +1263,21 @@ func (s *Service) pendingNewThreadState(ctx context.Context, chatID, topicID int
 		return state, true, true, nil
 	}
 	return state, true, false, nil
+}
+
+func (s *Service) clearPendingNewThreadState(ctx context.Context, chatID, topicID int64) {
+	_ = s.store.DeleteState(ctx, newThreadStateKey(chatID, topicID))
+	_ = s.store.DeleteState(ctx, newThreadFallbackStateKey(chatID))
+	states, err := s.store.ListState(ctx)
+	if err != nil {
+		return
+	}
+	prefix := fmt.Sprintf("chat.new_thread.%d:", chatID)
+	for key := range states {
+		if strings.HasPrefix(key, prefix) {
+			_ = s.store.DeleteState(ctx, key)
+		}
+	}
 }
 
 func (s *Service) createThreadFromProjectPrompt(ctx context.Context, chatID, topicID int64, state pendingNewThreadState, prompt, sourceMode string) (*DirectResponse, error) {
@@ -1195,7 +1295,7 @@ func (s *Service) createThreadFromProjectPrompt(ctx context.Context, chatID, top
 		return response, err
 	}
 	if strings.EqualFold(strings.TrimSpace(state.ProjectName), chatsProjectName) {
-		return &DirectResponse{Text: localized(lang, "无法自动在 Codex 桌面端创建临时对话。请确认已给 ctr-go/osascript 辅助功能权限后重试。", "Could not create a Codex desktop Chat automatically. Grant Accessibility permission to ctr-go/osascript and try again.")}, nil
+		return &DirectResponse{Text: localized(lang, "无法自动在 Codex 桌面端创建临时对话。请在 macOS“隐私与安全性 > 辅助功能”中确认当前 ctr-go 已授权；如果刚更新过，请移除旧的 ctr-go 后重新添加。", "Could not create a Codex desktop Chat automatically. Grant Accessibility permission to the current ctr-go in macOS Privacy & Security > Accessibility; if you just updated, remove the old ctr-go entry and add it again.")}, nil
 	}
 	return s.createThreadFromProjectPromptViaAppServer(ctx, chatID, topicID, state, prompt, sourceMode)
 }
@@ -1477,4 +1577,8 @@ func threadFromStartPayload(payload map[string]any, state pendingNewThreadState)
 
 func newThreadStateKey(chatID, topicID int64) string {
 	return "chat.new_thread." + model.ChatKey(chatID, topicID)
+}
+
+func newThreadFallbackStateKey(chatID int64) string {
+	return fmt.Sprintf("chat.new_thread.%d", chatID)
 }

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v0.6.15
+
+- Routed Feishu topic messages with slash-prefixed text and arguments to the bound Codex thread instead of treating them as workspace commands.
+- Stopped ordinary Feishu thread input from repeatedly posting the "Codex thread topic opened" activation notice.
+- Made `/chats` open the green Chats project list with pinned chat styling and the temporary chat creation entry.
+- Improved single-chat thread selection so opening a Chat creates and binds the corresponding Feishu topic instead of rendering follow-up cards in the bot DM.
+- Kept release build artifacts signed with the stable `tech.mideco.codex-feishu.ctr-go` identifier for more consistent macOS Accessibility authorization behavior.
+
 ## v0.6.14
 
 - Added `ctr-go update` for GitHub Release self-updates with asset selection and `SHA256SUMS` verification.

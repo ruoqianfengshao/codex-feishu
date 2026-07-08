@@ -1325,6 +1325,16 @@ func TestEnsureThreadTopicCreatesP2PThreadReply(t *testing.T) {
 	if api.replyCalls != 1 {
 		t.Fatalf("replyCalls after second call = %d, want no duplicate activation", api.replyCalls)
 	}
+	topic, err = bot.EnsureThreadTopic(model.WithSilentThreadTopicActivation(model.WithForcedThreadTopicActivation(ctx)), p2pChatID, model.Thread{ID: "thread-from-dm", Title: "From DM"}, nil, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("EnsureThreadTopic silent activation failed: %v", err)
+	}
+	if topic == nil || topic.ChatID != p2pChatID {
+		t.Fatalf("silent topic = %#v, want p2p chat", topic)
+	}
+	if api.replyCalls != 1 {
+		t.Fatalf("replyCalls after silent activation = %d, want no activation reply", api.replyCalls)
+	}
 	topic, err = bot.EnsureThreadTopic(model.WithForcedThreadTopicActivation(ctx), p2pChatID, model.Thread{ID: "thread-from-dm", Title: "From DM"}, nil, model.PanelSourceFeishuInput)
 	if err != nil {
 		t.Fatalf("EnsureThreadTopic forced activation failed: %v", err)

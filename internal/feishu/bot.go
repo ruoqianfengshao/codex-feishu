@@ -462,6 +462,9 @@ func (b *Bot) activateThreadTopic(ctx context.Context, sourceChatID, topicChatID
 	if sourceMode != model.PanelSourceFeishuInput || topic == nil || topic.RootMessageID == 0 {
 		return nil
 	}
+	if model.SilentThreadTopicActivation(ctx) {
+		return nil
+	}
 	if !model.ForceThreadTopicActivation(ctx) {
 		activated, err := b.store.GetState(ctx, feishuThreadTopicActivatedKey(topicChatID, threadID))
 		if err != nil {

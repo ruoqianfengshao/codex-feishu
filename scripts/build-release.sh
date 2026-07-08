@@ -28,9 +28,16 @@ for target in "${targets[@]}"; do
   workdir="$(mktemp -d)"
   trap 'rm -rf "$workdir"' EXIT
 
-  env CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+  cgo_enabled=0
+  if [[ "$goos" == "darwin" ]]; then
+    cgo_enabled=1
+  fi
+  env CGO_ENABLED="$cgo_enabled" GOOS="$goos" GOARCH="$goarch" \
     go build -trimpath -ldflags="-s -w" -buildvcs=false \
     -o "$workdir/$binary" "$ROOT_DIR/cmd/ctr-go"
+  if [[ "$goos" == "darwin" ]] && command -v codesign >/dev/null 2>&1; then
+    codesign --force --sign - --identifier "tech.mideco.codex-feishu.ctr-go" "$workdir/$binary"
+  fi
 
   cp "$ROOT_DIR/README.md" "$workdir/README.md"
   cp "$ROOT_DIR/LICENSE" "$workdir/LICENSE"

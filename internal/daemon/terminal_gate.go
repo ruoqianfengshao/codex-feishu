@@ -216,6 +216,10 @@ func (s *Service) decideChatOriginEmptyInterruptedTerminal(ctx context.Context, 
 		return decision, err
 	}
 	decision.ExplicitInterrupt = explicit
+	terminalLogged, err := s.hasChatOriginTerminalLogged(ctx, threadID, turnID)
+	if err != nil {
+		return decision, err
+	}
 
 	emptyInterrupted := isEmptyInterruptedSnapshot(snapshot)
 	decision.EmptyInterrupted = emptyInterrupted
@@ -245,6 +249,11 @@ func (s *Service) decideChatOriginEmptyInterruptedTerminal(ctx context.Context, 
 	if explicit {
 		_ = s.clearChatOriginEmptyInterruptedDefer(ctx, threadID, turnID)
 		decision.Reason = "explicit_interrupt"
+		return decision, nil
+	}
+	if terminalLogged {
+		_ = s.clearChatOriginEmptyInterruptedDefer(ctx, threadID, turnID)
+		decision.Reason = "terminal_already_logged"
 		return decision, nil
 	}
 
@@ -293,9 +302,10 @@ func (s *Service) decideChatOriginEmptyInterruptedTerminal(ctx context.Context, 
 	if !now.Before(expiresAt) {
 		decision.Action = terminalGateAccept
 		decision.Reason = "grace_expired"
-		state.LastDecision = string(terminalGateAccept)
-		state.LastReason = decision.Reason
-		if err := s.saveChatOriginEmptyInterruptedDefer(ctx, threadID, turnID, state); err != nil {
+		if err := s.clearChatOriginEmptyInterruptedDefer(ctx, threadID, turnID); err != nil {
+			return decision, err
+		}
+		if err := s.markChatOriginTerminalLogged(ctx, threadID, turnID, now); err != nil {
 			return decision, err
 		}
 		return decision, nil
@@ -429,6 +439,29 @@ func (s *Service) hasChatOriginExplicitInterrupt(ctx context.Context, threadID, 
 		return false, err
 	}
 	return strings.TrimSpace(value) != "", nil
+}
+
+func (s *Service) hasChatOriginTerminalLogged(ctx context.Context, threadID, turnID string) (bool, error) {
+	key := chatOriginTerminalLoggedKey(threadID, turnID)
+	if key == "" {
+		return false, nil
+	}
+	value, err := s.store.GetState(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(value) != "", nil
+}
+
+func (s *Service) markChatOriginTerminalLogged(ctx context.Context, threadID, turnID string, at time.Time) error {
+	key := chatOriginTerminalLoggedKey(threadID, turnID)
+	if key == "" {
+		return nil
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	return s.store.SetState(ctx, key, at.UTC().Format(time.RFC3339Nano))
 }
 
 func (s *Service) loadChatOriginEmptyInterruptedDefer(ctx context.Context, threadID, turnID string, now time.Time) (terminalGateState, bool, error) {

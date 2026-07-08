@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +40,7 @@ type recordedDocument struct {
 }
 
 type recordingSender struct {
+	mu        sync.Mutex
 	messages  []recordedMessage
 	documents []recordedDocument
 	edits     []recordedMessage
@@ -47,12 +49,16 @@ type recordingSender struct {
 }
 
 func (s *recordingSender) SendMessage(ctx context.Context, chatID, topicID int64, text string, buttons [][]model.ButtonSpec, options model.SendOptions) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	messageID := int64(len(s.messages) + 1)
 	s.messages = append(s.messages, recordedMessage{chatID: chatID, topicID: topicID, messageID: messageID, text: text, buttons: buttons, options: options})
 	return messageID, nil
 }
 
 func (s *recordingSender) SendRenderedMessages(ctx context.Context, chatID, topicID int64, messages []model.RenderedMessage, buttons [][]model.ButtonSpec, options model.SendOptions) ([]int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	ids := make([]int64, 0, len(messages))
 	for _, message := range messages {
 		messageID := int64(len(s.messages) + 1)
@@ -63,6 +69,8 @@ func (s *recordingSender) SendRenderedMessages(ctx context.Context, chatID, topi
 }
 
 func (s *recordingSender) EditMessage(ctx context.Context, chatID, topicID, messageID int64, text string, buttons [][]model.ButtonSpec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.editErr != nil {
 		return s.editErr
 	}
@@ -71,6 +79,8 @@ func (s *recordingSender) EditMessage(ctx context.Context, chatID, topicID, mess
 }
 
 func (s *recordingSender) EditRenderedMessage(ctx context.Context, chatID, topicID, messageID int64, rendered model.RenderedMessage, buttons [][]model.ButtonSpec) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.editErr != nil {
 		return s.editErr
 	}
@@ -96,11 +106,15 @@ func recordedRenderedMessage(chatID, topicID, messageID int64, rendered model.Re
 }
 
 func (s *recordingSender) DeleteMessage(ctx context.Context, chatID, topicID, messageID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.deletes = append(s.deletes, recordedMessage{chatID: chatID, topicID: topicID, messageID: messageID})
 	return nil
 }
 
 func (s *recordingSender) SendDocumentData(ctx context.Context, chatID, topicID int64, fileName string, data []byte, caption string, options model.SendOptions) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.documents = append(s.documents, recordedDocument{
 		chatID:   chatID,
 		topicID:  topicID,
@@ -112,6 +126,12 @@ func (s *recordingSender) SendDocumentData(ctx context.Context, chatID, topicID 
 	return int64(len(s.documents)), nil
 }
 
+func (s *recordingSender) messageSnapshot() []recordedMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]recordedMessage(nil), s.messages...)
+}
+
 type recordingThreadTopicSender struct {
 	recordingSender
 	topic              *model.FeishuThreadTopic
@@ -121,6 +141,8 @@ type recordingThreadTopicSender struct {
 }
 
 func (s *recordingThreadTopicSender) EnsureThreadTopic(ctx context.Context, chatID int64, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) (*model.FeishuThreadTopic, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.ensureTopicChatIDs = append(s.ensureTopicChatIDs, chatID)
 	s.ensureTopicThreads = append(s.ensureTopicThreads, thread)
 	if s.topic == nil {
@@ -137,10 +159,33 @@ func (s *recordingThreadTopicSender) EnsureThreadTopic(ctx context.Context, chat
 }
 
 func (s *recordingThreadTopicSender) ResolveThreadTopicTarget(ctx context.Context, chatID int64) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.canonicalByChatID != nil && s.canonicalByChatID[chatID] != 0 {
 		return s.canonicalByChatID[chatID], nil
 	}
 	return chatID, nil
+}
+
+func (s *recordingThreadTopicSender) ensureTopicThreadSnapshot() []model.Thread {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]model.Thread(nil), s.ensureTopicThreads...)
+}
+
+func waitForRecordedMessages(t *testing.T, sender *recordingThreadTopicSender) []recordedMessage {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		messages := sender.messageSnapshot()
+		if len(messages) > 0 {
+			return messages
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("recorded messages = %#v, want topic panel messages", messages)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func hasRecordedEntity(entities []model.MessageEntity, entityType, language string) bool {
