@@ -176,23 +176,35 @@ func (b *Bot) rebuildAPIClient(reason error) apiClient {
 	return b.api
 }
 
-func (b *Bot) withRecoveredAPIClient(ctx context.Context, call func(context.Context, apiClient) (sentMessage, error)) (sentMessage, error) {
+func withRecoveredAPIClientResult[T any](b *Bot, ctx context.Context, call func(context.Context, apiClient) (T, error)) (T, error) {
+	var zero T
 	api := b.currentAPI()
 	if api == nil {
-		return sentMessage{}, errors.New("feishu api client is not configured")
+		return zero, errors.New("feishu api client is not configured")
 	}
-	sent, err := call(ctx, api)
+	result, err := call(ctx, api)
 	if err == nil || !isFeishuAuthError(err) {
-		return sent, err
+		return result, err
 	}
 	api = b.rebuildAPIClient(err)
 	if api == nil {
-		return sentMessage{}, err
+		return zero, err
 	}
 	if refreshErr := api.RefreshAuth(ctx); refreshErr != nil {
-		return sentMessage{}, authRecoveryError{err: refreshErr}
+		return zero, authRecoveryError{err: refreshErr}
 	}
 	return call(ctx, api)
+}
+
+func (b *Bot) withRecoveredAPIClient(ctx context.Context, call func(context.Context, apiClient) (sentMessage, error)) (sentMessage, error) {
+	return withRecoveredAPIClientResult(b, ctx, call)
+}
+
+func (b *Bot) withRecoveredAPIClientError(ctx context.Context, call func(context.Context, apiClient) error) error {
+	_, err := withRecoveredAPIClientResult(b, ctx, func(callCtx context.Context, api apiClient) (struct{}, error) {
+		return struct{}{}, call(callCtx, api)
+	})
+	return err
 }
 
 func (b *Bot) newWSClient() wsClient {
@@ -268,7 +280,9 @@ func (b *Bot) EditMessage(ctx context.Context, chatID, topicID, messageID int64,
 	if err != nil {
 		return err
 	}
-	return b.api.PatchCard(editCtx, mapped.OpenMessageID, card)
+	return b.withRecoveredAPIClientError(editCtx, func(callCtx context.Context, api apiClient) error {
+		return api.PatchCard(callCtx, mapped.OpenMessageID, card)
+	})
 }
 
 func (b *Bot) EditRenderedMessage(ctx context.Context, chatID, topicID, messageID int64, rendered model.RenderedMessage, buttons [][]model.ButtonSpec) error {
@@ -285,7 +299,9 @@ func (b *Bot) EditRenderedMessage(ctx context.Context, chatID, topicID, messageI
 	if err != nil {
 		return err
 	}
-	return b.api.PatchCard(editCtx, mapped.OpenMessageID, card)
+	return b.withRecoveredAPIClientError(editCtx, func(callCtx context.Context, api apiClient) error {
+		return api.PatchCard(callCtx, mapped.OpenMessageID, card)
+	})
 }
 
 func (b *Bot) DeleteMessage(ctx context.Context, chatID, topicID, messageID int64) error {
@@ -297,7 +313,9 @@ func (b *Bot) SendDocumentData(ctx context.Context, chatID, topicID int64, fileN
 		fileName = "document.txt"
 	}
 	uploadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	fileKey, err := b.api.UploadFile(uploadCtx, fileName, data)
+	fileKey, err := withRecoveredAPIClientResult(b, uploadCtx, func(callCtx context.Context, api apiClient) (string, error) {
+		return api.UploadFile(callCtx, fileName, data)
+	})
 	cancel()
 	if err != nil {
 		return 0, err
@@ -517,7 +535,9 @@ func (b *Bot) threadTopicChatID(ctx context.Context, chatID int64) (int64, error
 		}
 		if chatMode == "" {
 			infoCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-			info, getErr := b.api.GetChat(infoCtx, openChatID)
+			info, getErr := withRecoveredAPIClientResult(b, infoCtx, func(callCtx context.Context, api apiClient) (chatInfo, error) {
+				return api.GetChat(callCtx, openChatID)
+			})
 			cancel()
 			if getErr != nil {
 				return chatID, nil
@@ -568,7 +588,9 @@ func (b *Bot) ensureControlRoom(ctx context.Context, p2pChatID int64, openUserID
 		return roomChatID, nil
 	}
 	createCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	openChatID, err := b.api.CreateThreadRoom(createCtx, feishuWorkspaceRoomName, []string{openUserID}, b.cfg.FeishuAppID, feishuControlRoomUUID(openUserID))
+	openChatID, err := withRecoveredAPIClientResult(b, createCtx, func(callCtx context.Context, api apiClient) (string, error) {
+		return api.CreateThreadRoom(callCtx, feishuWorkspaceRoomName, []string{openUserID}, b.cfg.FeishuAppID, feishuControlRoomUUID(openUserID))
+	})
 	cancel()
 	if err != nil {
 		return 0, err
@@ -601,7 +623,9 @@ func (b *Bot) ensureWorkspaceMenu(ctx context.Context, openChatID string) {
 		return
 	}
 	menuCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	err := b.api.CreateWorkspaceMenu(menuCtx, openChatID)
+	err := b.withRecoveredAPIClientError(menuCtx, func(callCtx context.Context, api apiClient) error {
+		return api.CreateWorkspaceMenu(callCtx, openChatID)
+	})
 	cancel()
 	if err != nil {
 		if b.logger != nil {
@@ -705,7 +729,9 @@ func (b *Bot) withUploadedRenderedImage(ctx context.Context, message model.Rende
 		return message
 	}
 	uploadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	imageKey, err := b.api.UploadImage(uploadCtx, data)
+	imageKey, err := withRecoveredAPIClientResult(b, uploadCtx, func(callCtx context.Context, api apiClient) (string, error) {
+		return api.UploadImage(callCtx, data)
+	})
 	cancel()
 	if err != nil {
 		if b.logger != nil {
@@ -909,7 +935,9 @@ func (b *Bot) imageMessageText(ctx context.Context, message *larkim.EventMessage
 		return "", nil
 	}
 	downloadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	data, err := b.api.DownloadImage(downloadCtx, value(message.MessageId), imageKey)
+	data, err := withRecoveredAPIClientResult(b, downloadCtx, func(callCtx context.Context, api apiClient) ([]byte, error) {
+		return api.DownloadImage(callCtx, value(message.MessageId), imageKey)
+	})
 	cancel()
 	if err != nil {
 		return "", err
@@ -1011,7 +1039,9 @@ func (b *Bot) handleCardAction(ctx context.Context, event *callback.CardActionTr
 	if err := b.store.SetState(ctx, feishuControlUserKey(chatID), openUserID); err != nil {
 		return nil, err
 	}
-	if info, err := b.api.GetChat(ctx, openChatID); err == nil && normalizeChatMode(info.ChatMode) == "p2p" {
+	if info, err := withRecoveredAPIClientResult(b, ctx, func(callCtx context.Context, api apiClient) (chatInfo, error) {
+		return api.GetChat(callCtx, openChatID)
+	}); err == nil && normalizeChatMode(info.ChatMode) == "p2p" {
 		if err := b.rememberChatMode(ctx, chatID, info.ChatMode); err != nil {
 			return nil, err
 		}

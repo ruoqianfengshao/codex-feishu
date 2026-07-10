@@ -1041,6 +1041,61 @@ func TestSendRenderedMessagesUploadsAndRendersImage(t *testing.T) {
 	}
 }
 
+func TestSendRenderedMessagesRebuildsAPIClientAfterImageUploadAuthError(t *testing.T) {
+	t.Parallel()
+
+	store, err := storage.Open(t.TempDir() + "/state.sqlite")
+	if err != nil {
+		t.Fatalf("storage.Open failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	chatID, err := store.ResolveExternalID(context.Background(), namespaceChat, "oc_chat")
+	if err != nil {
+		t.Fatalf("ResolveExternalID failed: %v", err)
+	}
+	imagePath := t.TempDir() + "/prompt.jpg"
+	if err := os.WriteFile(imagePath, []byte("fake image bytes"), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	firstAPI := &fakeAPIClient{uploadImageErrs: []error{fmt.Errorf("feishu upload image failed: code=99991663: Invalid access token for authorization")}}
+	secondAPI := &fakeAPIClient{uploadedImageKey: "img_recovered"}
+	rebuilds := 0
+	bot := &Bot{store: store, api: firstAPI, logger: log.New(io.Discard, "", 0)}
+	bot.apiNew = func() apiClient {
+		rebuilds++
+		return secondAPI
+	}
+
+	_, err = bot.SendRenderedMessages(context.Background(), chatID, 0, []model.RenderedMessage{{
+		Text:      "Desktop image prompt",
+		Style:     model.MessageStyleDesktopUser,
+		ImagePath: imagePath,
+	}}, nil, model.SendOptions{})
+	if err != nil {
+		t.Fatalf("SendRenderedMessages failed: %v", err)
+	}
+	if rebuilds != 1 {
+		t.Fatalf("rebuilds = %d, want 1", rebuilds)
+	}
+	if firstAPI.uploadImageCalls != 1 {
+		t.Fatalf("firstAPI.uploadImageCalls = %d, want failed first upload", firstAPI.uploadImageCalls)
+	}
+	if secondAPI.refreshAuthCalls != 1 {
+		t.Fatalf("secondAPI.refreshAuthCalls = %d, want 1", secondAPI.refreshAuthCalls)
+	}
+	if secondAPI.uploadImageCalls != 1 {
+		t.Fatalf("secondAPI.uploadImageCalls = %d, want retry upload", secondAPI.uploadImageCalls)
+	}
+	if got, want := string(secondAPI.uploadedImageData), "fake image bytes"; got != want {
+		t.Fatalf("retried image data = %q, want %q", got, want)
+	}
+	for _, want := range []string{`"tag":"img"`, `"img_key":"img_recovered"`, "Desktop image prompt"} {
+		if !strings.Contains(secondAPI.lastContent, want) {
+			t.Fatalf("content missing %q:\n%s", want, secondAPI.lastContent)
+		}
+	}
+}
+
 func TestSendRenderedMessagesFallsBackWhenImageUploadReturnsNoKey(t *testing.T) {
 	t.Parallel()
 
@@ -2141,6 +2196,8 @@ type fakeAPIClient struct {
 	uploadedImageData          []byte
 	uploadedImageKey           string
 	forceEmptyUploadedImageKey bool
+	uploadImageCalls           int
+	uploadImageErrs            []error
 	sendErrs                   []error
 	replyErrs                  []error
 	refreshAuthErr             error
@@ -2234,7 +2291,13 @@ func (f *fakeAPIClient) UploadFile(context.Context, string, []byte) (string, err
 }
 
 func (f *fakeAPIClient) UploadImage(_ context.Context, data []byte) (string, error) {
+	f.uploadImageCalls++
 	f.uploadedImageData = append([]byte(nil), data...)
+	if len(f.uploadImageErrs) > 0 {
+		err := f.uploadImageErrs[0]
+		f.uploadImageErrs = f.uploadImageErrs[1:]
+		return "", err
+	}
 	if f.forceEmptyUploadedImageKey {
 		return "", nil
 	}

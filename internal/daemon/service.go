@@ -1434,10 +1434,16 @@ func (s *Service) controlLoop(ctx context.Context) {
 		value, _ := s.store.GetState(ctx, "control.repair_request")
 		if strings.TrimSpace(value) != "" {
 			at, reason := parseRepairRequest(value)
-			s.repairSessions(ctx, reason)
+			err := s.repairSessions(ctx, reason)
+			status := "ok"
+			if err != nil {
+				status = "failed"
+			}
 			s.logLifecycle("repair_completed", lifecycleFields{
 				"reason":       reason,
 				"requested_at": at,
+				"status":       status,
+				"error":        err,
 			})
 			_ = s.store.SetState(ctx, "control.repair_request", "")
 		} else {
@@ -1455,7 +1461,35 @@ func (s *Service) reconcileSessions(ctx context.Context) {
 	s.ensureSessionLifecycle(ctx)
 }
 
-func (s *Service) repairSessions(ctx context.Context, reason string) {
+func (s *Service) repairSessions(ctx context.Context, reason string) error {
+	_ = s.store.SetState(ctx, "repair.last_status", "running")
+	_ = s.store.SetState(ctx, "repair.last_error", "")
+	_ = s.store.SetState(ctx, "repair.last_health_error", "")
+	s.rebuildAppServerSessions(ctx, reason, "repair")
+	if err := s.checkAppServerHealth(ctx, "repair_health_check"); err == nil {
+		_ = s.store.SetState(ctx, "repair.last_status", "ok")
+		return nil
+	} else {
+		healthErr := sanitizeDiagnosticString(err.Error())
+		_ = s.store.SetState(ctx, "repair.last_health_error", healthErr)
+		s.logLifecycle("appserver_session_repair_escalate", lifecycleFields{
+			"reason": reason,
+			"error":  err,
+		})
+	}
+	s.rebuildAppServerSessions(ctx, reason, "repair_force")
+	if err := s.checkAppServerHealth(ctx, "repair_force_health_check"); err != nil {
+		message := sanitizeDiagnosticString(err.Error())
+		_ = s.store.SetState(ctx, "repair.last_status", "failed")
+		_ = s.store.SetState(ctx, "repair.last_error", message)
+		return err
+	}
+	_ = s.store.SetState(ctx, "repair.last_status", "ok")
+	_ = s.store.SetState(ctx, "repair.last_error", "")
+	return nil
+}
+
+func (s *Service) rebuildAppServerSessions(ctx context.Context, reason, operation string) {
 	s.sessionMu.Lock()
 	s.mu.Lock()
 	oldLive := s.live
@@ -1475,16 +1509,17 @@ func (s *Service) repairSessions(ctx context.Context, reason string) {
 		"reason":          reason,
 		"live_generation": liveGeneration,
 		"poll_generation": pollGeneration,
+		"operation":       operation,
 	})
 	if oldLive != nil {
 		started := time.Now()
 		err := oldLive.Close()
-		s.logAppServerCall("Close", started, err, oldLive, lifecycleFields{"role": "live", "operation": "repair"})
+		s.logAppServerCall("Close", started, err, oldLive, lifecycleFields{"role": "live", "operation": operation})
 	}
 	if oldPoll != nil {
 		started := time.Now()
 		err := oldPoll.Close()
-		s.logAppServerCall("Close", started, err, oldPoll, lifecycleFields{"role": "poll", "operation": "repair"})
+		s.logAppServerCall("Close", started, err, oldPoll, lifecycleFields{"role": "poll", "operation": operation})
 	}
 	rechecked, _ := s.store.MarkAllPendingApprovals(ctx, "needs_recheck")
 	_ = s.store.SetState(ctx, "repair.last_rechecked", strconv.FormatInt(rechecked, 10))
@@ -1496,6 +1531,37 @@ func (s *Service) repairSessions(ctx context.Context, reason string) {
 	s.ensurePollSessionLocked(ctx)
 	s.sessionMu.Unlock()
 	s.bootstrapTrackedState(ctx)
+}
+
+func (s *Service) checkAppServerHealth(ctx context.Context, operation string) error {
+	s.mu.RLock()
+	live := s.live
+	poll := s.poll
+	liveConnected := s.liveConnected
+	pollConnected := s.pollConnected
+	s.mu.RUnlock()
+	var client Session
+	if pollConnected && poll != nil {
+		client = poll
+	} else if liveConnected && live != nil {
+		client = live
+	}
+	if client == nil {
+		return errors.New("app-server sessions are not connected after repair")
+	}
+	timeout := s.cfg.RequestTimeout
+	if timeout <= 0 || timeout > 10*time.Second {
+		timeout = 10 * time.Second
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	started := time.Now()
+	_, err := client.ThreadList(requestCtx, 1, "")
+	s.logAppServerCall("ThreadList", started, err, client, lifecycleFields{"operation": operation})
+	if err != nil {
+		return fmt.Errorf("repair health check failed: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) bootstrapTrackedState(ctx context.Context) {

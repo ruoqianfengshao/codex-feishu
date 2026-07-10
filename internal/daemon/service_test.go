@@ -5676,6 +5676,83 @@ func TestEnsureSessionsFallsBackFromProxyToStdioAfterStartFailure(t *testing.T) 
 	requireLogContains(t, got, `"event":"appserver_session_started"`)
 }
 
+func TestRepairSessionsRecordsHealthyResult(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	logs := captureServiceLogs(service)
+	live := &stubSession{threadListResult: map[string]any{"threads": []any{}}}
+	poll := &stubSession{threadListResult: map[string]any{"threads": []any{}}}
+	service.liveFactory = func() Session { return live }
+	service.pollFactory = func() Session { return poll }
+	service.live = service.liveFactory()
+	service.poll = service.pollFactory()
+
+	if err := service.repairSessions(ctx, "test"); err != nil {
+		t.Fatalf("repairSessions failed: %v", err)
+	}
+	status, err := service.store.GetState(ctx, "repair.last_status")
+	if err != nil {
+		t.Fatalf("GetState(repair.last_status) failed: %v", err)
+	}
+	if status != "ok" {
+		t.Fatalf("repair.last_status = %q, want ok", status)
+	}
+	if poll.threadListCalls == 0 {
+		t.Fatalf("poll.threadListCalls = %d, want health check", poll.threadListCalls)
+	}
+	requireLogContains(t, logs.String(), `"operation":"repair_health_check"`)
+}
+
+func TestRepairSessionsEscalatesWhenHealthCheckFails(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	logs := captureServiceLogs(service)
+	oldLive := &stubSession{}
+	oldPoll := &stubSession{}
+	firstLive := &stubSession{threadListResult: map[string]any{"threads": []any{}}}
+	firstPoll := &stubSession{threadListErr: fmt.Errorf("app-server is not running")}
+	secondLive := &stubSession{threadListResult: map[string]any{"threads": []any{}}}
+	secondPoll := &stubSession{threadListResult: map[string]any{"threads": []any{}}}
+	liveSessions := []Session{oldLive, firstLive, secondLive}
+	pollSessions := []Session{oldPoll, firstPoll, secondPoll}
+	service.liveFactory = func() Session {
+		session := liveSessions[0]
+		liveSessions = liveSessions[1:]
+		return session
+	}
+	service.pollFactory = func() Session {
+		session := pollSessions[0]
+		pollSessions = pollSessions[1:]
+		return session
+	}
+	service.live = service.liveFactory()
+	service.poll = service.pollFactory()
+
+	if err := service.repairSessions(ctx, "test"); err != nil {
+		t.Fatalf("repairSessions failed after force rebuild: %v", err)
+	}
+	status, err := service.store.GetState(ctx, "repair.last_status")
+	if err != nil {
+		t.Fatalf("GetState(repair.last_status) failed: %v", err)
+	}
+	if status != "ok" {
+		t.Fatalf("repair.last_status = %q, want ok", status)
+	}
+	healthErr, err := service.store.GetState(ctx, "repair.last_health_error")
+	if err != nil {
+		t.Fatalf("GetState(repair.last_health_error) failed: %v", err)
+	}
+	if !strings.Contains(healthErr, "app-server is not running") {
+		t.Fatalf("repair.last_health_error = %q, want first health failure", healthErr)
+	}
+	if firstPoll.threadListCalls != 1 || secondPoll.threadListCalls == 0 {
+		t.Fatalf("threadListCalls first=%d second=%d, want health check before and after force rebuild", firstPoll.threadListCalls, secondPoll.threadListCalls)
+	}
+	got := logs.String()
+	requireLogContains(t, got, `"event":"appserver_session_repair_escalate"`)
+	requireLogContains(t, got, `"operation":"repair_force_health_check"`)
+}
+
 func TestStaleLiveEventLoopDoesNotClearNewLiveState(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
