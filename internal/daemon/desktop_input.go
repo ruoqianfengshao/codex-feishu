@@ -433,6 +433,7 @@ func desktopInputShouldFallback(err error) bool {
 		strings.Contains(strings.ToLower(err.Error()), "connection refused") ||
 		strings.Contains(strings.ToLower(err.Error()), "codex model is required for collaboration mode") ||
 		strings.Contains(strings.ToLower(err.Error()), "i/o timeout") ||
+		strings.Contains(strings.ToLower(err.Error()), "context deadline exceeded") ||
 		strings.Contains(strings.ToLower(err.Error()), "no such file") ||
 		strings.Contains(strings.ToLower(err.Error()), "socket path is unavailable")
 }
@@ -466,5 +467,6 @@ func (s *Service) desktopInputShouldWaitForDesktop(err error) bool {
 		strings.Contains(text, "webcontents-destroyed") ||
 		strings.Contains(text, "webview-disposed") ||
 		strings.Contains(text, "provider-disposed") ||
-		strings.Contains(text, "i/o timeout")
+		strings.Contains(text, "i/o timeout") ||
+		strings.Contains(text, "context deadline exceeded")
 }

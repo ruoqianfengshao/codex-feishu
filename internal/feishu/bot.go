@@ -928,7 +928,12 @@ func (b *Bot) handleMessageEvent(ctx context.Context, event *larkim.P2MessageRec
 	}
 	response, err := b.service.HandleMessageFromSource(ctx, chatID, topicID, userID, text, replyTo, model.PanelSourceFeishuInput)
 	if err != nil {
-		_ = b.store.DeleteState(ctx, claimKey)
+		// Keep the claim on failure. Feishu may redeliver the same event much
+		// later; deleting the claim would turn that replay into a new request
+		// and send another failure notice.
+		if b.logger != nil {
+			b.logger.Printf("feishu inbound failed: chat_id=%d message_id=%d; claim retained", chatID, messageID)
+		}
 		return b.sendFailureMessage(ctx, chatID, b.t(ctx, "本地 Go bridge 处理请求失败。请试试 /repair 或 /status。", "Request failed inside the local Go bridge. Try /repair or /status."))
 	}
 	return b.deliverDirectResponse(ctx, chatID, response)

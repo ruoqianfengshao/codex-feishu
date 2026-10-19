@@ -1928,6 +1928,57 @@ func TestHandleMessageEventDeduplicatesFeishuRetries(t *testing.T) {
 	}
 }
 
+func TestHandleMessageEventKeepsInboundClaimAfterBridgeFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := storage.Open(t.TempDir() + "/state.sqlite")
+	if err != nil {
+		t.Fatalf("storage.Open failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	service, err := daemon.New(config.Config{
+		Paths: config.Paths{
+			Home:    t.TempDir(),
+			DataDir: t.TempDir(),
+			LogDir:  t.TempDir(),
+			DBPath:  t.TempDir() + "/service.sqlite",
+		},
+	})
+	if err != nil {
+		t.Fatalf("daemon.New failed: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	// Close the service's store so the bridge returns an error while the bot's
+	// own store (which holds the inbound claim) remains usable.
+	if err := service.Close(); err != nil {
+		t.Fatalf("service.Close failed: %v", err)
+	}
+	api := &fakeAPIClient{}
+	bot := &Bot{store: store, service: service, api: api, logger: log.New(io.Discard, "", 0)}
+	event := newTextMessageEvent("oc_chat", "om_claim_fail", "ou_user", "/repair")
+
+	if err := bot.handleMessageEvent(ctx, event); err != nil {
+		t.Fatalf("handleMessageEvent(failure) failed: %v", err)
+	}
+	if api.sendCalls != 1 {
+		t.Fatalf("Send calls = %d, want one failure response", api.sendCalls)
+	}
+	claim, err := store.GetState(ctx, feishuInboundClaimKey("om_claim_fail"))
+	if err != nil {
+		t.Fatalf("GetState(claim) failed: %v", err)
+	}
+	if strings.TrimSpace(claim) == "" {
+		t.Fatalf("claim state is empty after bridge failure")
+	}
+	if err := bot.handleMessageEvent(ctx, event); err != nil {
+		t.Fatalf("handleMessageEvent(replay) failed: %v", err)
+	}
+	if api.sendCalls != 1 {
+		t.Fatalf("Send calls after replay = %d, want duplicate to be skipped", api.sendCalls)
+	}
+}
+
 func TestReplyToMessageIDResolvesFeishuThreadTopicRootWithoutMention(t *testing.T) {
 	t.Parallel()
 

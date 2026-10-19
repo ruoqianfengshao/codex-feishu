@@ -5495,6 +5495,23 @@ func TestFeishuInputWaitsForDesktopInsteadOfStealingWriter(t *testing.T) {
 	}
 }
 
+func TestDesktopInputTreatsContextDeadlineAsOwnerUnavailable(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.desktopSocketAvailable = func() bool { return true }
+	if !desktopInputShouldFallback(context.DeadlineExceeded) {
+		t.Fatalf("desktopInputShouldFallback(context.DeadlineExceeded) = false, want true")
+	}
+	if !service.desktopInputShouldWaitForDesktop(context.DeadlineExceeded) {
+		t.Fatalf("desktopInputShouldWaitForDesktop(context.DeadlineExceeded) = false, want true")
+	}
+	service.desktopSocketAvailable = func() bool { return false }
+	if service.desktopInputShouldWaitForDesktop(context.DeadlineExceeded) {
+		t.Fatalf("desktopInputShouldWaitForDesktop = true without a reachable desktop socket")
+	}
+}
+
 func TestFeishuInputRetriesDesktopDispatcherAfterOpeningThread(t *testing.T) {
 	t.Parallel()
 
