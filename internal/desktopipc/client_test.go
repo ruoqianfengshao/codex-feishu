@@ -9,11 +9,15 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
 
 func TestDefaultSocketPathPrefersCodexHomeSocket(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Codex desktop IPC is macOS-only")
+	}
 	home := shortTempDir(t)
 	t.Setenv("HOME", home)
 	dir := filepath.Join(home, ".codex", "ipc")
