@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -43,6 +44,17 @@ type ThreadTopicSender interface {
 
 type ThreadTopicTargetResolver interface {
 	ResolveThreadTopicTarget(ctx context.Context, chatID int64) (int64, error)
+}
+
+type skipThreadRefreshContextKey struct{}
+
+func withSkippedThreadRefresh(ctx context.Context) context.Context {
+	return context.WithValue(ctx, skipThreadRefreshContextKey{}, true)
+}
+
+func skipThreadRefresh(ctx context.Context) bool {
+	value, _ := ctx.Value(skipThreadRefreshContextKey{}).(bool)
+	return value
 }
 
 type DirectResponse struct {
@@ -93,12 +105,15 @@ type Service struct {
 	cancel                 context.CancelFunc
 	wg                     sync.WaitGroup
 	panelMu                sync.Mutex
+	topicMu                sync.Mutex
 	sender                 Sender
 	notifier               Notifier
 	desktopOpener          func(context.Context, string) error
 	desktopThreadCreator   func(context.Context, string, string, bool) error
 	desktopInputDispatcher desktopInputDispatcher
+	desktopSocketAvailable func() bool
 	codexGlobalStatePath   string
+	stateCatalogReader     func(context.Context) (appserver.StateCatalog, error)
 	notificationMu         sync.Mutex
 	logger                 *log.Logger
 	diagnosticMu           sync.Mutex
@@ -151,6 +166,7 @@ func New(cfg config.Config) (*Service, error) {
 		desktopOpener:          openCodexDesktopThread,
 		desktopThreadCreator:   createCodexDesktopThreadWithPrompt,
 		desktopInputDispatcher: desktopipc.New("", cfg.RequestTimeout),
+		desktopSocketAvailable: desktopipc.SocketAvailable,
 		codexGlobalStatePath:   defaultCodexGlobalStatePath(),
 		logger:                 discardDiagnosticLogger(),
 		diagnosticBy:           map[string]int{},
@@ -627,13 +643,14 @@ func (s *Service) openFeishuThreadAsync(ctx context.Context, chatID, topicID int
 			s.setError(ctx, err)
 			return
 		}
-		s.mu.RLock()
-		sender := s.sender
-		s.mu.RUnlock()
-		visible := s.feishuVisibleOpenResponse(openCtx, response, threadID)
-		if sender != nil && visible != nil && strings.TrimSpace(visible.Text) != "" {
-			if _, err := sender.SendMessage(openCtx, chatID, topicID, visible.Text, visible.Buttons, model.SendOptions{Silent: true}); err != nil {
-				s.setError(ctx, err)
+		if response != nil && strings.TrimSpace(response.Text) != "" {
+			s.mu.RLock()
+			sender := s.sender
+			s.mu.RUnlock()
+			if sender != nil {
+				if _, err := sender.SendMessage(openCtx, chatID, topicID, response.Text, response.Buttons, model.SendOptions{Silent: true}); err != nil {
+					s.setError(ctx, err)
+				}
 			}
 		}
 	})
@@ -910,6 +927,62 @@ func (s *Service) liveEventLoopCurrent(live Session, ch <-chan appserver.Event, 
 	return s.live == live && s.liveEvents == ch && s.liveGeneration == generation
 }
 
+func (s *Service) sendPendingApprovalCard(ctx context.Context, approval model.PendingApproval) {
+	requestID := strings.TrimSpace(approval.RequestID)
+	if requestID == "" || strings.TrimSpace(approval.ThreadID) == "" {
+		return
+	}
+	// One card per approval request, even if the app-server repeats the event.
+	sentKey := "feishu.approval_card." + requestID
+	if sent, err := s.store.GetState(ctx, sentKey); err == nil && strings.TrimSpace(sent) != "" {
+		return
+	}
+	stored, err := s.store.GetPendingApproval(ctx, requestID)
+	if err == nil && stored != nil && stored.ChatMessageID != 0 {
+		return
+	}
+	topic, err := s.store.GetAnyFeishuThreadTopicByCodexThread(ctx, approval.ThreadID)
+	if err != nil || topic == nil || topic.ChatID == 0 {
+		return
+	}
+	s.mu.RLock()
+	sender := s.sender
+	s.mu.RUnlock()
+	if sender == nil {
+		return
+	}
+	response := s.renderPendingApproval(ctx, approval)
+	if response == nil || strings.TrimSpace(response.Text) == "" {
+		return
+	}
+	options := silentSendOptions()
+	if topic.RootMessageID != 0 {
+		options.FeishuReplyToMessageID = topic.RootMessageID
+		options.FeishuReplyInThread = true
+		options.FeishuCodexThreadID = topic.ThreadID
+	}
+	messageID, err := sender.SendMessage(ctx, topic.ChatID, 0, response.Text, response.Buttons, options)
+	if err != nil {
+		s.setError(ctx, fmt.Errorf("send pending approval card: %w", err))
+		return
+	}
+	if messageID == 0 {
+		return
+	}
+	_ = s.store.UpdatePendingApprovalMessageID(ctx, requestID, messageID)
+	_ = s.store.SetState(ctx, sentKey, string(model.NowString()))
+	_ = s.store.PutMessageRoute(ctx, model.MessageRoute{
+		ChatID:    topic.ChatID,
+		TopicID:   0,
+		MessageID: messageID,
+		ThreadID:  approval.ThreadID,
+		TurnID:    approval.TurnID,
+		ItemID:    approval.ItemID,
+		EventID:   requestID,
+		CreatedAt: model.NowString(),
+	})
+}
+
 func (s *Service) handleLiveEvent(ctx context.Context, live Session, event appserver.Event) {
 	if event.Channel == "transport_error" {
 		err := fmt.Errorf("app-server transport error: %v", event.Params)
@@ -944,15 +1017,30 @@ func (s *Service) handleLiveEvent(ctx context.Context, live Session, event appse
 	}
 	liveToolSnapshot, hasLiveToolSnapshot := appserver.ToolSnapshotFromLiveNotification(event, model.Thread{ID: threadID})
 	if approval, ok := appserver.PendingApprovalFromServerRequest(event); ok {
+		s.logLifecycle("approval_requested", lifecycleFields{
+			"request_id": approval.RequestID,
+			"thread_id":  approval.ThreadID,
+			"turn_id":    approval.TurnID,
+			"kind":       approval.PromptKind,
+			"method":     event.Method,
+		})
 		_ = s.store.SavePendingApproval(ctx, *approval)
 		s.notifyPendingApproval(ctx, *approval)
+		s.sendPendingApprovalCard(ctx, *approval)
 		if approval.ThreadID != "" {
 			if refreshed, err := s.refreshThread(ctx, live, approval.ThreadID); err == nil && refreshed != nil {
 				_ = refreshed
 			}
-			s.syncThreadPanel(ctx, approval.ThreadID)
+			s.syncThreadPanelWithPending(ctx, approval.ThreadID, approval)
 		}
 		return
+	}
+	if event.Channel == "server_request" && strings.Contains(strings.ToLower(event.Method), "approval") {
+		s.logLifecycle("approval_ignored", lifecycleFields{
+			"method": event.Method,
+			"id":     fmt.Sprintf("%v", event.ID),
+			"thread": threadID,
+		})
 	}
 	if strings.EqualFold(event.Method, "serverRequest/resolved") {
 		if requestID := payloadMapString(event.Params, "requestId"); requestID != "" {
@@ -966,6 +1054,19 @@ func (s *Service) handleLiveEvent(ctx context.Context, live Session, event appse
 	if threadID != "" {
 		previous, _ := s.store.GetSnapshot(ctx, threadID)
 		interactiveSync := s.threadNeedsLiveSync(ctx, threadID)
+		thread, _ := s.store.GetThread(ctx, threadID)
+		needsFullRefresh := false
+		if thread == nil {
+			needsFullRefresh = interactiveSync
+		} else {
+			needsFullRefresh = threadLooksActiveForPolling(*thread) || s.threadNeedsCatchupPolling(ctx, *thread, previous)
+		}
+		if !needsFullRefresh {
+			if hasLiveToolSnapshot && interactiveSync {
+				s.syncThreadPanel(ctx, threadID)
+			}
+			return
+		}
 		if _, err := s.refreshThread(ctx, live, threadID); err != nil {
 			s.noteSessionError(ctx, "live_refresh", err)
 			return
@@ -1571,6 +1672,9 @@ func (s *Service) bootstrapTrackedState(ctx context.Context) {
 }
 
 func (s *Service) syncThreads(ctx context.Context, limit int) {
+	if s.syncThreadsFromStateCatalog(ctx) {
+		return
+	}
 	s.mu.RLock()
 	live := s.live
 	poll := s.poll
@@ -1615,14 +1719,66 @@ func (s *Service) syncThreads(ctx context.Context, limit int) {
 		}
 		nextCursor, _ := result["nextCursor"].(string)
 		if strings.TrimSpace(nextCursor) == "" {
-			_ = s.store.ReconcileListedThreads(ctx, seen)
+			if limit <= 0 {
+				_ = s.store.ReconcileListedThreads(ctx, seen)
+			}
 			return
 		}
 		cursor = nextCursor
 	}
 }
 
+// codexHomeDir is the Codex home that owns the app-server state database.
+func (s *Service) codexHomeDir() string {
+	statePath := strings.TrimSpace(s.codexGlobalStatePath)
+	if statePath == "" {
+		return ""
+	}
+	return filepath.Dir(statePath)
+}
+
+func (s *Service) readStateCatalog(ctx context.Context) (appserver.StateCatalog, error) {
+	if s.stateCatalogReader != nil {
+		return s.stateCatalogReader(ctx)
+	}
+	return appserver.ReadStateCatalog(ctx, s.codexHomeDir())
+}
+
+// syncThreadsFromStateCatalog refreshes the thread cache from the app-server's
+// own state database. That catalog is authoritative: it is complete and it is
+// the same data the Codex desktop sidebar is built from. An empty or unreadable
+// catalog is not authoritative, so the existing cache is left untouched.
+func (s *Service) syncThreadsFromStateCatalog(ctx context.Context) bool {
+	catalog, err := s.readStateCatalog(ctx)
+	if err != nil || len(catalog.Threads) == 0 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(catalog.Threads))
+	for _, thread := range catalog.Threads {
+		if strings.TrimSpace(thread.ID) == "" {
+			continue
+		}
+		seen[thread.ID] = struct{}{}
+	}
+	if len(seen) == 0 {
+		return false
+	}
+	if err := s.store.UpsertCatalogThreads(ctx, catalog.Threads, seen); err != nil {
+		s.setError(ctx, fmt.Errorf("sync thread catalog: %w", err))
+		return false
+	}
+	return true
+}
+
 func (s *Service) attachTracked(ctx context.Context) {
+	// On a shared app-server the desktop app and this daemon compete for the
+	// thread's single writer slot. Resuming every tracked thread here would
+	// steal that slot and make the desktop show "opened in another app".
+	// Polling thread/read is enough for observation, and Feishu input uses the
+	// desktop IPC follower when the desktop is running.
+	if s.usesSharedAppServer() {
+		return
+	}
 	s.mu.RLock()
 	live := s.live
 	connected := s.liveConnected
@@ -1675,6 +1831,53 @@ func (s *Service) attachTracked(ctx context.Context) {
 	}
 }
 
+func (s *Service) usesSharedAppServer() bool {
+	listen := strings.TrimSpace(s.appServerListen)
+	return strings.HasPrefix(listen, "proxy://") || strings.HasPrefix(listen, "unix://")
+}
+
+// upsertPolledThread stores only the thread metadata needed by later reads.
+// The full thread/read payload stays in memory for the current render but is
+// not rewritten into SQLite on every poll.
+func (s *Service) upsertPolledThread(ctx context.Context, thread model.Thread, payload map[string]any) error {
+	stored := thread
+	stored.Raw = appserver.CompactThreadMetadata(payload)
+	return s.store.UpsertThread(ctx, stored)
+}
+
+func (s *Service) reconcileTurnResult(ctx context.Context, threadID string, snapshot *appserver.ThreadReadSnapshot) {
+	if snapshot == nil || strings.TrimSpace(snapshot.LatestTurnID) == "" {
+		return
+	}
+	threadID = firstNonEmpty(strings.TrimSpace(snapshot.Thread.ID), strings.TrimSpace(threadID))
+	if threadID == "" {
+		return
+	}
+	result, err := appserver.ReadTurnResult(ctx, s.codexHomeDir(), threadID, snapshot.LatestTurnID)
+	if err != nil || result == nil {
+		// A cross-process thread/read can briefly report "interrupted" while
+		// the turn is still running. If history has not recorded the turn yet,
+		// keep a recent turn in progress instead of finalizing it.
+		if result == nil &&
+			strings.EqualFold(strings.TrimSpace(snapshot.LatestTurnStatus), "interrupted") &&
+			turnStartedWithin(snapshot, 5*time.Minute) {
+			snapshot.LatestTurnStatus = "inProgress"
+			snapshot.LatestFinalText = ""
+			snapshot.LatestFinalFP = ""
+		}
+		return
+	}
+	appserver.ApplyTurnResult(snapshot, result)
+}
+
+func turnStartedWithin(snapshot *appserver.ThreadReadSnapshot, window time.Duration) bool {
+	if snapshot == nil || strings.TrimSpace(snapshot.LatestTurnStartedAt) == "" {
+		return false
+	}
+	started := parseTime(model.TimeString(snapshot.LatestTurnStartedAt))
+	return !started.IsZero() && time.Since(started) < window
+}
+
 func (s *Service) pollTracked(ctx context.Context) {
 	s.mu.RLock()
 	poll := s.poll
@@ -1688,8 +1891,11 @@ func (s *Service) pollTracked(ctx context.Context) {
 		return
 	}
 	for _, thread := range threads {
-		snapshot, _ := s.store.GetSnapshot(ctx, thread.ID)
+		snapshot, _ := s.store.GetSnapshotMeta(ctx, thread.ID)
 		catchup := s.threadNeedsCatchupPolling(ctx, thread, snapshot)
+		if shouldSkipTrackedPollUntilNextPollAfter(snapshot, catchup, time.Now().UTC()) {
+			continue
+		}
 		if snapshot != nil && snapshot.LastRichLiveEventAt != "" {
 			if time.Since(parseTime(snapshot.LastRichLiveEventAt)) < maxDuration(10*time.Second, s.cfg.ObserverPollInterval*2) {
 				continue
@@ -1730,7 +1936,9 @@ func (s *Service) pollTracked(ctx context.Context) {
 			s.noteSessionError(ctx, "thread_read", err)
 			continue
 		}
+		payload = appserver.HydrateThreadReadItems(ctx, s.codexHomeDir(), payload)
 		current := appserver.SnapshotFromThreadRead(payload)
+		s.reconcileTurnResult(ctx, thread.ID, &current)
 		current.Thread.Raw, _ = json.Marshal(payload)
 		current.Thread = mergeThreadMetadata(current.Thread, thread)
 		latestSnapshot := snapshot
@@ -1741,7 +1949,7 @@ func (s *Service) pollTracked(ctx context.Context) {
 		if gateHandled {
 			if gateDecision.DeferredDisplayableProgress() {
 				s.preserveChatOriginLiveCurrentTool(ctx, &current, latestSnapshot)
-				_ = s.store.UpsertThread(ctx, current.Thread)
+				_ = s.upsertPolledThread(ctx, current.Thread, payload)
 				nextSnapshot := s.compactDeferredProgressSnapshot(latestSnapshot, current, time.Now().UTC(), gateDecision)
 				_ = s.store.UpsertSnapshot(ctx, current.Thread.ID, nextSnapshot)
 				s.logObserverSyncResult("poll_tracked", current)
@@ -1752,7 +1960,7 @@ func (s *Service) pollTracked(ctx context.Context) {
 			continue
 		}
 		s.preserveChatOriginLiveCurrentTool(ctx, &current, latestSnapshot)
-		_ = s.store.UpsertThread(ctx, current.Thread)
+		_ = s.upsertPolledThread(ctx, current.Thread, payload)
 		nextSnapshot := appserver.CompactSnapshot(latestSnapshot, current, time.Now().UTC())
 		if current.LatestTurnStatus == "inProgress" || current.WaitingOnApproval || current.WaitingOnReply {
 			nextSnapshot.NextPollAfter = model.TimeString(time.Now().UTC().Add(s.cfg.ObserverPollInterval).Format(time.RFC3339Nano))
@@ -1856,7 +2064,7 @@ func (s *Service) handleCommandFromSource(ctx context.Context, chatID, topicID i
 	case "/setting", "/settings":
 		return s.codexSettingsOverview(ctx)
 	case "/chats":
-		return s.chatsProjectThreads(ctx)
+		return s.threadsOverview(ctx, rest)
 	case "/projects":
 		return s.projectsOverview(ctx)
 	case "/new":
@@ -2104,6 +2312,18 @@ func (s *Service) workspaceLines(lang string, threadCount, backlog int, modelVal
 func (s *Service) codexSettingsOverview(ctx context.Context) (*DirectResponse, error) {
 	modelValue, reasoningValue, languageValue := s.currentSettingsValues(ctx)
 	lang := languageValue
+	text := strings.Join(s.settingsSummaryLines(lang, modelValue, reasoningValue, languageValue, ""), "\n")
+	if !s.modernCardsEnabled() {
+		// Form containers are a card 2.0 feature. On tenants without 2.0
+		// support Feishu renders them as an "upgrade the client" placeholder,
+		// so fall back to the menu flow that every client can display.
+		buttons := [][]model.ButtonSpec{{
+			s.callbackButton(ctx, localized(lang, "模型", "Model"), "settings_model_menu", "", "", "", nil),
+			s.callbackButton(ctx, localized(lang, "推理强度", "Reasoning effort"), "settings_reasoning_menu", "", "", "", nil),
+			s.callbackButton(ctx, localized(lang, "语言", "Language"), "settings_language_menu", "", "", "", nil),
+		}}
+		return &DirectResponse{Text: text, Buttons: buttons}, nil
+	}
 	form := &model.SettingsForm{
 		Title:            localized(lang, "Codex 设置", "Codex settings"),
 		SubmitText:       localized(lang, "确认生效", "Apply settings"),
@@ -2118,8 +2338,12 @@ func (s *Service) codexSettingsOverview(ctx context.Context) (*DirectResponse, e
 		LanguageValue:    languageValue,
 		LanguageOptions:  settingsLanguageOptions(),
 	}
-	text := strings.Join(s.settingsSummaryLines(lang, modelValue, reasoningValue, languageValue, ""), "\n")
 	return &DirectResponse{Text: text, SettingsForm: form}, nil
+}
+
+// modernCardsEnabled reports whether the bot should send card JSON 2.0.
+func (s *Service) modernCardsEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(s.cfg.FeishuCardVersion), "v2")
 }
 
 func (s *Service) codexModelMenu(ctx context.Context) (*DirectResponse, error) {
@@ -2846,6 +3070,11 @@ func (s *Service) sendInputToThreadTurnFromSource(ctx context.Context, chatID, t
 				"thread_id": threadID,
 				"error":     sanitizeDiagnosticString(desktopErr.Error()),
 			})
+			if errors.Is(desktopErr, errDesktopThreadOwnerUnavailable) {
+				return &DirectResponse{Text: s.t(ctx,
+					"桌面端还没有接管这个会话，消息暂时没有送出。请在 Codex 桌面端打开该会话后重试；如果桌面端显示“已在另一个应用中打开”，请重启一次 Codex 桌面端。",
+					"The desktop app has not taken over this conversation yet. Open it in Codex desktop and retry; if it says the conversation is open in another app, restart Codex desktop once.")}, nil
+			}
 			if threadLooksActiveForInput(thread) || steerFailureImpliesActive(desktopErr) {
 				return &DirectResponse{Text: activeThreadReplyText(thread, desktopErr), ThreadID: threadID, TurnID: thread.ActiveTurnID}, nil
 			}
@@ -2869,7 +3098,7 @@ func (s *Service) sendInputToThreadTurnFromSource(ctx context.Context, chatID, t
 	s.logAppServerCall("ThreadResume", started, err, live, lifecycleFields{
 		"thread_id": threadID,
 	})
-	if err != nil {
+	if err != nil && !isThreadAlreadyActiveError(err) {
 		return nil, err
 	}
 	if refreshed, refreshErr := s.refreshThreadForOperation(ctx, live, threadID, "refresh_thread_before_start"); refreshErr == nil && refreshed != nil {
@@ -3356,12 +3585,38 @@ func (s *Service) approve(ctx context.Context, requestID, decision string) (*Dir
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := live.RespondServerRequest(requestCtx, requestID, map[string]any{"decision": decision}); err != nil {
+	if err := live.RespondServerRequest(requestCtx, requestID, approvalResponsePayload(*approval, decision)); err != nil {
 		return nil, err
 	}
 	_ = s.store.UpdatePendingApprovalStatus(ctx, requestID, "resolved:"+decision)
 	s.syncThreadPanel(ctx, approval.ThreadID)
 	return &DirectResponse{CallbackText: fmt.Sprintf(s.t(ctx, "审批 %s 已处理。", "Approval %s resolved."), requestID), ThreadID: approval.ThreadID}, nil
+}
+
+func approvalResponsePayload(approval model.PendingApproval, decision string) map[string]any {
+	if approval.PromptKind != "permissions_approval" {
+		return map[string]any{"decision": decision}
+	}
+	scope := "turn"
+	if decision == "acceptForSession" {
+		scope = "session"
+	}
+	if decision != "accept" && decision != "acceptForSession" {
+		return map[string]any{
+			"permissions": map[string]any{},
+			"scope":       scope,
+		}
+	}
+	var payload map[string]any
+	_ = json.Unmarshal([]byte(approval.PayloadJSON), &payload)
+	permissions, ok := payload["permissions"]
+	if !ok || permissions == nil {
+		permissions = map[string]any{}
+	}
+	return map[string]any{
+		"permissions": permissions,
+		"scope":       scope,
+	}
 }
 
 func (s *Service) answerChoice(ctx context.Context, chatID, topicID int64, route *model.CallbackRoute, sourceMode string) (*DirectResponse, error) {
@@ -3399,6 +3654,7 @@ func (s *Service) answerChoice(ctx context.Context, chatID, topicID int64, route
 }
 
 func (s *Service) threadsOverview(ctx context.Context, rest string) (*DirectResponse, error) {
+	s.syncThreads(ctx, 50)
 	limit := 8
 	search := ""
 	if trimmed := strings.TrimSpace(rest); trimmed != "" {
@@ -3420,7 +3676,7 @@ func (s *Service) threadsOverview(ctx context.Context, rest string) (*DirectResp
 	}
 	buttons := [][]model.ButtonSpec{}
 	sections := []model.MessageSection{}
-	groups := groupedThreadsForOverview(threads)
+	groups := s.groupedThreadsForOverview(threads)
 	for groupIndex, group := range groups {
 		lines = append(lines, "", group.Project)
 		section := model.MessageSection{Text: group.Project, Heading: true, Divider: groupIndex > 0}
@@ -3479,12 +3735,12 @@ type threadOverviewGroup struct {
 	Threads []model.Thread
 }
 
-func groupedThreadsForOverview(threads []model.Thread) []threadOverviewGroup {
+func (s *Service) groupedThreadsForOverview(threads []model.Thread) []threadOverviewGroup {
 	groups := []threadOverviewGroup{}
 	indexByProject := map[string]int{}
 	for _, thread := range threads {
 		project := strings.TrimSpace(thread.ProjectName)
-		if project == "" || isCodexChatsCWD(thread.CWD) {
+		if project == "" || s.isCodexChatThread(thread) {
 			project = "临时对话"
 		}
 		groupIndex, ok := indexByProject[project]
@@ -3543,14 +3799,16 @@ func (s *Service) showThread(ctx context.Context, chatID, topicID int64, threadI
 	poll := s.poll
 	pollConnected := s.pollConnected
 	s.mu.RUnlock()
-	switch {
-	case liveConnected && live != nil:
-		if refreshed, refreshErr := s.refreshThread(ctx, live, threadID); refreshErr == nil && refreshed != nil {
-			thread = refreshed
-		}
-	case pollConnected && poll != nil:
-		if refreshed, refreshErr := s.refreshThread(ctx, poll, threadID); refreshErr == nil && refreshed != nil {
-			thread = refreshed
+	if !skipThreadRefresh(ctx) {
+		switch {
+		case liveConnected && live != nil:
+			if refreshed, refreshErr := s.refreshThread(ctx, live, threadID); refreshErr == nil && refreshed != nil {
+				thread = refreshed
+			}
+		case pollConnected && poll != nil:
+			if refreshed, refreshErr := s.refreshThread(ctx, poll, threadID); refreshErr == nil && refreshed != nil {
+				thread = refreshed
+			}
 		}
 	}
 	target := model.ObserverTarget{
@@ -3745,7 +4003,7 @@ func (s *Service) trackedThreads(ctx context.Context, limit int) []model.Thread 
 		if err != nil || thread == nil {
 			continue
 		}
-		if thread.Archived {
+		if threadUnavailableForPolling(*thread) {
 			continue
 		}
 		seen[thread.ID] = struct{}{}
@@ -3756,7 +4014,11 @@ func (s *Service) trackedThreads(ctx context.Context, limit int) []model.Thread 
 			continue
 		}
 		thread, err := s.store.GetThread(ctx, threadID)
-		if err != nil || thread == nil || thread.Archived {
+		if err != nil || thread == nil || threadUnavailableForPolling(*thread) {
+			continue
+		}
+		snapshot, _ := s.store.GetSnapshotMeta(ctx, thread.ID)
+		if !threadLooksActiveForPolling(*thread) && !s.threadNeedsCatchupPolling(ctx, *thread, snapshot) {
 			continue
 		}
 		seen[thread.ID] = struct{}{}
@@ -3765,6 +4027,9 @@ func (s *Service) trackedThreads(ctx context.Context, limit int) []model.Thread 
 	recent, _ := s.store.ListThreads(ctx, limit, "")
 	for _, thread := range recent {
 		if _, ok := seen[thread.ID]; ok {
+			continue
+		}
+		if threadUnavailableForPolling(thread) {
 			continue
 		}
 		if !threadLooksActiveForPolling(thread) {
@@ -3837,6 +4102,9 @@ func shouldTrackCurrentPanel(panel model.ThreadPanel) bool {
 }
 
 func (s *Service) threadNeedsLiveSync(ctx context.Context, threadID string) bool {
+	if thread, err := s.store.GetThread(ctx, threadID); err == nil && thread != nil && threadUnavailableForPolling(*thread) {
+		return false
+	}
 	if topic, err := s.store.GetAnyFeishuThreadTopicByCodexThread(ctx, threadID); err == nil && topic != nil {
 		return true
 	}
@@ -3850,6 +4118,18 @@ func (s *Service) threadNeedsLiveSync(ctx context.Context, threadID string) bool
 		}
 	}
 	return false
+}
+
+func threadUnavailableForPolling(thread model.Thread) bool {
+	return thread.Archived || threadMarkedArchivedOrDeletedForOverview(thread)
+}
+
+func shouldSkipTrackedPollUntilNextPollAfter(snapshot *model.ThreadSnapshotState, catchup bool, now time.Time) bool {
+	if snapshot == nil || catchup {
+		return false
+	}
+	nextPollAfter := parseTime(snapshot.NextPollAfter)
+	return !nextPollAfter.IsZero() && now.Before(nextPollAfter)
 }
 
 func threadLooksActiveForPolling(thread model.Thread) bool {
@@ -3942,7 +4222,11 @@ func (s *Service) threadNeedsCatchupPolling(ctx context.Context, thread model.Th
 	if snapshot == nil {
 		return true
 	}
-	if thread.UpdatedAt > snapshot.ThreadUpdatedAt {
+	if snapshot.ThreadUpdatedAt > 0 {
+		if thread.UpdatedAt > snapshot.ThreadUpdatedAt {
+			return true
+		}
+	} else if polledAt := parseTime(snapshot.LastPollAt); !polledAt.IsZero() && updatedAt.After(polledAt) {
 		return true
 	}
 	if snapshot.LastSeenThreadStatus != "" && !strings.EqualFold(strings.TrimSpace(snapshot.LastSeenThreadStatus), strings.TrimSpace(thread.Status)) {
@@ -3962,6 +4246,18 @@ func isThreadNotLoadedError(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "thread not loaded")
+}
+
+// isThreadAlreadyActiveError reports a thread that another client (for example
+// the desktop app attached to the shared app-server) already has open. The
+// thread is loaded, so resuming is unnecessary rather than a failure.
+func isThreadAlreadyActiveError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "already has an active writer") ||
+		strings.Contains(text, "already active")
 }
 
 func isThreadArchivedError(err error) bool {
@@ -4048,7 +4344,9 @@ func (s *Service) refreshThreadForOperation(ctx context.Context, client Session,
 			return nil, err
 		}
 	}
+	payload = appserver.HydrateThreadReadItems(ctx, s.codexHomeDir(), payload)
 	current := appserver.SnapshotFromThreadRead(payload)
+	s.reconcileTurnResult(ctx, threadID, &current)
 	current.Thread.Raw, _ = json.Marshal(payload)
 	thread := current.Thread
 	if existing, _ := s.store.GetThread(ctx, threadID); existing != nil {
@@ -4066,7 +4364,7 @@ func (s *Service) refreshThreadForOperation(ctx context.Context, client Session,
 	if gateHandled {
 		if gateDecision.DeferredDisplayableProgress() {
 			s.preserveChatOriginLiveCurrentTool(ctx, &current, previous)
-			if err := s.store.UpsertThread(ctx, thread); err != nil {
+			if err := s.upsertPolledThread(ctx, thread, payload); err != nil {
 				return nil, err
 			}
 			nextSnapshot := s.compactDeferredProgressSnapshot(previous, current, time.Now().UTC(), gateDecision)
@@ -4082,7 +4380,7 @@ func (s *Service) refreshThreadForOperation(ctx context.Context, client Session,
 		return &thread, nil
 	}
 	s.preserveChatOriginLiveCurrentTool(ctx, &current, previous)
-	if err := s.store.UpsertThread(ctx, thread); err != nil {
+	if err := s.upsertPolledThread(ctx, thread, payload); err != nil {
 		return nil, err
 	}
 	nextSnapshot := appserver.CompactSnapshot(previous, current, time.Now().UTC())

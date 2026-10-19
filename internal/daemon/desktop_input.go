@@ -22,10 +22,12 @@ type closeableDesktopInputDispatcher interface {
 }
 
 const (
-	desktopInputOpenRetryAttempts = 8
-	desktopInputOpenRetryDelay    = 250 * time.Millisecond
-	desktopThreadAdoptionTimeout  = 5 * time.Second
+	desktopInputOpenRetryAttempts = 40
+	desktopInputOpenRetryDelay    = 500 * time.Millisecond
+	desktopThreadAdoptionTimeout  = 20 * time.Second
 )
+
+var errDesktopThreadOwnerUnavailable = errors.New("codex desktop thread owner unavailable")
 
 func (s *Service) maybeAdoptCodexDesktopThreadForInput(ctx context.Context, threadID, sourceMode string) {
 	opened := s.maybeOpenCodexDesktopForInput(ctx, threadID, sourceMode)
@@ -81,6 +83,12 @@ func (s *Service) maybeSendFeishuInputViaDesktop(ctx context.Context, chatID, to
 				"thread_id": thread.ID,
 				"error":     sanitizeDiagnosticString(err.Error()),
 			})
+			// When the desktop app is running, falling back to the shared
+			// app-server would claim the thread's single writer slot and lock
+			// the conversation out of the desktop UI.
+			if s.desktopInputShouldWaitForDesktop(err) {
+				return nil, false, false, "", errDesktopThreadOwnerUnavailable
+			}
 			return nil, false, false, "", nil
 		}
 		return nil, true, false, "", err
@@ -131,6 +139,9 @@ func (s *Service) maybeSendFeishuInputViaDesktop(ctx context.Context, chatID, to
 			"error":     sanitizeDiagnosticString(steerErr.Error()),
 		})
 		if desktopInputShouldFallback(steerErr) {
+			if s.desktopInputShouldWaitForDesktop(steerErr) {
+				return nil, false, false, "", errDesktopThreadOwnerUnavailable
+			}
 			return nil, false, false, "", nil
 		}
 		if steerFailureMeansNoActiveTurn(steerErr) {
@@ -161,13 +172,22 @@ func (s *Service) maybeSendFeishuInputViaDesktop(ctx context.Context, chatID, to
 		return nil, true, false, "", err
 	}
 	params["input"] = input
-	result, err = dispatcher.StartTurn(requestCtx, thread.ID, params)
+	turnStart := map[string]any{
+		"request": params,
+		"context": map[string]any{
+			"restoreMessage": restoreMessage,
+		},
+	}
+	result, err = dispatcher.StartTurn(requestCtx, thread.ID, turnStart)
 	if err != nil {
 		if desktopInputShouldFallback(err) {
 			s.logLifecycle("codex_desktop_input_start_unavailable", lifecycleFields{
 				"thread_id": thread.ID,
 				"error":     sanitizeDiagnosticString(err.Error()),
 			})
+			if s.desktopInputShouldWaitForDesktop(err) {
+				return nil, false, false, "", errDesktopThreadOwnerUnavailable
+			}
 			return nil, false, false, "", nil
 		}
 		return nil, true, false, "", err
@@ -214,7 +234,7 @@ func stringValueFromAny(value any) string {
 
 func (s *Service) loadDesktopCompleteHistoryForInput(ctx context.Context, dispatcher desktopInputDispatcher, threadID string, opened bool) (map[string]any, error) {
 	attempts := 1
-	if opened {
+	if opened && s.desktopSocketReachable() {
 		attempts = desktopInputOpenRetryAttempts
 	}
 	var lastErr error
@@ -415,4 +435,36 @@ func desktopInputShouldFallback(err error) bool {
 		strings.Contains(strings.ToLower(err.Error()), "i/o timeout") ||
 		strings.Contains(strings.ToLower(err.Error()), "no such file") ||
 		strings.Contains(strings.ToLower(err.Error()), "socket path is unavailable")
+}
+
+// desktopInputShouldWaitForDesktop distinguishes "the desktop socket is alive
+// but the thread owner is not ready yet" from "the desktop app is not
+// reachable". The former must not fall back to the shared app-server, because
+// that would steal the writer from the desktop.
+func (s *Service) desktopSocketReachable() bool {
+	if s != nil && s.desktopSocketAvailable != nil {
+		return s.desktopSocketAvailable()
+	}
+	return desktopipc.SocketAvailable()
+}
+
+func (s *Service) desktopInputShouldWaitForDesktop(err error) bool {
+	if err == nil || !s.desktopSocketReachable() {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(text, "connection refused"),
+		strings.Contains(text, "no such file"),
+		strings.Contains(text, "socket path is unavailable"):
+		return false
+	}
+	return strings.Contains(text, "no-client-found") ||
+		strings.Contains(text, "client-not-found") ||
+		strings.Contains(text, "thread stream owner became unavailable") ||
+		strings.Contains(text, "client-disconnected") ||
+		strings.Contains(text, "webcontents-destroyed") ||
+		strings.Contains(text, "webview-disposed") ||
+		strings.Contains(text, "provider-disposed") ||
+		strings.Contains(text, "i/o timeout")
 }

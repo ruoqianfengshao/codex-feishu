@@ -781,45 +781,28 @@ func rowElements(rows []model.MessageSectionRow) []map[string]any {
 		if title == "" {
 			title = " "
 		}
-		trailing := strings.TrimSpace(row.Trailing)
-		if trailing == "" {
-			trailing = " "
+		content := sanitizeMarkdownImages("**" + title + "**")
+		if trailing := strings.TrimSpace(row.Trailing); trailing != "" {
+			content += "\n<font color='grey'>" + sanitizeMarkdownImages(trailing) + "</font>"
 		}
-		buttonLabel := feishuButtonLabel(row.Button.Text)
-		elements = append(elements, markdownElementWithMargin(title, "0px 0px 2px 0px"))
-		columns := []map[string]any{{
-			"tag":            "column",
-			"width":          "weighted",
-			"weight":         1,
-			"vertical_align": "center",
-			"elements": []map[string]any{
-				markdownElement(trailing),
-			},
-		}}
-		if buttonLabel != "" {
-			columns = append(columns, map[string]any{
-				"tag":            "column",
-				"width":          "auto",
-				"vertical_align": "center",
-				"elements": []map[string]any{
-					{
-						"tag":  "button",
-						"text": map[string]any{"tag": "plain_text", "content": buttonLabel},
-						"type": "default",
-						"value": map[string]any{
-							"callback_data": row.Button.CallbackData,
-						},
-					},
+		// div+extra keeps the classic card row: title and metadata on the left,
+		// action button on the right. Buttons nested in column_set are dropped
+		// by Feishu clients that do not support card JSON 2.0.
+		element := map[string]any{
+			"tag":  "div",
+			"text": map[string]any{"tag": "lark_md", "content": content},
+		}
+		if buttonLabel := feishuButtonLabel(row.Button.Text); buttonLabel != "" {
+			element["extra"] = map[string]any{
+				"tag":  "button",
+				"text": map[string]any{"tag": "plain_text", "content": buttonLabel},
+				"type": "default",
+				"value": map[string]any{
+					"callback_data": row.Button.CallbackData,
 				},
-			})
+			}
 		}
-		elements = append(elements, map[string]any{
-			"tag":            "column_set",
-			"flex_mode":      "none",
-			"margin":         "0px 0px 12px 0px",
-			"vertical_align": "center",
-			"columns":        columns,
-		})
+		elements = append(elements, element)
 	}
 	return elements
 }

@@ -95,6 +95,96 @@ func TestHandlePayloadIgnoresStaleGeneration(t *testing.T) {
 	}
 }
 
+func TestReadStderrKeepsDrainingAfterLongLine(t *testing.T) {
+	t.Parallel()
+
+	reader, writer := io.Pipe()
+	client := NewClient("codex", "stdio", t.TempDir(), time.Second)
+	client.mu.Lock()
+	client.stderr = reader
+	client.stderrDone = make(chan struct{})
+	client.started = true
+	client.generation = 1
+	client.mu.Unlock()
+
+	go client.readStderr(1)
+	longLine := strings.Repeat("x", 128*1024)
+	if _, err := writer.Write([]byte(longLine + "\n")); err != nil {
+		t.Fatalf("write long stderr line failed: %v", err)
+	}
+	if _, err := writer.Write([]byte("after-long-line\n")); err != nil {
+		t.Fatalf("write follow-up stderr line failed: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer failed: %v", err)
+	}
+	select {
+	case <-client.stderrDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("readStderr did not finish")
+	}
+
+	tail := client.StderrTail()
+	if len(tail) != 2 {
+		t.Fatalf("stderr tail length = %d, want 2: %#v", len(tail), tail)
+	}
+	if !strings.Contains(tail[0], "<truncated ") || len(tail[0]) > stderrLineMaxBytes+64 {
+		t.Fatalf("first stderr tail line = %q, want compact truncated line", tail[0])
+	}
+	if tail[1] != "after-long-line" {
+		t.Fatalf("second stderr tail line = %q, want follow-up line", tail[1])
+	}
+}
+
+func TestReadStdoutHandlesLongJSONLine(t *testing.T) {
+	t.Parallel()
+
+	reader, writer := io.Pipe()
+	client := NewClient("codex", "stdio", t.TempDir(), time.Second)
+	reply := make(chan rpcResponse, 1)
+	client.mu.Lock()
+	client.stdout = reader
+	client.readerDone = make(chan struct{})
+	client.started = true
+	client.generation = 1
+	client.pending[1] = reply
+	client.mu.Unlock()
+
+	go client.readStdout(1)
+	payload := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"result": map[string]any{
+			"body": strings.Repeat("x", 20*1024*1024),
+		},
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal payload failed: %v", err)
+	}
+	encoded = append(encoded, '\n')
+	if _, err := writer.Write(encoded); err != nil {
+		t.Fatalf("write long stdout line failed: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer failed: %v", err)
+	}
+
+	select {
+	case response := <-reply:
+		if response.Error != nil {
+			t.Fatalf("response error: %v", response.Error)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("readStdout did not resolve long JSON response")
+	}
+	select {
+	case <-client.readerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("readStdout did not finish")
+	}
+}
+
 func TestTurnStartParamsIncludesCollaborationMode(t *testing.T) {
 	params, err := turnStartParams("thread-1", "Draft a plan", "/tmp/project", TurnStartOptions{
 		CollaborationMode: "plan",

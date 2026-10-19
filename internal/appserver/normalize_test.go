@@ -20,6 +20,99 @@ func TestStringValueTreatsNilLiteralAsMissing(t *testing.T) {
 	}
 }
 
+func TestPendingApprovalFromServerRequestAcceptsApprovalMethod(t *testing.T) {
+	t.Parallel()
+
+	approval, ok := PendingApprovalFromServerRequest(Event{
+		Channel: "server_request",
+		Method:  "item/commandExecution/requestApproval",
+		ID:      nil,
+		Params: map[string]any{
+			"requestId": "req-approval",
+			"question":  "Allow command?",
+			"turn": map[string]any{
+				"id":       "turn-approval",
+				"threadId": "thread-approval",
+			},
+			"itemId": "item-approval",
+		},
+	})
+	if !ok || approval == nil {
+		t.Fatal("PendingApprovalFromServerRequest returned no approval")
+	}
+	if approval.RequestID != "req-approval" || approval.ThreadID != "thread-approval" || approval.PromptKind != "approval" {
+		t.Fatalf("approval = %#v, want request/thread approval", approval)
+	}
+	if approval.Question != "Allow command?" || approval.ItemID != "item-approval" {
+		t.Fatalf("approval = %#v, want question and item", approval)
+	}
+}
+
+func TestPendingApprovalFromServerRequestRejectsZeroRequestIDs(t *testing.T) {
+	t.Parallel()
+
+	for name, event := range map[string]Event{
+		"zero numeric id": {
+			Channel: "server_request",
+			Method:  "item/commandExecution/requestApproval",
+			ID:      float64(0),
+			Params:  map[string]any{"threadId": "thread-1", "turnId": "turn-1"},
+		},
+		"zero string id": {
+			Channel: "server_request",
+			Method:  "item/commandExecution/requestApproval",
+			ID:      "0",
+			Params:  map[string]any{"threadId": "thread-1", "turnId": "turn-1"},
+		},
+		"zero params request id": {
+			Channel: "server_request",
+			Method:  "item/commandExecution/requestApproval",
+			Params:  map[string]any{"requestId": "0", "threadId": "thread-1", "turnId": "turn-1"},
+		},
+		"resolved notification": {
+			Channel: "server_request",
+			Method:  "serverRequest/resolved",
+			ID:      "req-1",
+			Params:  map[string]any{"threadId": "thread-1", "turnId": "turn-1"},
+		},
+	} {
+		if approval, ok := PendingApprovalFromServerRequest(event); ok {
+			t.Fatalf("%s: approval = %#v, want rejected", name, approval)
+		}
+	}
+}
+
+func TestPendingApprovalFromServerRequestDetectsPermissionsApproval(t *testing.T) {
+	t.Parallel()
+
+	approval, ok := PendingApprovalFromServerRequest(Event{
+		Channel: "server_request",
+		Method:  "item/permissions/requestApproval",
+		ID:      "req-permissions",
+		Params: map[string]any{
+			"question":    "Allow extra permissions?",
+			"permissions": map[string]any{"network": true},
+			"turn": map[string]any{
+				"id":       "turn-permissions",
+				"threadId": "thread-permissions",
+			},
+		},
+	})
+	if !ok || approval == nil {
+		t.Fatal("PendingApprovalFromServerRequest returned no permissions approval")
+	}
+	if approval.RequestID != "req-permissions" || approval.ThreadID != "thread-permissions" || approval.PromptKind != "permissions_approval" {
+		t.Fatalf("approval = %#v, want permissions approval", approval)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(approval.PayloadJSON), &payload); err != nil {
+		t.Fatalf("PayloadJSON is not json: %v", err)
+	}
+	if _, ok := payload["permissions"]; !ok {
+		t.Fatalf("payload = %#v, want permissions copied", payload)
+	}
+}
+
 func TestThreadsFromListSkipsInternalSubAgentThreads(t *testing.T) {
 	t.Parallel()
 
@@ -208,6 +301,96 @@ func TestDiffSnapshotEmitsCompletionForNewTerminalTurn(t *testing.T) {
 	}
 	if events[1].Status != "interrupted" {
 		t.Fatalf("expected interrupted completion, got %q", events[1].Status)
+	}
+}
+
+func TestCompactSnapshotPreservesApprovalFingerprintAcrossIncompletePoll(t *testing.T) {
+	approval := ThreadReadSnapshot{
+		Thread: model.Thread{
+			ID:     "thread-approval",
+			Status: "active[waitingOnApproval]",
+		},
+		LatestTurnID:      "turn-approval",
+		LatestTurnStatus:  "inProgress",
+		WaitingOnApproval: true,
+	}
+	previous := CompactSnapshot(nil, approval, time.Date(2026, time.August, 5, 13, 0, 0, 0, time.UTC))
+
+	incomplete := ThreadReadSnapshot{
+		Thread: model.Thread{
+			ID:     "thread-approval",
+			Status: "notLoaded",
+		},
+		LatestTurnID:     "turn-approval",
+		LatestTurnStatus: "interrupted",
+	}
+	transient := CompactSnapshot(&previous, incomplete, time.Date(2026, time.August, 5, 13, 0, 5, 0, time.UTC))
+
+	if transient.LastApprovalFP != "turn-approval" {
+		t.Fatalf("LastApprovalFP = %q, want approval fingerprint preserved", transient.LastApprovalFP)
+	}
+	for _, event := range DiffSnapshot(&transient, approval) {
+		if event.NeedsApproval {
+			t.Fatalf("recovered approval emitted a duplicate event: %#v", event)
+		}
+	}
+}
+
+func TestRecentCompletedTurnMessagesReturnsLastTwoCompleteTurns(t *testing.T) {
+	result := map[string]any{
+		"thread": map[string]any{
+			"turns": []any{
+				map[string]any{
+					"id":     "turn-old",
+					"status": "completed",
+					"items": []any{
+						map[string]any{"id": "user-old", "type": "userMessage", "content": []any{map[string]any{"type": "text", "text": "old request"}}},
+						map[string]any{"id": "final-old", "type": "agentMessage", "phase": "final_answer", "text": "old answer"},
+					},
+				},
+				map[string]any{
+					"id":     "turn-first",
+					"status": "completed",
+					"items": []any{
+						map[string]any{"id": "user-first", "type": "userMessage", "content": []any{map[string]any{"type": "text", "text": "first request"}}},
+						map[string]any{"id": "final-first", "type": "agentMessage", "phase": "final_answer", "text": "first answer"},
+					},
+				},
+				map[string]any{
+					"id":     "turn-interrupted",
+					"status": "interrupted",
+					"items": []any{
+						map[string]any{"id": "user-interrupted", "type": "userMessage", "content": []any{map[string]any{"type": "text", "text": "interrupted request"}}},
+					},
+				},
+				map[string]any{
+					"id":     "turn-second",
+					"status": "completed",
+					"items": []any{
+						map[string]any{"id": "user-second", "type": "userMessage", "content": []any{map[string]any{"type": "text", "text": "second request"}}},
+						map[string]any{"id": "final-second", "type": "agentMessage", "phase": "final_answer", "text": "second answer"},
+					},
+				},
+				map[string]any{
+					"id":     "turn-active",
+					"status": "inProgress",
+					"items": []any{
+						map[string]any{"id": "user-active", "type": "userMessage", "content": []any{map[string]any{"type": "text", "text": "active request"}}},
+					},
+				},
+			},
+		},
+	}
+
+	got := RecentCompletedTurnMessages(result, 2)
+	if len(got) != 2 {
+		t.Fatalf("RecentCompletedTurnMessages length = %d, want 2: %#v", len(got), got)
+	}
+	if got[0].TurnID != "turn-first" || got[0].UserText != "first request" || got[0].FinalText != "first answer" {
+		t.Fatalf("first history turn = %#v", got[0])
+	}
+	if got[1].TurnID != "turn-second" || got[1].UserText != "second request" || got[1].FinalText != "second answer" {
+		t.Fatalf("second history turn = %#v", got[1])
 	}
 }
 

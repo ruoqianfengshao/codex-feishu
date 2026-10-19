@@ -406,6 +406,77 @@ func (s *Store) UpsertThread(ctx context.Context, thread model.Thread) error {
 	return err
 }
 
+// UpsertCatalogThreads refreshes the cached thread catalog from the Codex
+// app-server state database. Runtime fields (status, model, raw payload) are
+// preserved; only catalog identity fields and the listing state are refreshed.
+// Threads missing from listedIDs stop being visible, so the catalog never grows
+// stale entries that Codex has archived or deleted.
+func (s *Store) UpsertCatalogThreads(ctx context.Context, threads []model.Thread, listedIDs map[string]struct{}) error {
+	if len(threads) == 0 || len(listedIDs) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	upsert, err := tx.PrepareContext(ctx, `
+	INSERT INTO threads(thread_id, title, cwd, project_name, directory_name, updated_at, status, last_preview, active_turn_id, preferred_model, permissions_mode, archived, listed, raw_json)
+	VALUES (?, ?, ?, ?, ?, ?, '', ?, '', '', '', 0, 1, ?)
+	ON CONFLICT(thread_id) DO UPDATE SET
+		title = CASE WHEN excluded.title != '' THEN excluded.title ELSE threads.title END,
+		cwd = CASE WHEN excluded.cwd IS NOT NULL THEN excluded.cwd ELSE threads.cwd END,
+		project_name = CASE WHEN excluded.project_name != '' THEN excluded.project_name ELSE threads.project_name END,
+		directory_name = CASE WHEN excluded.directory_name IS NOT NULL THEN excluded.directory_name ELSE threads.directory_name END,
+		updated_at = CASE WHEN excluded.updated_at > threads.updated_at THEN excluded.updated_at ELSE threads.updated_at END,
+		last_preview = CASE WHEN excluded.last_preview IS NOT NULL THEN excluded.last_preview ELSE threads.last_preview END,
+		archived = 0,
+		listed = 1,
+		raw_json = CASE WHEN threads.archived = 1 THEN excluded.raw_json ELSE threads.raw_json END`)
+	if err != nil {
+		return err
+	}
+	defer upsert.Close()
+	for _, thread := range threads {
+		if strings.TrimSpace(thread.ID) == "" {
+			continue
+		}
+		raw := thread.Raw
+		if len(raw) == 0 {
+			raw = []byte("{}")
+		}
+		if _, err := upsert.ExecContext(ctx,
+			thread.ID,
+			thread.Title,
+			nullable(thread.CWD),
+			thread.ProjectName,
+			nullable(thread.DirectoryName),
+			thread.UpdatedAt,
+			nullable(thread.LastPreview),
+			string(raw),
+		); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE threads SET listed = 0`); err != nil {
+		return err
+	}
+	mark, err := tx.PrepareContext(ctx, `UPDATE threads SET listed = 1 WHERE thread_id = ?`)
+	if err != nil {
+		return err
+	}
+	defer mark.Close()
+	for threadID := range listedIDs {
+		if strings.TrimSpace(threadID) == "" {
+			continue
+		}
+		if _, err := mark.ExecContext(ctx, threadID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) MarkThreadLifecycleClosed(ctx context.Context, thread model.Thread) error {
 	raw := thread.Raw
 	if len(raw) == 0 {
@@ -518,6 +589,11 @@ const visibleThreadPredicateSQL = `(
 )`
 
 func (s *Store) ReconcileListedThreads(ctx context.Context, listedIDs map[string]struct{}) error {
+	// An empty result is ambiguous: it can mean "no threads" or "the listing
+	// failed to see them". Never wipe the catalog on an empty result.
+	if len(listedIDs) == 0 {
+		return nil
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -612,6 +688,37 @@ func (s *Store) GetSnapshot(ctx context.Context, threadID string) (*model.Thread
 	}
 	var snapshot model.ThreadSnapshotState
 	if err := json.Unmarshal([]byte(payload), &snapshot); err != nil {
+		return nil, err
+	}
+	return &snapshot, nil
+}
+
+// GetSnapshotMeta reads the fields used by polling decisions without loading
+// the snapshot payload. Long threads can have multi-megabyte snapshots.
+func (s *Store) GetSnapshotMeta(ctx context.Context, threadID string) (*model.ThreadSnapshotState, error) {
+	row := s.db.QueryRowContext(ctx, `
+	SELECT coalesce(last_live_event_at,''), coalesce(last_poll_at,''), coalesce(next_poll_after,''),
+		coalesce(last_seen_thread_status,''), coalesce(last_seen_turn_id,''), coalesce(last_seen_turn_status,''),
+		coalesce(last_progress_fp,''), coalesce(last_progress_sent_at,''), coalesce(last_final_fp,''),
+		coalesce(last_completion_fp,''), coalesce(last_approval_fp,'')
+	FROM thread_snapshots WHERE thread_id = ?`, threadID)
+	var snapshot model.ThreadSnapshotState
+	if err := row.Scan(
+		&snapshot.LastRichLiveEventAt,
+		&snapshot.LastPollAt,
+		&snapshot.NextPollAfter,
+		&snapshot.LastSeenThreadStatus,
+		&snapshot.LastSeenTurnID,
+		&snapshot.LastSeenTurnStatus,
+		&snapshot.LastProgressFP,
+		&snapshot.LastProgressSentAt,
+		&snapshot.LastFinalFP,
+		&snapshot.LastCompletionFP,
+		&snapshot.LastApprovalFP,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return &snapshot, nil
@@ -925,8 +1032,12 @@ func (s *Store) SavePendingApproval(ctx context.Context, approval model.PendingA
 	INSERT INTO pending_approvals(request_id, thread_id, turn_id, item_id, prompt_kind, question, status, chat_message_id, payload_json, updated_at)
 	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(request_id) DO UPDATE SET
+		thread_id = excluded.thread_id,
+		turn_id = excluded.turn_id,
+		item_id = excluded.item_id,
+		prompt_kind = excluded.prompt_kind,
+		question = excluded.question,
 		status = excluded.status,
-		chat_message_id = excluded.chat_message_id,
 		payload_json = excluded.payload_json,
 		updated_at = excluded.updated_at`,
 		approval.RequestID, approval.ThreadID, nullable(approval.TurnID), nullable(approval.ItemID), approval.PromptKind, nullable(approval.Question), approval.Status,
@@ -952,6 +1063,11 @@ func (s *Store) GetPendingApproval(ctx context.Context, requestID string) (*mode
 
 func (s *Store) UpdatePendingApprovalStatus(ctx context.Context, requestID, status string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE pending_approvals SET status = ?, updated_at = ? WHERE request_id = ?`, status, string(model.NowString()), requestID)
+	return err
+}
+
+func (s *Store) UpdatePendingApprovalMessageID(ctx context.Context, requestID string, chatMessageID int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE pending_approvals SET chat_message_id = ?, updated_at = ? WHERE request_id = ?`, chatMessageID, string(model.NowString()), requestID)
 	return err
 }
 

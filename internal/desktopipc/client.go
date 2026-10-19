@@ -87,11 +87,34 @@ func DefaultSocketPath() string {
 	if runtime.GOOS != "darwin" {
 		return ""
 	}
-	tmp := os.Getenv("TMPDIR")
-	if strings.TrimSpace(tmp) == "" {
-		return ""
+	candidates := []string{}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		candidates = append(candidates, filepath.Join(home, ".codex", "ipc", "ipc.sock"))
 	}
-	return filepath.Join(tmp, "codex-ipc", fmt.Sprintf("ipc-%d.sock", os.Getuid()))
+	if tmp := strings.TrimSpace(os.Getenv("TMPDIR")); tmp != "" {
+		candidates = append(candidates, filepath.Join(tmp, "codex-ipc", fmt.Sprintf("ipc-%d.sock", os.Getuid())))
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && info.Mode()&os.ModeSocket != 0 {
+			return candidate
+		}
+	}
+	if len(candidates) > 0 {
+		return candidates[0]
+	}
+	return ""
+}
+
+// SocketAvailable reports whether the Codex desktop IPC socket exists. A stale
+// socket file can still be present after the app exits, so callers that need a
+// live desktop should combine this with the request error.
+func SocketAvailable() bool {
+	path := DefaultSocketPath()
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.Mode()&os.ModeSocket != 0
 }
 
 func (c *Client) Close() error {
@@ -108,9 +131,20 @@ func (c *Client) Close() error {
 
 func (c *Client) LoadCompleteHistory(ctx context.Context, threadID string) (map[string]any, error) {
 	threadID = strings.TrimSpace(threadID)
+	if err := c.followThread(ctx, threadID, true); err != nil {
+		return nil, err
+	}
+	defer func() {
+		unfollowCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = c.followThread(unfollowCtx, threadID, false)
+	}()
+	if _, err := c.ensureThreadOwner(ctx, threadID); err != nil {
+		return nil, err
+	}
 	return c.requestWithBroadcast(ctx, "thread-follower-load-complete-history", 1, map[string]any{
 		"conversationId": threadID,
-	}, "", threadID, func(msg wireMessage) (map[string]any, bool) {
+	}, c.threadOwner(threadID), threadID, func(msg wireMessage) (map[string]any, bool) {
 		if msg.Type != "broadcast" || msg.Method != "thread-stream-state-changed" {
 			return nil, false
 		}
@@ -132,16 +166,45 @@ func (c *Client) LoadCompleteHistory(ctx context.Context, threadID string) (map[
 	})
 }
 
+// followThread tells the desktop main process that this client is following
+// the conversation. Its snapshot broadcast is what lets
+// thread-follower-load-complete-history find a live owner.
+func (c *Client) followThread(ctx context.Context, threadID string, following bool) error {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return ErrNoClientFound
+	}
+	if err := c.ensureConnected(ctx); err != nil {
+		return err
+	}
+	return c.writeMessage(ctx, wireMessage{
+		Type:    "broadcast",
+		Method:  "thread-stream-following-changed",
+		Version: 1,
+		Params: map[string]any{
+			"conversationId": threadID,
+			"hostId":         "local",
+			"following":      following,
+		},
+	})
+}
+
 func (c *Client) StartTurn(ctx context.Context, threadID string, turnStartParams map[string]any) (map[string]any, error) {
 	threadID = strings.TrimSpace(threadID)
-	return c.requestForThread(ctx, threadID, "thread-follower-start-turn", 1, map[string]any{
-		"conversationId":  threadID,
-		"turnStartParams": turnStartParams,
+	if _, err := c.ensureThreadOwner(ctx, threadID); err != nil {
+		return nil, err
+	}
+	return c.requestForThread(ctx, threadID, "thread-follower-start-turn", 2, map[string]any{
+		"conversationId": threadID,
+		"turnStart":      turnStartParams,
 	})
 }
 
 func (c *Client) SteerTurn(ctx context.Context, threadID string, input []map[string]any, restoreMessage map[string]any) (map[string]any, error) {
 	threadID = strings.TrimSpace(threadID)
+	if _, err := c.ensureThreadOwner(ctx, threadID); err != nil {
+		return nil, err
+	}
 	params := map[string]any{
 		"conversationId": threadID,
 		"input":          input,
@@ -161,8 +224,18 @@ func (c *Client) requestForThread(ctx context.Context, threadID, method string, 
 }
 
 func (c *Client) requestWithBroadcast(ctx context.Context, method string, version int, params map[string]any, targetClientID, ownerThreadID string, broadcastMatch func(wireMessage) (map[string]any, bool)) (map[string]any, error) {
-	if err := c.ensureConnected(ctx); err != nil {
+	resp, err := c.requestResponse(ctx, method, version, params, targetClientID, ownerThreadID, broadcastMatch)
+	if err != nil {
 		return nil, err
+	}
+	c.rememberThreadOwner(ownerThreadID, resp.HandledByClientID)
+	c.rememberThreadOwnerFromResult(ownerThreadID, resp.Result)
+	return resp.Result, resp.Err
+}
+
+func (c *Client) requestResponse(ctx context.Context, method string, version int, params map[string]any, targetClientID, ownerThreadID string, broadcastMatch func(wireMessage) (map[string]any, bool)) (response, error) {
+	if err := c.ensureConnected(ctx); err != nil {
+		return response{}, err
 	}
 	id := c.nextRequestID()
 	ch := make(chan response, 1)
@@ -182,17 +255,44 @@ func (c *Client) requestWithBroadcast(ctx context.Context, method string, versio
 	if err := c.writeMessage(ctx, msg); err != nil {
 		c.deletePending(id)
 		_ = c.Close()
-		return nil, err
+		return response{}, err
 	}
 	select {
 	case resp := <-ch:
-		c.rememberThreadOwner(ownerThreadID, resp.HandledByClientID)
-		c.rememberThreadOwnerFromResult(ownerThreadID, resp.Result)
-		return resp.Result, resp.Err
+		return resp, nil
 	case <-ctx.Done():
 		c.deletePending(id)
-		return nil, ctx.Err()
+		return response{}, ctx.Err()
 	}
+}
+
+// ensureThreadOwner asks the desktop main process which renderer owns the
+// thread. Follower requests must be addressed to that client id; without this
+// discovery step the main process reports no-client-found.
+func (c *Client) ensureThreadOwner(ctx context.Context, threadID string) (string, error) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return "", ErrNoClientFound
+	}
+	if owner := c.threadOwner(threadID); owner != "" {
+		return owner, nil
+	}
+	resp, err := c.requestResponse(ctx, "thread-owner-discovery", 1, map[string]any{
+		"hostId":         "local",
+		"conversationId": threadID,
+	}, "", threadID, nil)
+	if err != nil {
+		return "", err
+	}
+	if resp.Err != nil {
+		return "", resp.Err
+	}
+	owner := strings.TrimSpace(resp.HandledByClientID)
+	if owner == "" {
+		return "", ErrNoClientFound
+	}
+	c.rememberThreadOwner(threadID, owner)
+	return owner, nil
 }
 
 func (c *Client) ensureConnected(ctx context.Context) error {

@@ -747,8 +747,19 @@ func (b *Bot) sendSectionedCard(ctx context.Context, chatID int64, sections []mo
 	return b.sendSectionedCardWithOptions(ctx, chatID, sections, model.SendOptions{})
 }
 
+// renderSectionedCard picks the card schema Feishu will actually render.
+// JSON 2.0 cards are rejected by tenants/clients without 2.0 support and are
+// replaced with an "upgrade the client" placeholder, so the compatible schema
+// is the safe default and 2.0 stays an explicit opt-in.
+func (b *Bot) renderSectionedCard(sections []model.MessageSection) (string, error) {
+	if strings.EqualFold(strings.TrimSpace(b.cfg.FeishuCardVersion), "v2") {
+		return buildSectionedCard(sections)
+	}
+	return buildSectionedCardV1(sections)
+}
+
 func (b *Bot) sendSectionedCardWithOptions(ctx context.Context, chatID int64, sections []model.MessageSection, options model.SendOptions) (int64, error) {
-	card, err := buildSectionedCard(sections)
+	card, err := b.renderSectionedCard(sections)
 	if err != nil {
 		return 0, err
 	}
@@ -1018,6 +1029,21 @@ func (b *Bot) handleCardAction(ctx context.Context, event *callback.CardActionTr
 	openChatID := strings.TrimSpace(event.Event.Context.OpenChatID)
 	openMessageID := strings.TrimSpace(event.Event.Context.OpenMessageID)
 	openUserID := strings.TrimSpace(event.Event.Operator.OpenID)
+	hasAction := event.Event.Action != nil
+	hasValue := false
+	hasFormValue := false
+	if event.Event.Action != nil {
+		hasValue = len(event.Event.Action.Value) > 0
+		hasFormValue = len(event.Event.Action.FormValue) > 0
+	}
+	b.logger.Printf("feishu card action inbound: open_chat=%s open_message=%s open_user=%s has_action=%t has_value=%t has_form_value=%t",
+		safeIDForLog(openChatID),
+		safeIDForLog(openMessageID),
+		safeIDForLog(openUserID),
+		hasAction,
+		hasValue,
+		hasFormValue,
+	)
 	if openChatID == "" || openMessageID == "" || openUserID == "" {
 		return nil, nil
 	}
@@ -1056,6 +1082,13 @@ func (b *Bot) handleCardAction(ctx context.Context, event *callback.CardActionTr
 		data = callbackDataFromValue(actionPayload)
 	}
 	topicID := b.callbackTopicID(ctx, chatID, messageID)
+	b.logger.Printf("feishu card action route: chat_id=%d message_id=%d topic_id=%d data_len=%d data_sha=%s",
+		chatID,
+		messageID,
+		topicID,
+		len(data),
+		shortHashForLog(data),
+	)
 	response, err := b.service.HandleCallbackPayloadFromSource(ctx, chatID, topicID, messageID, userID, data, actionPayload, model.PanelSourceFeishuInput)
 	if err != nil {
 		_ = b.sendFailureMessage(ctx, chatID, b.t(ctx, "本地 Go bridge 处理请求失败。请试试 /repair 或 /status。", "Request failed inside the local Go bridge. Try /repair or /status."))
@@ -1400,7 +1433,7 @@ func (b *Bot) sendOpenIDMessage(ctx context.Context, openUserID, text string, bu
 }
 
 func (b *Bot) sendOpenIDSectionedCard(ctx context.Context, openUserID string, sections []model.MessageSection) (int64, error) {
-	content, err := buildSectionedCard(sections)
+	content, err := b.renderSectionedCard(sections)
 	if err != nil {
 		return 0, err
 	}

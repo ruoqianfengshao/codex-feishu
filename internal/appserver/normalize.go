@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +41,8 @@ type ThreadReadSnapshot struct {
 	LatestToolUpdatedAt        string
 	PlanPrompt                 *model.PlanPrompt
 	DetailItems                []model.DetailItem
+	RecentTurns                []CompletedTurnMessage `json:"-"`
+	CompactThreadRaw           json.RawMessage        `json:"-"`
 }
 
 type AgentMessageEntry struct {
@@ -47,6 +50,51 @@ type AgentMessageEntry struct {
 	Phase string `json:"phase,omitempty"`
 	Text  string `json:"text,omitempty"`
 	FP    string `json:"fp,omitempty"`
+}
+
+// CompletedTurnMessage is the user request and final answer needed to replay a
+// completed turn into a conversation topic.
+type CompletedTurnMessage struct {
+	TurnID     string
+	UserItemID string
+	UserText   string
+	FinalText  string
+}
+
+// RecentCompletedTurnMessages returns the most recent completed turns that
+// have both a user message and a final agent answer, in chronological order.
+func RecentCompletedTurnMessages(result map[string]any, limit int) []CompletedTurnMessage {
+	if limit <= 0 {
+		return nil
+	}
+	payload := result
+	if nested, ok := result["thread"].(map[string]any); ok && nested != nil {
+		payload = nested
+	}
+	turns, _ := payload["turns"].([]any)
+	completed := make([]CompletedTurnMessage, 0, limit)
+	for _, rawTurn := range turns {
+		turn, _ := rawTurn.(map[string]any)
+		if turn == nil || !terminalTurnStatus(statusText(turn["status"])) {
+			continue
+		}
+		items, _ := turn["items"].([]any)
+		userItemID, userText, _, _ := latestUserMessage(items)
+		finalText, _ := latestFinalAgentMessage(items)
+		if strings.TrimSpace(userText) == "" || strings.TrimSpace(finalText) == "" {
+			continue
+		}
+		completed = append(completed, CompletedTurnMessage{
+			TurnID:     stringValue(turn["id"], ""),
+			UserItemID: userItemID,
+			UserText:   userText,
+			FinalText:  finalText,
+		})
+	}
+	if len(completed) > limit {
+		completed = completed[len(completed)-limit:]
+	}
+	return completed
 }
 
 func ThreadsFromList(result map[string]any) []model.Thread {
@@ -119,7 +167,11 @@ func SnapshotFromThreadRead(result map[string]any) ThreadReadSnapshot {
 	if nested, ok := result["thread"].(map[string]any); ok && nested != nil {
 		payload = nested
 	}
-	snapshot := ThreadReadSnapshot{Thread: thread}
+	snapshot := ThreadReadSnapshot{
+		Thread:           thread,
+		RecentTurns:      RecentCompletedTurnMessages(result, 2),
+		CompactThreadRaw: CompactThreadReadPayload(result),
+	}
 	if statusHasFlag(thread.Status, "waitingOnApproval") {
 		snapshot.WaitingOnApproval = true
 	}
@@ -188,6 +240,31 @@ func SnapshotFromThreadRead(result map[string]any) ThreadReadSnapshot {
 		}
 	}
 	return snapshot
+}
+
+// ApplyTurnResult overrides the cross-process thread/read projection with the
+// shared turn history record. This keeps a transient "interrupted" status from
+// being treated as a completed turn.
+func ApplyTurnResult(snapshot *ThreadReadSnapshot, result *TurnResult) {
+	if snapshot == nil || result == nil {
+		return
+	}
+	status := strings.TrimSpace(result.Status)
+	if status != "" {
+		snapshot.LatestTurnStatus = status
+	}
+	if strings.EqualFold(status, "inProgress") {
+		snapshot.LatestFinalText = ""
+		snapshot.LatestFinalFP = ""
+		return
+	}
+	if text := strings.TrimSpace(result.FinalText); text != "" {
+		snapshot.LatestFinalText = text
+		snapshot.LatestFinalFP = fingerprint("turn_final", snapshot.LatestTurnID, text)
+		return
+	}
+	snapshot.LatestFinalText = ""
+	snapshot.LatestFinalFP = ""
 }
 
 func shouldUseLatestUserPreview(preview string, threadUpdatedAt, latestTurnUpdatedAt int64) bool {
@@ -375,6 +452,7 @@ func CompactSnapshot(previous *model.ThreadSnapshotState, current ThreadReadSnap
 		out.LastRichLiveEventAt = previous.LastRichLiveEventAt
 		out.LastProgressSentAt = previous.LastProgressSentAt
 		out.LastCompletionFP = previous.LastCompletionFP
+		out.LastApprovalFP = previous.LastApprovalFP
 		out.LastFinalNoticeFP = previous.LastFinalNoticeFP
 		out.LastToolDocumentFP = previous.LastToolDocumentFP
 	}
@@ -390,9 +468,169 @@ func CompactSnapshot(previous *model.ThreadSnapshotState, current ThreadReadSnap
 	if current.WaitingOnReply && current.PlanPrompt != nil {
 		out.LastReplyFP = current.PlanPrompt.Fingerprint
 	}
+	// The raw thread payload can be several megabytes on long conversations.
+	// Keep only the recent completed turns needed for topic history fallback;
+	// the full payload is stored separately on the thread row.
+	current.Thread.Raw = current.CompactThreadRaw
+	if len(current.Thread.Raw) == 0 {
+		current.Thread.Raw = compactSnapshotThreadRaw(current.Thread, current.RecentTurns)
+	}
 	raw, _ := json.Marshal(current)
 	out.CompactJSON = raw
 	return out
+}
+
+const (
+	maxCompactSnapshotTurns     = 6
+	maxCompactSnapshotItems     = 80
+	maxCompactSnapshotTextRunes = 4000
+)
+
+// CompactThreadReadPayload keeps recent turns and items for panel details and
+// topic history while truncating long tool output. The full payload lives on
+// the thread row; snapshots only need enough history to repair older panels.
+func CompactThreadReadPayload(payload map[string]any) json.RawMessage {
+	threadPayload := payload
+	if nested, ok := payload["thread"].(map[string]any); ok && nested != nil {
+		threadPayload = nested
+	}
+	out := map[string]any{}
+	for _, key := range []string{
+		"id", "path", "createdAt", "updatedAt", "cwd", "name", "title",
+		"status", "archived", "isArchived", "deleted", "isDeleted",
+	} {
+		if value, ok := threadPayload[key]; ok {
+			out[key] = compactSnapshotValue(value)
+		}
+	}
+	turns, _ := threadPayload["turns"].([]any)
+	if len(turns) > maxCompactSnapshotTurns {
+		turns = turns[len(turns)-maxCompactSnapshotTurns:]
+	}
+	compactTurns := make([]any, 0, len(turns))
+	for _, rawTurn := range turns {
+		turn, _ := rawTurn.(map[string]any)
+		if turn == nil {
+			continue
+		}
+		compactTurn := map[string]any{}
+		for _, key := range []string{"id", "status", "startedAt", "completedAt", "durationMs"} {
+			if value, ok := turn[key]; ok {
+				compactTurn[key] = compactSnapshotValue(value)
+			}
+		}
+		items, _ := turn["items"].([]any)
+		if len(items) > maxCompactSnapshotItems {
+			items = items[len(items)-maxCompactSnapshotItems:]
+		}
+		compactItems := make([]any, 0, len(items))
+		for _, item := range items {
+			compactItems = append(compactItems, compactSnapshotValue(item))
+		}
+		compactTurn["items"] = compactItems
+		compactTurns = append(compactTurns, compactTurn)
+	}
+	out["turns"] = compactTurns
+	raw, _ := json.Marshal(map[string]any{"thread": out})
+	return raw
+}
+
+func compactSnapshotValue(value any) any {
+	switch typed := value.(type) {
+	case string:
+		runes := []rune(typed)
+		if len(runes) > maxCompactSnapshotTextRunes {
+			return string(runes[:maxCompactSnapshotTextRunes]) + fmt.Sprintf("\n<truncated %d chars>", len(runes)-maxCompactSnapshotTextRunes)
+		}
+		return typed
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, nested := range typed {
+			out[key] = compactSnapshotValue(nested)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, nested := range typed {
+			out = append(out, compactSnapshotValue(nested))
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func compactSnapshotThreadRaw(thread model.Thread, turns []CompletedTurnMessage) json.RawMessage {
+	threadPayload := map[string]any{
+		"id":     thread.ID,
+		"title":  thread.Title,
+		"cwd":    thread.CWD,
+		"status": thread.Status,
+	}
+	compactTurns := make([]any, 0, len(turns))
+	for _, turn := range turns {
+		items := []any{
+			map[string]any{
+				"id":   turn.UserItemID,
+				"type": "userMessage",
+				"content": []any{
+					map[string]any{"type": "text", "text": turn.UserText},
+				},
+			},
+			map[string]any{
+				"id":    "final-" + turn.TurnID,
+				"type":  "agentMessage",
+				"phase": "final_answer",
+				"text":  turn.FinalText,
+			},
+		}
+		compactTurns = append(compactTurns, map[string]any{
+			"id":     turn.TurnID,
+			"status": "completed",
+			"items":  items,
+		})
+	}
+	threadPayload["turns"] = compactTurns
+	raw, _ := json.Marshal(map[string]any{"thread": threadPayload})
+	return raw
+}
+
+// CompactThreadMetadata keeps the thread metadata that the bridge needs later
+// (rollout path, timestamps, turn ids) without copying the full item history
+// into the threads table on every poll.
+func CompactThreadMetadata(payload map[string]any) json.RawMessage {
+	threadPayload := payload
+	if nested, ok := payload["thread"].(map[string]any); ok && nested != nil {
+		threadPayload = nested
+	}
+	out := map[string]any{}
+	for _, key := range []string{
+		"id", "path", "createdAt", "updatedAt", "cwd", "name", "title",
+		"status", "archived", "isArchived", "deleted", "isDeleted",
+	} {
+		if value, ok := threadPayload[key]; ok {
+			out[key] = value
+		}
+	}
+	if turns, ok := threadPayload["turns"].([]any); ok {
+		compactTurns := make([]any, 0, len(turns))
+		for _, rawTurn := range turns {
+			turn, _ := rawTurn.(map[string]any)
+			if turn == nil {
+				continue
+			}
+			compactTurn := map[string]any{}
+			for _, key := range []string{"id", "status"} {
+				if value, ok := turn[key]; ok {
+					compactTurn[key] = value
+				}
+			}
+			compactTurns = append(compactTurns, compactTurn)
+		}
+		out["turns"] = compactTurns
+	}
+	raw, _ := json.Marshal(map[string]any{"thread": out})
+	return raw
 }
 
 func applyLatestTurnTiming(previous *model.ThreadSnapshotState, current *ThreadReadSnapshot, observedAt time.Time) {
@@ -642,21 +880,25 @@ func PendingApprovalFromServerRequest(event Event) (*model.PendingApproval, bool
 		return nil, false
 	}
 	method := strings.ToLower(strings.TrimSpace(event.Method))
-	requestID := rpcString(event.ID)
+	requestID := approvalRequestID(event)
 	if requestID == "" {
 		return nil, false
 	}
 	threadID := nestedThreadID(event.Params)
-	turnID := stringValue(event.Params["turnId"], "")
-	itemID := stringValue(event.Params["itemId"], "")
+	turnID := serverRequestTurnID(event.Params)
+	itemID := serverRequestItemID(event.Params)
 	switch {
-	case strings.Contains(method, "requestapproval"):
+	case isApprovalRequestMethod(method):
+		promptKind := "approval"
+		if isPermissionsApprovalRequestMethod(method) {
+			promptKind = "permissions_approval"
+		}
 		return &model.PendingApproval{
 			RequestID:   requestID,
 			ThreadID:    threadID,
 			TurnID:      turnID,
 			ItemID:      itemID,
-			PromptKind:  "approval",
+			PromptKind:  promptKind,
 			Question:    stringValue(event.Params["question"], "Approval required."),
 			Status:      "pending",
 			PayloadJSON: model.MustJSON(event.Params),
@@ -676,6 +918,105 @@ func PendingApprovalFromServerRequest(event Event) (*model.PendingApproval, bool
 		}, true
 	}
 	return nil, false
+}
+
+func serverRequestTurnID(params map[string]any) string {
+	if value := stringValue(params["turnId"], ""); value != "" {
+		return value
+	}
+	if turn, ok := params["turn"].(map[string]any); ok {
+		if value := stringValue(turn["id"], ""); value != "" {
+			return value
+		}
+		if value := stringValue(turn["turnId"], ""); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func serverRequestItemID(params map[string]any) string {
+	if value := stringValue(params["itemId"], ""); value != "" {
+		return value
+	}
+	if item, ok := params["item"].(map[string]any); ok {
+		if value := stringValue(item["id"], ""); value != "" {
+			return value
+		}
+		if value := stringValue(item["itemId"], ""); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func isApprovalRequestMethod(method string) bool {
+	method = strings.ToLower(strings.TrimSpace(method))
+	switch {
+	case strings.HasSuffix(method, "requestapproval"):
+		return true
+	case method == "applypatchapproval", method == "execcommandapproval":
+		return true
+	}
+	// Notifications such as "serverRequest/resolved" mention approvals but are
+	// not new approval requests.
+	return false
+}
+
+func isPermissionsApprovalRequestMethod(method string) bool {
+	method = strings.ToLower(strings.TrimSpace(method))
+	return strings.Contains(method, "permissions/requestapproval")
+}
+
+// approvalRequestID only accepts real JSON-RPC request ids. Notifications carry
+// a zero id and must never turn into phantom approvals with request "0".
+func approvalRequestID(event Event) string {
+	for _, value := range []any{event.ID, event.Params["requestId"]} {
+		if id := cleanRequestID(value); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func cleanRequestID(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" || trimmed == "0" || trimmed == "0.0" || trimmed == "<nil>" {
+			return ""
+		}
+		return trimmed
+	case float64:
+		if typed <= 0 {
+			return ""
+		}
+		return strconv.FormatInt(int64(typed), 10)
+	case float32:
+		if typed <= 0 {
+			return ""
+		}
+		return strconv.FormatInt(int64(typed), 10)
+	case int:
+		if typed <= 0 {
+			return ""
+		}
+		return strconv.Itoa(typed)
+	case int64:
+		if typed <= 0 {
+			return ""
+		}
+		return strconv.FormatInt(typed, 10)
+	case json.Number:
+		number, err := typed.Int64()
+		if err != nil || number <= 0 {
+			return ""
+		}
+		return typed.String()
+	}
+	return ""
 }
 
 func iterThreadItems(payload map[string]any) []map[string]any {
@@ -718,6 +1059,21 @@ func nestedThreadID(params map[string]any) string {
 			return value
 		}
 		if value := stringValue(thread["threadId"], ""); value != "" {
+			return value
+		}
+	}
+	if turn, ok := params["turn"].(map[string]any); ok {
+		if value := stringValue(turn["threadId"], ""); value != "" {
+			return value
+		}
+		if thread, ok := turn["thread"].(map[string]any); ok {
+			if value := stringValue(thread["id"], ""); value != "" {
+				return value
+			}
+		}
+	}
+	if item, ok := params["item"].(map[string]any); ok {
+		if value := stringValue(item["threadId"], ""); value != "" {
 			return value
 		}
 	}

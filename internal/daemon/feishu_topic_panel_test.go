@@ -2,12 +2,18 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/ruoqianfengshao/codex-feishu/internal/appserver"
 	"github.com/ruoqianfengshao/codex-feishu/internal/model"
@@ -138,6 +144,8 @@ type recordingThreadTopicSender struct {
 	canonicalByChatID  map[int64]int64
 	ensureTopicChatIDs []int64
 	ensureTopicThreads []model.Thread
+	ensureTopicForced  []bool
+	ensureTopicSilent  []bool
 }
 
 func (s *recordingThreadTopicSender) EnsureThreadTopic(ctx context.Context, chatID int64, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, sourceMode string) (*model.FeishuThreadTopic, error) {
@@ -145,6 +153,8 @@ func (s *recordingThreadTopicSender) EnsureThreadTopic(ctx context.Context, chat
 	defer s.mu.Unlock()
 	s.ensureTopicChatIDs = append(s.ensureTopicChatIDs, chatID)
 	s.ensureTopicThreads = append(s.ensureTopicThreads, thread)
+	s.ensureTopicForced = append(s.ensureTopicForced, model.ForceThreadTopicActivation(ctx))
+	s.ensureTopicSilent = append(s.ensureTopicSilent, model.SilentThreadTopicActivation(ctx))
 	if s.topic == nil {
 		s.topic = &model.FeishuThreadTopic{
 			ChatID:            chatID,
@@ -171,6 +181,22 @@ func (s *recordingThreadTopicSender) ensureTopicThreadSnapshot() []model.Thread 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]model.Thread(nil), s.ensureTopicThreads...)
+}
+
+func (s *recordingThreadTopicSender) ensureTopicActivationSnapshot() ([]bool, []bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]bool(nil), s.ensureTopicForced...), append([]bool(nil), s.ensureTopicSilent...)
+}
+
+func (s *recordingThreadTopicSender) topicSnapshot() *model.FeishuThreadTopic {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.topic == nil {
+		return nil
+	}
+	topic := *s.topic
+	return &topic
 }
 
 func waitForRecordedMessages(t *testing.T, sender *recordingThreadTopicSender) []recordedMessage {
@@ -383,6 +409,115 @@ func TestPendingApprovalDoesNotSendSystemNotification(t *testing.T) {
 
 	if len(notifier.notifications) != 0 {
 		t.Fatalf("notifications = %#v, want none after local system notifications were removed", notifier.notifications)
+	}
+}
+
+func TestServerRequestApprovalCreatesFeishuApprovalPanelForExistingTopic(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:           "thread-approval-topic",
+		Title:        "Approval thread",
+		ActiveTurnID: "turn-approval-topic",
+		Status:       "inProgress",
+		UpdatedAt:    time.Now().UTC().Unix(),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	snapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-approval-topic",
+		LatestTurnStatus: "inProgress",
+	}, time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	if err := service.store.UpsertFeishuThreadTopic(ctx, model.FeishuThreadTopic{
+		ChatID:            123456789,
+		OpenChatID:        "oc_approval_topic",
+		ThreadID:          thread.ID,
+		RootMessageID:     987,
+		RootOpenMessageID: "om_approval_root",
+		FeishuThreadID:    "omt_approval",
+	}); err != nil {
+		t.Fatalf("UpsertFeishuThreadTopic failed: %v", err)
+	}
+	stub := &stubSession{threadReads: map[string]map[string]any{
+		thread.ID: {
+			"id":     thread.ID,
+			"name":   thread.Title,
+			"status": "inProgress",
+			"turns": []any{map[string]any{
+				"id":     "turn-approval-topic",
+				"status": "inProgress",
+			}},
+		},
+	}}
+	service.live = stub
+	service.liveConnected = true
+
+	service.handleLiveEvent(ctx, stub, appserver.Event{
+		Channel: "server_request",
+		Method:  "item/commandExecution/requestApproval",
+		ID:      nil,
+		Params: map[string]any{
+			"requestId": "req-approval-topic",
+			"question":  "Allow command?",
+			"turn": map[string]any{
+				"id":       "turn-approval-topic",
+				"threadId": thread.ID,
+			},
+		},
+	})
+
+	if len(sender.messages) == 0 {
+		t.Fatal("no Feishu approval panel was sent")
+	}
+	var got recordedMessage
+	for _, message := range sender.messages {
+		if strings.Contains(message.text, "Allow command?") && strings.Contains(message.text, "/approve req-approval-topic") {
+			got = message
+			break
+		}
+	}
+	if got.messageID == 0 {
+		t.Fatalf("independent approval card was not sent: %#v", sender.messages)
+	}
+	if got.chatID != 123456789 || got.topicID != 0 {
+		t.Fatalf("message target = %d/%d, want topic chat 123456789/0", got.chatID, got.topicID)
+	}
+	if !strings.Contains(got.codexProgressMarkdown, "Allow command?") && !strings.Contains(got.text, "Allow command?") {
+		t.Fatalf("approval card missing question: %#v", got)
+	}
+	var approveToken string
+	for _, row := range got.buttons {
+		for _, button := range row {
+			if button.Text == "Approve" {
+				approveToken = button.CallbackData
+			}
+		}
+	}
+	if approveToken == "" {
+		t.Fatalf("approval card buttons = %#v, want approval button", got.buttons)
+	}
+	route, err := service.store.GetCallbackRoute(ctx, approveToken)
+	if err != nil {
+		t.Fatalf("GetCallbackRoute failed: %v", err)
+	}
+	if route == nil || route.Action != "approve" || route.RequestID != "req-approval-topic" {
+		t.Fatalf("approval route = %#v, want approve request route", route)
+	}
+	pending, err := service.store.GetPendingApproval(ctx, "req-approval-topic")
+	if err != nil {
+		t.Fatalf("GetPendingApproval failed: %v", err)
+	}
+	if pending == nil || pending.ChatMessageID != got.messageID {
+		t.Fatalf("pending approval = %#v, want chat message id %d", pending, got.messageID)
 	}
 }
 
@@ -891,15 +1026,16 @@ func TestSyncThreadPanelDoesNotUseDocumentDeliveryForToolOutput(t *testing.T) {
 		UpdatedAt:   time.Now().UTC().Unix(),
 	}
 	snapshot := appserver.ThreadReadSnapshot{
-		Thread:           thread,
-		LatestTurnID:     "turn-tool",
-		LatestTurnStatus: "completed",
-		LatestToolID:     "tool-1",
-		LatestToolKind:   "commandExecution",
-		LatestToolLabel:  "pwsh -Command node -v",
-		LatestToolStatus: "completed",
-		LatestToolOutput: "v22.22.2\n",
-		LatestToolFP:     "tool-fp-1",
+		Thread:              thread,
+		LatestTurnID:        "turn-tool",
+		LatestTurnStatus:    "completed",
+		LatestTurnUpdatedAt: time.Now().Add(-10 * time.Second).UTC().Format(time.RFC3339Nano),
+		LatestToolID:        "tool-1",
+		LatestToolKind:      "commandExecution",
+		LatestToolLabel:     "pwsh -Command node -v",
+		LatestToolStatus:    "completed",
+		LatestToolOutput:    "v22.22.2\n",
+		LatestToolFP:        "tool-fp-1",
 		DetailItems: []model.DetailItem{
 			{ID: "tool-1", Kind: model.DetailItemTool, ToolKind: "commandExecution", Label: "pwsh -Command node -v", Status: "completed", FP: "tool-fp-1"},
 			{ID: "tool-1:output", Kind: model.DetailItemOutput, Output: "v22.22.2\n", FP: "tool-output-fp-1"},
@@ -917,11 +1053,14 @@ func TestSyncThreadPanelDoesNotUseDocumentDeliveryForToolOutput(t *testing.T) {
 	if len(sender.documents) != 0 {
 		t.Fatalf("documents = %#v, want no SendDocument path for tool output", sender.documents)
 	}
-	if len(sender.messages) != 1 {
-		t.Fatalf("message count = %d, want one Codex panel only", len(sender.messages))
+	if len(sender.messages) != 2 {
+		t.Fatalf("message count = %d, want Codex panel and one incomplete notice", len(sender.messages))
 	}
 	if sender.messages[0].style != model.MessageStyleCodexPanel || !strings.Contains(sender.messages[0].text, "pwsh -Command node -v") {
 		t.Fatalf("message = %#v, want tool details folded into Codex panel", sender.messages[0])
+	}
+	if !strings.Contains(sender.messages[1].text, "did not produce a final answer") {
+		t.Fatalf("incomplete notice = %#v, want no-final-answer card", sender.messages[1])
 	}
 }
 
@@ -3565,5 +3704,312 @@ func TestTerminalSyncAdoptsActivePanelWithoutTurnID(t *testing.T) {
 	}
 	if len(sender.deletes) != 2 || sender.deletes[0].messageID != 102 || sender.deletes[1].messageID != 103 {
 		t.Fatalf("deletes = %#v, want existing tool/output delete and summary retained", sender.deletes)
+	}
+}
+
+func TestFeishuTopicOpenBackfillsTwoRecentTurnsOnce(t *testing.T) {
+	service := newTestService(t)
+	sender := &recordingThreadTopicSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+
+	payload := map[string]any{
+		"thread": map[string]any{
+			"id":     "thread-topic-history",
+			"title":  "Topic history",
+			"cwd":    `C:\\Users\\you\\Projects\\Codex`,
+			"status": "active",
+			"turns": []any{
+				map[string]any{
+					"id": "turn-old", "status": "completed",
+					"items": []any{
+						map[string]any{"id": "user-old", "type": "userMessage", "content": []any{map[string]any{"type": "text", "text": "old request"}}},
+						map[string]any{"id": "final-old", "type": "agentMessage", "phase": "final_answer", "text": "old answer"},
+					},
+				},
+				map[string]any{
+					"id": "turn-first", "status": "completed",
+					"items": []any{
+						map[string]any{"id": "user-first", "type": "userMessage", "content": []any{map[string]any{"type": "text", "text": "first request"}}},
+						map[string]any{"id": "final-first", "type": "agentMessage", "phase": "final_answer", "text": "first answer"},
+					},
+				},
+				map[string]any{
+					"id": "turn-second", "status": "completed",
+					"items": []any{
+						map[string]any{"id": "user-second", "type": "userMessage", "content": []any{map[string]any{"type": "text", "text": "second request"}}},
+						map[string]any{"id": "final-second", "type": "agentMessage", "phase": "final_answer", "text": "second answer"},
+					},
+				},
+				map[string]any{
+					"id": "turn-active", "status": "inProgress",
+					"items": []any{
+						map[string]any{"id": "user-active", "type": "userMessage", "content": []any{map[string]any{"type": "text", "text": "active request"}}},
+					},
+				},
+			},
+		},
+	}
+	thread := appserver.ThreadFromPayload(payload)
+	// The cached thread row only carries list metadata, not turns; history must
+	// come from the thread/read snapshot (or a fresh read).
+	thread.Raw = json.RawMessage(`{}`)
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	snapshot := appserver.CompactSnapshot(nil, appserver.SnapshotFromThreadRead(payload), time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, Enabled: true}
+	openCtx := model.WithForcedThreadTopicActivation(ctx)
+
+	service.syncThreadPanelToTarget(openCtx, target, thread.ID, true, model.PanelSourceFeishuInput)
+	messages := sender.messageSnapshot()
+	var history []recordedMessage
+	for _, message := range messages {
+		if strings.HasPrefix(message.text, "[History user]") || strings.HasPrefix(message.text, "[History answer]") {
+			history = append(history, message)
+		}
+	}
+	if len(history) != 4 {
+		t.Fatalf("history messages = %#v, want four messages", history)
+	}
+	for _, want := range []string{"first request", "first answer", "second request", "second answer"} {
+		found := false
+		for _, message := range history {
+			if strings.Contains(message.text, want) {
+				found = true
+				if message.options.FeishuReplyToMessageID != 9001 || !message.options.FeishuReplyInThread || message.options.FeishuCodexThreadID != thread.ID {
+					t.Fatalf("history message options = %#v, want Feishu thread reply", message.options)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("history messages = %#v, missing %q", history, want)
+		}
+	}
+
+	service.syncThreadPanelToTarget(openCtx, target, thread.ID, true, model.PanelSourceFeishuInput)
+	historyCount := 0
+	for _, message := range sender.messageSnapshot() {
+		if strings.HasPrefix(message.text, "[History user]") || strings.HasPrefix(message.text, "[History answer]") {
+			historyCount++
+		}
+	}
+	if historyCount != 4 {
+		t.Fatalf("history count after reopening = %d, want 4", historyCount)
+	}
+}
+
+func TestFeishuTopicOpenBackfillsHistoryFromFreshThreadRead(t *testing.T) {
+	service := newTestService(t)
+	sender := &recordingThreadTopicSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+	threadID := "thread-topic-history-fresh"
+	payload := map[string]any{
+		"thread": map[string]any{
+			"id":     threadID,
+			"title":  "Fresh history",
+			"cwd":    `C:\\Users\\you\\Projects\\Codex`,
+			"status": "idle",
+			"turns": []any{
+				map[string]any{
+					"id": "turn-one", "status": "completed",
+					"items": []any{
+						map[string]any{"id": "user-one", "type": "userMessage", "content": []any{map[string]any{"type": "text", "text": "fresh request"}}},
+						map[string]any{"id": "final-one", "type": "agentMessage", "phase": "final_answer", "text": "fresh answer"},
+					},
+				},
+			},
+		},
+	}
+	thread := appserver.ThreadFromPayload(map[string]any{
+		"thread": map[string]any{"id": threadID, "title": "Fresh history", "cwd": `C:\\Users\\you\\Projects\\Codex`, "status": "idle"},
+	})
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	snapshot := appserver.CompactSnapshot(nil, appserver.SnapshotFromThreadRead(map[string]any{
+		"thread": map[string]any{"id": threadID, "title": "Fresh history", "cwd": `C:\\Users\\you\\Projects\\Codex`, "status": "idle"},
+	}), time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	stub := &stubSession{threadReads: map[string]map[string]any{threadID: payload}}
+	service.live = stub
+	service.liveConnected = true
+
+	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, Enabled: true}
+	service.syncThreadPanelToTarget(model.WithForcedThreadTopicActivation(ctx), target, thread.ID, true, model.PanelSourceFeishuInput)
+
+	var history []recordedMessage
+	for _, message := range sender.messageSnapshot() {
+		if strings.HasPrefix(message.text, "[History user]") || strings.HasPrefix(message.text, "[History answer]") {
+			history = append(history, message)
+		}
+	}
+	if len(history) != 2 {
+		t.Fatalf("history messages = %#v, want user and answer from the fresh read", history)
+	}
+	if len(stub.threadReadCalls) == 0 {
+		t.Fatal("expected a fresh thread read when opening the topic")
+	}
+}
+
+func TestFeishuTurnRefreshesCodexDesktopOnceAfterCompletion(t *testing.T) {
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	sender := &recordingThreadTopicSender{}
+	service.SetSender(sender)
+	var opened atomic.Int64
+	service.desktopOpener = func(context.Context, string) error {
+		opened.Add(1)
+		return nil
+	}
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:        "thread-desktop-refresh",
+		Title:     "Desktop refresh",
+		CWD:       "/Users/example/work/refresh",
+		Status:    "completed",
+		UpdatedAt: time.Now().UTC().Unix(),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	payload := map[string]any{
+		"thread": map[string]any{
+			"id":     thread.ID,
+			"title":  thread.Title,
+			"cwd":    thread.CWD,
+			"status": "idle",
+			"turns": []any{map[string]any{
+				"id":     "turn-refresh",
+				"status": "completed",
+				"items": []any{
+					map[string]any{"id": "user-refresh", "type": "userMessage", "content": []any{map[string]any{"type": "text", "text": "hello"}}},
+					map[string]any{"id": "final-refresh", "type": "agentMessage", "phase": "final_answer", "text": "done"},
+				},
+			}},
+		},
+	}
+	snapshot := appserver.CompactSnapshot(nil, appserver.SnapshotFromThreadRead(payload), time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	if err := service.markInputOriginTurn(ctx, thread.ID, "turn-refresh", model.PanelSourceFeishuInput, 123456789, 0); err != nil {
+		t.Fatalf("markInputOriginTurn failed: %v", err)
+	}
+	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, Enabled: true}
+	for attempt := 0; attempt < 2; attempt++ {
+		service.syncThreadPanelToTarget(model.WithForcedThreadTopicActivation(ctx), target, thread.ID, true, model.PanelSourceFeishuInput)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for opened.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if opened.Load() != 1 {
+		t.Fatalf("desktop opener calls = %d, want one refresh after the turn", opened.Load())
+	}
+}
+
+func TestOpeningSameThreadTwiceReusesFeishuTopic(t *testing.T) {
+	service := newTestService(t)
+	sender := &recordingThreadTopicSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:        "thread-reuse-topic",
+		Title:     "Reuse topic",
+		CWD:       `/Users/example/work/reuse`,
+		Status:    "idle",
+		UpdatedAt: time.Now().UTC().Unix(),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	snapshot := appserver.CompactSnapshot(nil, appserver.SnapshotFromThreadRead(map[string]any{
+		"thread": map[string]any{"id": thread.ID, "title": thread.Title, "cwd": thread.CWD, "status": "idle"},
+	}), time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err := service.openThreadTopic(ctx, 123456789, 0, thread, model.PanelSourceFeishuInput); err != nil {
+			t.Fatalf("openThreadTopic failed: %v", err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(sender.ensureTopicThreadSnapshot()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls := sender.ensureTopicThreadSnapshot(); len(calls) < 2 {
+		t.Fatalf("EnsureThreadTopic calls = %d, want two opens", len(calls))
+	}
+	if topic := sender.topicSnapshot(); topic == nil || topic.RootMessageID != 9001 {
+		t.Fatalf("topic = %#v, want the same Feishu topic reused on reopen", topic)
+	}
+}
+
+func TestFeishuTopicOpenBackfillsHistoryFromAppServerHistoryDB(t *testing.T) {
+	service := newTestService(t)
+	sender := &recordingThreadTopicSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+	threadID := "thread-history-db"
+	thread := appserver.ThreadFromPayload(map[string]any{
+		"thread": map[string]any{"id": threadID, "title": "DB history", "cwd": `C:\\Users\\you\\Projects\\Codex`, "status": "idle"},
+	})
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	snapshot := appserver.CompactSnapshot(nil, appserver.SnapshotFromThreadRead(map[string]any{
+		"thread": map[string]any{"id": threadID, "title": "DB history", "cwd": `C:\\Users\\you\\Projects\\Codex`, "status": "idle"},
+	}), time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	codexHome := service.codexHomeDir()
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(codexHome, "thread_history_9.sqlite"))
+	if err != nil {
+		t.Fatalf("sql.Open failed: %v", err)
+	}
+	defer db.Close()
+	for _, statement := range []string{
+		`CREATE TABLE thread_turns (
+			thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, rollout_ordinal INTEGER NOT NULL,
+			status TEXT NOT NULL, first_user_item_id TEXT, final_agent_item_id TEXT)`,
+		`CREATE TABLE thread_items (
+			thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, item_id TEXT NOT NULL,
+			rollout_ordinal INTEGER NOT NULL, item_type TEXT NOT NULL DEFAULT '', item_json TEXT NOT NULL)`,
+		`INSERT INTO thread_turns VALUES ('` + threadID + `', 'turn-db', 10, 'completed', 'u-db', 'a-db')`,
+		`INSERT INTO thread_items VALUES ('` + threadID + `', 'turn-db', 'u-db', 1, 'userMessage', '{"type":"userMessage","id":"u-db","content":[{"type":"text","text":"db request"}]}')`,
+		`INSERT INTO thread_items VALUES ('` + threadID + `', 'turn-db', 'a-db', 2, 'agentMessage', '{"type":"agentMessage","id":"a-db","text":"db answer"}')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("exec %q failed: %v", statement, err)
+		}
+	}
+
+	target := model.ObserverTarget{ChatKey: model.ChatKey(123456789, 0), ChatID: 123456789, Enabled: true}
+	service.syncThreadPanelToTarget(model.WithForcedThreadTopicActivation(ctx), target, thread.ID, true, model.PanelSourceFeishuInput)
+
+	var history []recordedMessage
+	for _, message := range sender.messageSnapshot() {
+		if strings.HasPrefix(message.text, "[History user]") || strings.HasPrefix(message.text, "[History answer]") {
+			history = append(history, message)
+		}
+	}
+	if len(history) != 2 {
+		t.Fatalf("history messages = %#v, want user and answer from the history database", history)
+	}
+	if !strings.Contains(history[0].text, "db request") || !strings.Contains(history[1].text, "db answer") {
+		t.Fatalf("history messages = %#v, want history database texts", history)
 	}
 }

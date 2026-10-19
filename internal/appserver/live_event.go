@@ -126,7 +126,7 @@ func normalizeServerRequestEvent(event Event, thread model.Thread, normalized No
 	normalized.ItemID = stringValue(params["itemId"], "")
 	normalized.RequestID = rpcString(event.ID)
 	switch {
-	case strings.Contains(method, "requestapproval"):
+	case isApprovalRequestMethod(method):
 		normalized.Kind = LiveEventApprovalRequest
 	case strings.Contains(method, "input") || strings.Contains(method, "elicitation"):
 		normalized.Kind = LiveEventInputRequest

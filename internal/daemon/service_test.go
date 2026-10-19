@@ -509,7 +509,7 @@ func TestThreadsOverviewGroupsThreadsByProject(t *testing.T) {
 	}
 }
 
-func TestChatsCommandShowsGreenChatsProjectList(t *testing.T) {
+func TestChatsProjectThreadsShowsGreenChatsProjectList(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
@@ -558,12 +558,12 @@ func TestChatsCommandShowsGreenChatsProjectList(t *testing.T) {
 		}
 	}
 
-	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/chats", 0, model.PanelSourceFeishuInput)
+	response, err := service.chatsProjectThreads(ctx)
 	if err != nil {
-		t.Fatalf("handleCommand(/chats) failed: %v", err)
+		t.Fatalf("chatsProjectThreads failed: %v", err)
 	}
 	if response == nil {
-		t.Fatal("handleCommand(/chats) returned nil response")
+		t.Fatal("chatsProjectThreads returned nil response")
 	}
 	if !strings.Contains(response.Text, "Threads for [Pinned] Chats") || !strings.Contains(response.Text, "Regular Chat") || !strings.Contains(response.Text, "[Pinned] Pinned Chat") {
 		t.Fatalf("/chats text =\n%s\nwant Chats list with pinned and regular chats", response.Text)
@@ -577,6 +577,52 @@ func TestChatsCommandShowsGreenChatsProjectList(t *testing.T) {
 	rows := response.Sections[0].Rows
 	if rows[0].BackgroundStyle != "cus-5" || rows[1].BackgroundStyle != "cus-6" || rows[2].BackgroundStyle != "cus-4" || rows[2].BorderColor != "cus-7" {
 		t.Fatalf("/chats rows = %#v, want green chat rows and green-bordered new chat row", rows)
+	}
+}
+
+func TestChatsCommandShowsRecentProjectAndTemporaryThreads(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.now = func() time.Time { return time.Unix(200, 0).UTC() }
+	ctx := context.Background()
+	for _, thread := range []model.Thread{
+		{
+			ID:          "project-thread",
+			Title:       "Project thread",
+			ProjectName: "project-a",
+			CWD:         "/Users/example/project-a",
+			UpdatedAt:   190,
+			Raw:         json.RawMessage(`{"id":"project-thread"}`),
+		},
+		{
+			ID:          "chat-thread",
+			Title:       "Temporary Chat",
+			ProjectName: "Temporary Chat",
+			CWD:         filepath.Join(service.codexChatsRoot(), "2026-07-08", "temporary-chat"),
+			UpdatedAt:   180,
+			Raw:         json.RawMessage(`{"id":"chat-thread"}`),
+		},
+	} {
+		if err := service.store.UpsertThread(ctx, thread); err != nil {
+			t.Fatalf("UpsertThread(%s) failed: %v", thread.ID, err)
+		}
+	}
+
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/chats", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handleCommand(/chats) failed: %v", err)
+	}
+	if response == nil {
+		t.Fatal("handleCommand(/chats) returned nil response")
+	}
+	for _, needle := range []string{"project-a", "Project thread", "临时对话", "Temporary Chat"} {
+		if !strings.Contains(response.Text, needle) {
+			t.Fatalf("/chats text missing %q:\n%s", needle, response.Text)
+		}
+	}
+	if strings.Contains(response.Text, "Threads for Chats") {
+		t.Fatalf("/chats text =\n%s\nwant recent chats overview, not Chats project page", response.Text)
 	}
 }
 
@@ -831,6 +877,7 @@ func TestSettingsMenuEditUsesSilentCallback(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
+	service.cfg.FeishuCardVersion = "v2"
 	sender := &recordingSender{}
 	service.SetSender(sender)
 	ctx := context.Background()
@@ -862,6 +909,44 @@ func TestSettingsMenuEditUsesSilentCallback(t *testing.T) {
 	}
 	if len(sender.messages) != 0 {
 		t.Fatalf("messages = %#v, want no fallback message", sender.messages)
+	}
+}
+
+func TestSettingsOverviewUsesMenuButtonsWithoutModernCards(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	response, err := service.handleCommandFromSource(ctx, 123456789, 0, "/setting", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handleCommand(/setting) failed: %v", err)
+	}
+	if response.SettingsForm != nil {
+		t.Fatalf("settings response = %#v, want menu buttons instead of a form container", response)
+	}
+	if strings.TrimSpace(response.Text) == "" {
+		t.Fatal("settings response missing summary text")
+	}
+	if len(response.Buttons) != 1 || len(response.Buttons[0]) != 3 {
+		t.Fatalf("settings buttons = %#v, want model, reasoning and language menu buttons", response.Buttons)
+	}
+	wantActions := map[string]bool{"settings_model_menu": false, "settings_reasoning_menu": false, "settings_language_menu": false}
+	for _, button := range response.Buttons[0] {
+		route, err := service.store.GetCallbackRoute(ctx, button.CallbackData)
+		if err != nil {
+			t.Fatalf("GetCallbackRoute failed: %v", err)
+		}
+		if route == nil {
+			t.Fatalf("callback route for %q not found", button.CallbackData)
+		}
+		if _, ok := wantActions[route.Action]; ok {
+			wantActions[route.Action] = true
+		}
+	}
+	for action, seen := range wantActions {
+		if !seen {
+			t.Fatalf("settings buttons = %#v, missing %s", response.Buttons, action)
+		}
 	}
 }
 
@@ -929,14 +1014,7 @@ func TestFeishuShowThreadCallbackOpensTopic(t *testing.T) {
 	if len(ensureTopicThreads) == 0 || ensureTopicThreads[len(ensureTopicThreads)-1].ID != thread.ID {
 		t.Fatalf("EnsureThreadTopic calls = %#v, want selected thread topic", ensureTopicThreads)
 	}
-	for _, message := range messages {
-		if strings.Contains(message.text, "Codex thread topic opened") || strings.Contains(message.text, "已打开 Codex 会话话题") {
-			t.Fatalf("recorded messages = %#v, want no duplicate open-topic activation text", messages)
-		}
-		if message.options.FeishuReplyToMessageID != 9001 || !message.options.FeishuReplyInThread {
-			t.Fatalf("message options = %#v, want topic panel message under root", message.options)
-		}
-	}
+	assertOpenThreadMessages(t, messages, thread.ID)
 }
 
 func TestFeishuShowThreadCallbackForCodexChatOpensTopic(t *testing.T) {
@@ -985,10 +1063,121 @@ func TestFeishuShowThreadCallbackForCodexChatOpensTopic(t *testing.T) {
 	if len(ensureTopicThreads) == 0 || ensureTopicThreads[len(ensureTopicThreads)-1].ID != thread.ID {
 		t.Fatalf("EnsureThreadTopic calls = %#v, want selected chat thread", ensureTopicThreads)
 	}
+	assertOpenThreadMessages(t, messages, thread.ID)
+}
+
+func TestChatOpenCallbackOpensCachedThreadWithoutChatCWD(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingThreadTopicSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "cached-thread-from-chats-card",
+		Title:       "Cached Thread",
+		ProjectName: "project-a",
+		CWD:         "/Users/example/project-a",
+		UpdatedAt:   time.Now().UTC().Unix(),
+		Raw:         json.RawMessage(`{"id":"cached-thread-from-chats-card"}`),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	snapshot := appserver.CompactSnapshot(nil, appserver.ThreadReadSnapshot{
+		Thread:           thread,
+		LatestTurnID:     "turn-cached-thread",
+		LatestTurnStatus: "completed",
+		LatestFinalFP:    "final-cached-thread",
+		LatestFinalText:  "Done.",
+	}, time.Now().UTC())
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, snapshot); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	token := service.callbackButton(ctx, "Open cached thread", "chat_open", thread.ID, "", "", nil).CallbackData
+
+	response, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, token, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("HandleCallback(chat_open) failed: %v", err)
+	}
+	if response == nil || response.ThreadID != thread.ID {
+		t.Fatalf("response = %#v, want cached thread response", response)
+	}
+	if strings.TrimSpace(response.Text) != "" || response.CallbackText == "" {
+		t.Fatalf("response = %#v, want fast callback-only response", response)
+	}
+	messages := waitForRecordedMessages(t, sender)
+	ensureTopicThreads := sender.ensureTopicThreadSnapshot()
+	if len(ensureTopicThreads) == 0 || ensureTopicThreads[len(ensureTopicThreads)-1].ID != thread.ID {
+		t.Fatalf("EnsureThreadTopic calls = %#v, want cached thread topic", ensureTopicThreads)
+	}
+	assertOpenThreadMessages(t, messages, thread.ID)
+}
+
+func TestChatOpenCallbackCreatesTopicRootWithoutSnapshot(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	sender := &recordingThreadTopicSender{}
+	service.SetSender(sender)
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "cached-thread-without-snapshot",
+		Title:       "Cached Thread Without Snapshot",
+		ProjectName: "project-a",
+		CWD:         "/Users/example/project-a",
+		UpdatedAt:   time.Now().UTC().Unix(),
+		Raw:         json.RawMessage(`{"id":"cached-thread-without-snapshot"}`),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	token := service.callbackButton(ctx, "Open cached thread", "chat_open", thread.ID, "", "", nil).CallbackData
+
+	response, err := service.HandleCallbackFromSource(ctx, 123456789, 0, 42, 123456789, token, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("HandleCallback(chat_open) failed: %v", err)
+	}
+	if response == nil || response.ThreadID != thread.ID {
+		t.Fatalf("response = %#v, want cached thread response", response)
+	}
+	if strings.TrimSpace(response.Text) != "" || response.CallbackText == "" {
+		t.Fatalf("response = %#v, want fast callback-only response", response)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		ensureTopicThreads := sender.ensureTopicThreadSnapshot()
+		if len(ensureTopicThreads) > 0 {
+			if ensureTopicThreads[len(ensureTopicThreads)-1].ID != thread.ID {
+				t.Fatalf("EnsureThreadTopic calls = %#v, want cached thread topic", ensureTopicThreads)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("EnsureThreadTopic calls = %#v, want cached thread topic without snapshot", ensureTopicThreads)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	forced, silent := sender.ensureTopicActivationSnapshot()
+	if len(forced) == 0 || !forced[0] || silent[0] {
+		t.Fatalf("EnsureThreadTopic forced=%#v silent=%#v, want visible activation for topic root", forced, silent)
+	}
+}
+
+func assertOpenThreadMessages(t *testing.T, messages []recordedMessage, threadID string) {
+	t.Helper()
+	foundThreadReply := false
 	for _, message := range messages {
 		if strings.Contains(message.text, "Codex thread topic opened") || strings.Contains(message.text, "已打开 Codex 会话话题") {
-			t.Fatalf("recorded messages = %#v, want no duplicate open-topic activation text", messages)
+			t.Fatalf("messages = %#v, want real Feishu topic root instead of synthetic visible open text", messages)
 		}
+		if message.options.FeishuReplyToMessageID != 0 && message.options.FeishuReplyInThread && message.options.FeishuCodexThreadID == threadID {
+			foundThreadReply = true
+		}
+	}
+	if !foundThreadReply {
+		t.Fatalf("messages = %#v, want panel/final message under Feishu topic root", messages)
 	}
 }
 
@@ -1050,6 +1239,214 @@ func TestProjectsCommandShowsProjectButtonsGroupedByCWD(t *testing.T) {
 	}
 	if got := countButtonsContaining(response.Buttons, "codex-feishu"); got != 2 {
 		t.Fatalf("/projects buttons = %#v, want two named project workspace buttons", response.Buttons)
+	}
+}
+
+func TestOverviewCommandsRefreshThreadListBeforeReadingCache(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	threadPayload := map[string]any{"threads": []any{map[string]any{
+		"id":        "fresh-thread",
+		"title":     "Fresh thread",
+		"cwd":       "/Users/example/work/fresh-project",
+		"updatedAt": float64(100),
+	}}}
+	stub := &stubSession{threadListResults: []map[string]any{threadPayload, threadPayload}}
+	service.live = stub
+	service.liveConnected = true
+
+	chats, err := service.handleCommandFromSource(ctx, 123456789, 0, "/chats", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handleCommand(/chats) failed: %v", err)
+	}
+	if !strings.Contains(chats.Text, "Fresh thread") {
+		t.Fatalf("/chats text =\n%s\nwant freshly listed thread", chats.Text)
+	}
+	projects, err := service.handleCommandFromSource(ctx, 123456789, 0, "/projects", 0, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("handleCommand(/projects) failed: %v", err)
+	}
+	if !strings.Contains(projects.Text, "fresh-project") {
+		t.Fatalf("/projects text =\n%s\nwant freshly listed project", projects.Text)
+	}
+	if stub.threadListCalls != 2 {
+		t.Fatalf("ThreadList calls = %d, want one refresh per overview command", stub.threadListCalls)
+	}
+}
+
+func TestProjectCatalogResolvesNewCodexProjectIDsToRootPaths(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	statePath := filepath.Join(t.TempDir(), "codex-global-state.json")
+	state := map[string]any{
+		"project-order":                  []string{"new-project-id", "old-project-id"},
+		"electron-saved-workspace-roots": []string{"/Users/example/work/old-project"},
+		"local-projects": map[string]any{
+			"new-project-id": map[string]any{"id": "new-project-id", "name": "new-project", "rootPaths": []string{"/Users/example/work/new-project"}},
+			"old-project-id": map[string]any{"id": "old-project-id", "name": "old-project", "rootPaths": []string{"/Users/example/work/old-project"}},
+		},
+		"thread-project-assignments": map[string]any{"new-thread": map[string]any{"projectKind": "local", "projectId": "new-project-id"}},
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("json.Marshal(state) failed: %v", err)
+	}
+	if err := os.WriteFile(statePath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile(state) failed: %v", err)
+	}
+	service.codexGlobalStatePath = statePath
+	for _, thread := range []model.Thread{
+		{ID: "old-thread", Title: "Old thread", CWD: "/Users/example/work/old-project", ProjectName: "old-project", DirectoryName: "old-project", UpdatedAt: 20, Raw: json.RawMessage(`{"id":"old-thread"}`)},
+		{ID: "new-thread", Title: "New thread", CWD: "/Users/example/work/new-project", ProjectName: "new-project", DirectoryName: "new-project", UpdatedAt: 30, Raw: json.RawMessage(`{"id":"new-thread"}`)},
+	} {
+		if err := service.store.UpsertThread(ctx, thread); err != nil {
+			t.Fatalf("UpsertThread(%s) failed: %v", thread.ID, err)
+		}
+	}
+
+	catalog, err := service.projectCatalog(ctx)
+	if err != nil {
+		t.Fatalf("projectCatalog failed: %v", err)
+	}
+	if len(catalog.Workspaces) != 2 || catalog.Workspaces[0].CWD != "/Users/example/work/new-project" {
+		t.Fatalf("workspaces = %#v, want new project first and old project second", catalog.Workspaces)
+	}
+}
+
+func TestProjectCatalogUsesAppServerProjectRegistry(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	service.stateCatalogReader = func(context.Context) (appserver.StateCatalog, error) {
+		return appserver.StateCatalog{Projects: []appserver.StateProject{
+			{ID: "p-alpha", Name: "alpha", Position: 0, RootPaths: []string{"/Users/example/work/alpha"}},
+			{ID: "p-beta", Name: "beta", Position: 1, RootPaths: []string{"/Users/example/work/beta"}},
+		}}, nil
+	}
+	threads := []model.Thread{
+		{ID: "alpha-root", Title: "Alpha root", CWD: "/Users/example/work/alpha", ProjectName: "alpha", UpdatedAt: 10, Raw: json.RawMessage(`{"id":"alpha-root"}`)},
+		{ID: "alpha-sub", Title: "Alpha sub", CWD: "/Users/example/work/alpha/pkg/inner", ProjectName: "alpha", UpdatedAt: 30, Raw: json.RawMessage(`{"id":"alpha-sub"}`)},
+		{ID: "loose", Title: "Loose thread", CWD: "/Users/example/work/loose", ProjectName: "loose", UpdatedAt: 20, Raw: json.RawMessage(`{"id":"loose"}`)},
+		{ID: "chat", Title: "Temporary chat", CWD: "/Users/example/Documents/Codex/2026-06-26/x", ProjectName: "x", UpdatedAt: 40, Raw: json.RawMessage(`{"id":"chat"}`)},
+	}
+	for _, thread := range threads {
+		if err := service.store.UpsertThread(ctx, thread); err != nil {
+			t.Fatalf("UpsertThread(%s) failed: %v", thread.ID, err)
+		}
+	}
+
+	catalog, err := service.projectCatalog(ctx)
+	if err != nil {
+		t.Fatalf("projectCatalog failed: %v", err)
+	}
+	if len(catalog.Workspaces) != 4 {
+		t.Fatalf("workspaces = %#v, want alpha, beta, loose and Chats", catalog.Workspaces)
+	}
+	alpha := catalog.Workspaces[0]
+	if alpha.ProjectName != "alpha" || alpha.ThreadCount != 2 || alpha.LatestThread != "alpha-sub" || alpha.UpdatedAt != 30 {
+		t.Fatalf("alpha workspace = %#v, want both alpha threads under the registry project", alpha)
+	}
+	if len(alpha.RootPaths) != 1 || alpha.RootPaths[0] != "/Users/example/work/alpha" {
+		t.Fatalf("alpha roots = %#v, want registry root", alpha.RootPaths)
+	}
+	if beta := catalog.Workspaces[1]; beta.ProjectName != "beta" || beta.ThreadCount != 0 {
+		t.Fatalf("beta workspace = %#v, want registered project without threads", beta)
+	}
+	if loose := catalog.Workspaces[2]; loose.ProjectName != "loose" || loose.ThreadCount != 1 {
+		t.Fatalf("loose workspace = %#v, want unmatched thread kept visible", loose)
+	}
+	if chats := catalog.Workspaces[3]; !isChatsProjectWorkspace(chats) || chats.ThreadCount != 1 {
+		t.Fatalf("chats workspace = %#v, want Chats section with one thread", chats)
+	}
+	if len(catalog.Chats) != 1 || catalog.Chats[0].ID != "chat" {
+		t.Fatalf("catalog.Chats = %#v, want temporary chat", catalog.Chats)
+	}
+}
+
+func TestSyncThreadsUsesStateCatalog(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	service.stateCatalogReader = func(context.Context) (appserver.StateCatalog, error) {
+		return appserver.StateCatalog{Threads: []model.Thread{
+			{ID: "catalog-a", Title: "Catalog A", CWD: "/Users/example/work/a", UpdatedAt: 20, Listed: true},
+			{ID: "catalog-b", Title: "Catalog B", CWD: "/Users/example/work/b", UpdatedAt: 10, Listed: true},
+		}}, nil
+	}
+	if err := service.store.UpsertThread(ctx, model.Thread{ID: "stale", Title: "Stale thread", UpdatedAt: 5}); err != nil {
+		t.Fatalf("UpsertThread(stale) failed: %v", err)
+	}
+
+	service.syncThreads(ctx, 50)
+	threads, err := service.store.ListThreads(ctx, 10, "")
+	if err != nil {
+		t.Fatalf("ListThreads failed: %v", err)
+	}
+	if len(threads) != 2 || threads[0].ID != "catalog-a" || threads[1].ID != "catalog-b" {
+		t.Fatalf("threads = %#v, want state catalog threads only", threads)
+	}
+
+	service.stateCatalogReader = func(context.Context) (appserver.StateCatalog, error) {
+		return appserver.StateCatalog{}, nil
+	}
+	service.syncThreads(ctx, 0)
+	threads, err = service.store.ListThreads(ctx, 10, "")
+	if err != nil {
+		t.Fatalf("ListThreads failed: %v", err)
+	}
+	if len(threads) != 2 {
+		t.Fatalf("threads = %#v, want cache kept when catalog is empty", threads)
+	}
+}
+
+func TestProjectOrderIgnoresOpaqueProjectIDs(t *testing.T) {
+	t.Parallel()
+
+	statePath := filepath.Join(t.TempDir(), ".codex-global-state.json")
+	state := map[string]any{
+		"project-order":          []string{"3dc383ca-5c3c-458c-8151-f0d24fe9f290", "local-project"},
+		"active-workspace-roots": []string{"/Users/example/work/active"},
+		"local-projects":         map[string]any{"local-project": map[string]any{"rootPaths": []string{"/Users/example/work/real"}}},
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("json.Marshal(state) failed: %v", err)
+	}
+	if err := os.WriteFile(statePath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile(state) failed: %v", err)
+	}
+
+	loaded := loadCodexProjectState(statePath)
+	if len(loaded.order) != 2 || loaded.order[0] != "/Users/example/work/active" || loaded.order[1] != "/Users/example/work/real" {
+		t.Fatalf("order = %#v, want active root and resolved local project only", loaded.order)
+	}
+	for project := range loaded.allowedProjects {
+		if !strings.HasPrefix(project, "/") {
+			t.Fatalf("allowedProjects contains non-path entry %q", project)
+		}
+	}
+}
+
+func TestThreadBelongsToProjectWorkspaceMatchesSubdirectories(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	workspace := projectWorkspace{
+		ProjectName: "alpha",
+		CWD:         "/Users/example/work/alpha",
+		RootPaths:   []string{"/Users/example/work/alpha"},
+	}
+	if !service.threadBelongsToProjectWorkspace(model.Thread{CWD: "/Users/example/work/alpha/pkg/inner"}, workspace) {
+		t.Fatal("expected nested thread to belong to the project")
+	}
+	if service.threadBelongsToProjectWorkspace(model.Thread{CWD: "/Users/example/work/alphabet"}, workspace) {
+		t.Fatal("expected sibling directory to stay outside the project")
 	}
 }
 
@@ -1702,14 +2099,7 @@ func TestOpenChatsPaginatesAndChatSelectionBindsThread(t *testing.T) {
 	if len(ensureTopicThreads) == 0 || ensureTopicThreads[len(ensureTopicThreads)-1].ID != "chat-5-thread" {
 		t.Fatalf("EnsureThreadTopic threads = %#v, want selected chat activation", ensureTopicThreads)
 	}
-	for _, message := range messages {
-		if strings.Contains(message.text, "Codex thread topic opened") || strings.Contains(message.text, "已打开 Codex 会话话题") {
-			t.Fatalf("recorded messages = %#v, want no duplicate open-topic activation text", messages)
-		}
-		if message.options.FeishuReplyToMessageID != 9001 || !message.options.FeishuReplyInThread {
-			t.Fatalf("message options = %#v, want topic panel message under root", message.options)
-		}
-	}
+	assertOpenThreadMessages(t, messages, "chat-5-thread")
 	panel, err := service.store.GetCurrentThreadPanel(ctx, 123456789, 0, "chat-5-thread")
 	if err != nil {
 		t.Fatalf("GetCurrentThreadPanel failed: %v", err)
@@ -2544,6 +2934,41 @@ func TestTrackedThreadsSkipsArchivedCurrentPanelThread(t *testing.T) {
 	}
 }
 
+func TestTrackedThreadsSkipsDeletedCurrentPanelThread(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "deleted-current-panel",
+		Title:       "Deleted current panel",
+		ProjectName: "Codex",
+		UpdatedAt:   time.Now().UTC().Unix(),
+		Status:      "active",
+		Raw:         json.RawMessage(`{"id":"deleted-current-panel","deleted":true}`),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if _, err := service.store.CreateThreadPanel(ctx, model.ThreadPanel{
+		ChatID:      123456789,
+		TopicID:     0,
+		ProjectName: "Codex",
+		ThreadID:    thread.ID,
+		SourceMode:  model.PanelSourceExplicit,
+		Status:      "active",
+	}); err != nil {
+		t.Fatalf("CreateThreadPanel failed: %v", err)
+	}
+
+	tracked := service.trackedThreads(ctx, 10)
+	for _, candidate := range tracked {
+		if candidate.ID == thread.ID {
+			t.Fatalf("tracked threads include deleted current panel thread: %#v", tracked)
+		}
+	}
+}
+
 func TestTrackedThreadsSkipsRecentTerminalChangeThatPredatesObserveEnable(t *testing.T) {
 	t.Parallel()
 
@@ -2743,6 +3168,115 @@ func TestFeishuTopicMappedThreadsRemainTrackedAfterTerminalPanel(t *testing.T) {
 	}
 	if !service.threadNeedsLiveSync(ctx, thread.ID) {
 		t.Fatal("threadNeedsLiveSync returned false for Feishu topic-mapped thread")
+	}
+}
+
+func TestTrackedThreadsSkipsIdleFeishuTopicThreadWithoutCatchup(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+
+	thread := model.Thread{
+		ID:          "thread-feishu-topic-idle",
+		Title:       "Idle Feishu topic",
+		ProjectName: "Codex",
+		UpdatedAt:   time.Now().UTC().Unix() - int64(service.catchupWindow().Seconds()) - 60,
+		Status:      "idle",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if err := service.store.UpsertFeishuThreadTopic(ctx, model.FeishuThreadTopic{
+		ChatID:            123456789,
+		OpenChatID:        "oc_test",
+		ThreadID:          thread.ID,
+		RootMessageID:     9001,
+		RootOpenMessageID: "om_test",
+		FeishuThreadID:    "omt_test",
+	}); err != nil {
+		t.Fatalf("UpsertFeishuThreadTopic failed: %v", err)
+	}
+
+	tracked := service.trackedThreads(ctx, 10)
+	for _, candidate := range tracked {
+		if candidate.ID == thread.ID {
+			t.Fatalf("trackedThreads include idle Feishu topic thread without catchup: %#v", tracked)
+		}
+	}
+}
+
+func TestTrackedThreadsSkipsDeletedFeishuTopicThread(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+
+	thread := model.Thread{
+		ID:          "thread-feishu-topic-deleted",
+		Title:       "Deleted Feishu topic",
+		ProjectName: "Codex",
+		UpdatedAt:   time.Now().UTC().Unix(),
+		Status:      "active",
+		Raw:         json.RawMessage(`{"thread":{"id":"thread-feishu-topic-deleted","isDeleted":true}}`),
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if err := service.store.UpsertFeishuThreadTopic(ctx, model.FeishuThreadTopic{
+		ChatID:            123456789,
+		OpenChatID:        "oc_test",
+		ThreadID:          thread.ID,
+		RootMessageID:     9001,
+		RootOpenMessageID: "om_test",
+		FeishuThreadID:    "omt_test",
+	}); err != nil {
+		t.Fatalf("UpsertFeishuThreadTopic failed: %v", err)
+	}
+
+	tracked := service.trackedThreads(ctx, 10)
+	for _, candidate := range tracked {
+		if candidate.ID == thread.ID {
+			t.Fatalf("trackedThreads include deleted Feishu topic thread: %#v", tracked)
+		}
+	}
+	if service.threadNeedsLiveSync(ctx, thread.ID) {
+		t.Fatal("threadNeedsLiveSync returned true for deleted Feishu topic thread")
+	}
+}
+
+func TestPollTrackedSkipsThreadBeforeNextPollAfter(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "thread-next-poll-future",
+		Title:       "Future poll",
+		ProjectName: "Codex",
+		UpdatedAt:   time.Now().UTC().Unix(),
+		Status:      "active",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, model.ThreadSnapshotState{
+		ThreadUpdatedAt:      thread.UpdatedAt,
+		LastSeenThreadStatus: thread.Status,
+		NextPollAfter:        model.TimeString(time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)),
+	}); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	stub := &stubSession{threadReads: map[string]map[string]any{
+		thread.ID: diagnosticThreadReadPayload(thread, "turn-next-poll", "inProgress"),
+	}}
+	service.poll = stub
+	service.pollConnected = true
+
+	service.pollTracked(ctx)
+
+	if len(stub.threadReadCalls) != 0 {
+		t.Fatalf("threadReadCalls = %#v, want no poll before NextPollAfter", stub.threadReadCalls)
 	}
 }
 
@@ -4029,6 +4563,58 @@ func TestRefreshThreadForOperationDefersEmptyInterrupted(t *testing.T) {
 	}
 }
 
+func TestLiveEventSkipsFullRefreshForIdleFeishuTopicThreadWithoutCatchup(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	updatedAt := time.Now().UTC().Add(-service.catchupWindow() - time.Minute).Unix()
+	thread := model.Thread{
+		ID:          "thread-live-idle-topic",
+		Title:       "Idle topic live event",
+		ProjectName: "Codex",
+		UpdatedAt:   updatedAt,
+		Status:      "idle",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if err := service.store.UpsertSnapshot(ctx, thread.ID, model.ThreadSnapshotState{
+		ThreadUpdatedAt:      thread.UpdatedAt,
+		LastSeenThreadStatus: thread.Status,
+		LastSeenTurnID:       "turn-idle",
+		LastSeenTurnStatus:   "completed",
+	}); err != nil {
+		t.Fatalf("UpsertSnapshot failed: %v", err)
+	}
+	if err := service.store.UpsertFeishuThreadTopic(ctx, model.FeishuThreadTopic{
+		ChatID:            123456789,
+		OpenChatID:        "oc_test",
+		ThreadID:          thread.ID,
+		RootMessageID:     9001,
+		RootOpenMessageID: "om_test",
+		FeishuThreadID:    "omt_test",
+	}); err != nil {
+		t.Fatalf("UpsertFeishuThreadTopic failed: %v", err)
+	}
+	stub := &stubSession{threadReads: map[string]map[string]any{
+		thread.ID: diagnosticThreadReadPayload(thread, "turn-idle", "completed"),
+	}}
+
+	service.handleLiveEvent(ctx, stub, appserver.Event{
+		Channel: "notification",
+		Method:  "thread/status/changed",
+		Params: map[string]any{
+			"threadId": thread.ID,
+			"status":   "idle",
+		},
+	})
+
+	if len(stub.threadReadCalls) != 0 {
+		t.Fatalf("threadReadCalls = %#v, want no full refresh for idle topic live event", stub.threadReadCalls)
+	}
+}
+
 func TestRefreshThreadForOperationTerminalCompletedToolReplacesLiveCurrent(t *testing.T) {
 	t.Parallel()
 
@@ -4644,9 +5230,13 @@ func TestFeishuImageInputUsesDesktopLocalImagePart(t *testing.T) {
 	if len(desktop.startCalls) != 1 {
 		t.Fatalf("desktop startCalls = %#v, want one", desktop.startCalls)
 	}
-	input, ok := desktop.startCalls[0]["input"].([]map[string]any)
+	request, ok := desktop.startCalls[0]["request"].(map[string]any)
 	if !ok {
-		t.Fatalf("desktop start input = %#v, want []map[string]any", desktop.startCalls[0]["input"])
+		t.Fatalf("desktop start request = %#v, want object", desktop.startCalls[0]["request"])
+	}
+	input, ok := request["input"].([]map[string]any)
+	if !ok {
+		t.Fatalf("desktop start input = %#v, want []map[string]any", request["input"])
 	}
 	if len(input) != 2 {
 		t.Fatalf("desktop start input = %#v, want metadata text and localImage parts", input)
@@ -4868,11 +5458,49 @@ func TestFeishuInputFallsBackWhenDesktopHistoryRetryTimesOut(t *testing.T) {
 	}
 }
 
+func TestFeishuInputWaitsForDesktopInsteadOfStealingWriter(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	service.cfg.OpenCodexDesktopOnFeishu = true
+	service.desktopSocketAvailable = func() bool { return true }
+	ctx := context.Background()
+	thread := model.Thread{
+		ID:          "01900000-0000-7000-8000-000000000218",
+		Title:       "Feishu desktop owner unavailable",
+		ProjectName: "Codex",
+		CWD:         "/Users/example/project",
+		Status:      "idle",
+	}
+	if err := service.store.UpsertThread(ctx, thread); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	stub := &stubSession{}
+	service.live = stub
+	service.liveConnected = true
+	service.desktopInputDispatcher = &stubDesktopInputDispatcher{loadErr: fmt.Errorf("no-client-found")}
+	service.desktopOpener = func(ctx context.Context, threadID string) error {
+		return nil
+	}
+
+	response, err := service.sendInputToThreadTurnFromSource(ctx, 123456789, 0, thread.ID, "", "Do not steal the writer", "", model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("sendInputToThreadTurnFromSource failed: %v", err)
+	}
+	if response == nil || !strings.Contains(response.Text, "desktop app has not taken over") {
+		t.Fatalf("response = %#v, want desktop owner guidance", response)
+	}
+	if len(stub.turnStartCalls) != 0 {
+		t.Fatalf("turnStartCalls = %#v, want no app-server fallback", stub.turnStartCalls)
+	}
+}
+
 func TestFeishuInputRetriesDesktopDispatcherAfterOpeningThread(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
 	service.cfg.OpenCodexDesktopOnFeishu = true
+	service.desktopSocketAvailable = func() bool { return true }
 	ctx := context.Background()
 	thread := model.Thread{
 		ID:          "01900000-0000-7000-8000-000000000206",
@@ -6713,6 +7341,25 @@ func TestFinalCardGetThreadIDButtonSendsCopyableIDs(t *testing.T) {
 	}
 }
 
+func TestTerminalCardDoesNotUseToolProgressAsFinalText(t *testing.T) {
+	t.Parallel()
+
+	snapshot := &appserver.ThreadReadSnapshot{
+		LatestTurnID:       "turn-progress",
+		LatestTurnStatus:   "completed",
+		LatestProgressFP:   "progress-fp",
+		LatestProgressText: "completed: /bin/zsh -lc 'echo noise' Output: noise",
+	}
+	if text, fp := terminalCardTextAndFP(snapshot); text != "" || fp != "" {
+		t.Fatalf("terminalCardTextAndFP = %q/%q, want no final text from progress", text, fp)
+	}
+	snapshot.LatestFinalText = "real final answer"
+	snapshot.LatestFinalFP = "final-fp"
+	if text, fp := terminalCardTextAndFP(snapshot); text != "real final answer" || fp != "final-fp" {
+		t.Fatalf("terminalCardTextAndFP = %q/%q, want explicit final text", text, fp)
+	}
+}
+
 func TestFinalCardShowsRunDuration(t *testing.T) {
 	t.Parallel()
 
@@ -7004,6 +7651,7 @@ func TestSettingsFormPersistsSelectedValues(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
+	service.cfg.FeishuCardVersion = "v2"
 	sender := &recordingSender{}
 	service.SetSender(sender)
 	ctx := context.Background()
@@ -7071,6 +7719,7 @@ func TestSettingsFormPrefillsCodexConfig(t *testing.T) {
 	t.Parallel()
 
 	service := newTestService(t)
+	service.cfg.FeishuCardVersion = "v2"
 	ctx := context.Background()
 	stub := &stubSession{
 		models: []appserver.ModelOption{
@@ -7238,6 +7887,67 @@ func TestPlainReplyToRealPlanPromptUsesServerRequest(t *testing.T) {
 	}
 }
 
+func TestApprovePermissionsRequestRespondsWithPermissionsPayload(t *testing.T) {
+	t.Parallel()
+
+	service := newTestService(t)
+	ctx := context.Background()
+	if err := service.store.SavePendingApproval(ctx, model.PendingApproval{
+		RequestID:   "request-permissions",
+		ThreadID:    "permissions-thread",
+		TurnID:      "permissions-turn",
+		PromptKind:  "permissions_approval",
+		Question:    "Allow extra permissions?",
+		PayloadJSON: `{"permissions":{"network":true,"file_system":{"read":["/tmp/project"]}}}`,
+		Status:      "pending",
+		UpdatedAt:   model.NowString(),
+	}); err != nil {
+		t.Fatalf("SavePendingApproval failed: %v", err)
+	}
+	stub := &stubSession{}
+	service.live = stub
+	service.liveConnected = true
+
+	response, err := service.approve(ctx, "request-permissions", "acceptForSession")
+	if err != nil {
+		t.Fatalf("approve failed: %v", err)
+	}
+	if response == nil || response.ThreadID != "permissions-thread" {
+		t.Fatalf("response = %#v, want permissions thread", response)
+	}
+	if len(stub.respondRequestCalls) != 1 {
+		t.Fatalf("respondRequestCalls = %#v, want one response", stub.respondRequestCalls)
+	}
+	got := stub.respondRequestCalls[0]
+	if got.requestID != "request-permissions" || got.result["decision"] != nil {
+		t.Fatalf("respond request call = %#v, want permissions response without decision", got)
+	}
+	if got.result["scope"] != "session" {
+		t.Fatalf("result = %#v, want session scope", got.result)
+	}
+	permissions, ok := got.result["permissions"].(map[string]any)
+	if !ok || permissions["network"] != true {
+		t.Fatalf("result = %#v, want copied permissions", got.result)
+	}
+}
+
+func TestDenyPermissionsRequestRespondsWithEmptyPermissions(t *testing.T) {
+	t.Parallel()
+
+	approval := model.PendingApproval{
+		PromptKind:  "permissions_approval",
+		PayloadJSON: `{"permissions":{"network":true}}`,
+	}
+	got := approvalResponsePayload(approval, "decline")
+	if got["decision"] != nil || got["scope"] != "turn" {
+		t.Fatalf("payload = %#v, want empty turn-scoped permissions response", got)
+	}
+	permissions, ok := got["permissions"].(map[string]any)
+	if !ok || len(permissions) != 0 {
+		t.Fatalf("payload = %#v, want empty permissions", got)
+	}
+}
+
 func newTestService(t *testing.T) *Service {
 	t.Helper()
 
@@ -7255,6 +7965,11 @@ func newTestService(t *testing.T) *Service {
 	if err != nil {
 		t.Fatalf("daemon.New failed: %v", err)
 	}
+	// Keep tests hermetic: the app-server state catalog lives next to the
+	// global state file, which must not point at the developer's Codex home.
+	service.codexGlobalStatePath = filepath.Join(root, ".codex", ".codex-global-state.json")
+	// Tests must not depend on a real Codex desktop IPC socket on the host.
+	service.desktopSocketAvailable = func() bool { return false }
 	if err := service.store.SetState(context.Background(), botLanguageStateKey, botLanguageEnglish); err != nil {
 		t.Fatalf("SetState(language) failed: %v", err)
 	}
@@ -7522,6 +8237,7 @@ func (s *startErrorSession) StartCalls() int {
 
 type stubSession struct {
 	threadReads         map[string]map[string]any
+	threadReadCalls     []string
 	threadListResult    map[string]any
 	threadListResults   []map[string]any
 	threadListErr       error
@@ -7652,6 +8368,7 @@ func (s *stubSession) ThreadList(ctx context.Context, limit int, cursor string) 
 	return s.threadListResult, nil
 }
 func (s *stubSession) ThreadRead(ctx context.Context, threadID string, includeTurns bool) (map[string]any, error) {
+	s.threadReadCalls = append(s.threadReadCalls, threadID)
 	if s.threadReadErr != nil {
 		return nil, s.threadReadErr
 	}

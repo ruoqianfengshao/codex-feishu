@@ -21,15 +21,31 @@ const (
 	summaryLogLimit    = msgformat.MessageLimit
 	summaryLogMaxItems = 30
 	steerTTL           = 10 * time.Minute
+	topicHistoryTurns  = 2
 )
 
 func (s *Service) syncThreadPanel(ctx context.Context, threadID string) {
+	s.syncThreadPanelWithPending(ctx, threadID, nil)
+}
+
+func (s *Service) syncThreadPanelWithPending(ctx context.Context, threadID string, eventPending *model.PendingApproval) {
 	seen := map[string]struct{}{}
 	s.mu.RLock()
 	sender := s.sender
 	s.mu.RUnlock()
 	panels, err := s.store.ListCurrentPanelsForThread(ctx, threadID)
 	if err != nil {
+		return
+	}
+	if len(panels) == 0 {
+		if topic, err := s.store.GetAnyFeishuThreadTopicByCodexThread(ctx, threadID); err == nil && topic != nil && topic.ChatID != 0 {
+			s.syncThreadPanelToTargetWithPending(ctx, model.ObserverTarget{
+				ChatKey: model.ChatKey(topic.ChatID, 0),
+				ChatID:  topic.ChatID,
+				TopicID: 0,
+				Enabled: true,
+			}, threadID, false, model.PanelSourceExplicit, eventPending)
+		}
 		return
 	}
 	for _, panel := range panels {
@@ -47,7 +63,7 @@ func (s *Service) syncThreadPanel(ctx context.Context, threadID string) {
 			continue
 		}
 		seen[chatKey] = struct{}{}
-		s.syncThreadPanelToTarget(ctx, *canonicalTarget, threadID, false, panel.SourceMode)
+		s.syncThreadPanelToTargetWithPending(ctx, *canonicalTarget, threadID, false, panel.SourceMode, eventPending)
 	}
 }
 
@@ -67,6 +83,10 @@ func canonicalThreadPanelTarget(ctx context.Context, sender Sender, target model
 }
 
 func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.ObserverTarget, threadID string, forceNew bool, sourceMode string) {
+	s.syncThreadPanelToTargetWithPending(ctx, target, threadID, forceNew, sourceMode, nil)
+}
+
+func (s *Service) syncThreadPanelToTargetWithPending(ctx context.Context, target model.ObserverTarget, threadID string, forceNew bool, sourceMode string, eventPending *model.PendingApproval) {
 	s.mu.RLock()
 	sender := s.sender
 	s.mu.RUnlock()
@@ -81,7 +101,14 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 		return
 	}
 	s.notifyTerminalSnapshot(ctx, *thread, snapshot)
+	forceTopicOpen := forceNew && model.ForceThreadTopicActivation(ctx)
+	// Load history before taking the panel lock: opening a topic may need one
+	// fresh thread read, and that must not block other panel syncs.
+	topicHistory := s.loadThreadTopicHistory(ctx, *thread, snapshot, forceTopicOpen)
 	pending, _ := s.store.GetLatestPendingApprovalForThread(ctx, threadID)
+	if eventPending != nil && strings.TrimSpace(eventPending.ThreadID) == strings.TrimSpace(threadID) {
+		pending = eventPending
+	}
 	pending = pendingForSnapshot(pending, snapshot)
 
 	s.panelMu.Lock()
@@ -90,7 +117,6 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 	existingPanel, _ := s.store.GetCurrentThreadPanel(ctx, target.ChatID, target.TopicID, thread.ID)
 	renderSourceMode := s.effectivePanelRenderSourceMode(ctx, existingPanel, thread.ID, snapshot.LatestTurnID, sourceMode)
 	effectiveForceNew := forceNew
-	forceTopicOpen := forceNew && model.ForceThreadTopicActivation(ctx)
 	if !forceTopicOpen && isDirectInputSourceMode(sourceMode) && samePanelTurn(existingPanel, snapshot.LatestTurnID) {
 		effectiveForceNew = false
 	}
@@ -113,6 +139,10 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 		}
 	}
 	sender = senderWithThreadTopic{Sender: sender, topic: threadTopic}
+	if err := s.backfillRecentThreadTopicTurns(ctx, sender, target, threadTopic, *thread, topicHistory, forceTopicOpen); err != nil {
+		s.setError(ctx, fmt.Errorf("backfill topic history: %w", err))
+		return
+	}
 	if err := s.repairSupersededFinalCard(ctx, sender, target, existingPanel, *thread, snapshot); err != nil {
 		s.setError(ctx, err)
 		return
@@ -172,6 +202,46 @@ func (s *Service) syncThreadPanelToTarget(ctx context.Context, target model.Obse
 		s.setError(ctx, err)
 		return
 	}
+	s.maybeRefreshCodexDesktopAfterTurn(ctx, *thread, snapshot)
+}
+
+// maybeRefreshCodexDesktopAfterTurn re-opens a Feishu-driven thread in the
+// desktop app once its turn completes, so the desktop reloads the turn from
+// disk. The desktop IPC no longer allows external clients to stream turns.
+func (s *Service) maybeRefreshCodexDesktopAfterTurn(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot) {
+	if snapshot == nil || !s.cfg.OpenCodexDesktopOnFeishu {
+		return
+	}
+	turnID := strings.TrimSpace(snapshot.LatestTurnID)
+	if turnID == "" || !isTerminalStatus(snapshot.LatestTurnStatus) {
+		return
+	}
+	if !s.isDirectInputOriginTurn(ctx, thread.ID, turnID) {
+		return
+	}
+	key := "feishu.desktop_refresh." + thread.ID + "." + turnID
+	if value, _ := s.store.GetState(ctx, key); strings.TrimSpace(value) != "" {
+		return
+	}
+	_ = s.store.SetState(ctx, key, string(model.NowString()))
+	s.mu.RLock()
+	opener := s.desktopOpener
+	s.mu.RUnlock()
+	if opener == nil {
+		opener = openCodexDesktopThread
+	}
+	s.spawn(context.Background(), func(context.Context) {
+		openCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := opener(openCtx, thread.ID); err != nil {
+			s.logLifecycle("codex_desktop_refresh_failed", lifecycleFields{
+				"thread_id": thread.ID,
+				"error":     sanitizeDiagnosticString(err.Error()),
+			})
+			return
+		}
+		s.logLifecycle("codex_desktop_refreshed", lifecycleFields{"thread_id": thread.ID, "turn_id": turnID})
+	})
 }
 
 func (s *Service) finalCardAlreadyRecorded(ctx context.Context, panel *model.ThreadPanel, threadID, turnID, finalFP string) bool {
@@ -285,6 +355,144 @@ func (s senderWithThreadTopic) withThreadTopicOptions(options model.SendOptions)
 	options.FeishuReplyInThread = true
 	options.FeishuCodexThreadID = s.topic.ThreadID
 	return options
+}
+
+// loadThreadTopicHistory returns the turns that should be replayed into a
+// freshly opened topic. When a topic is being opened it prefers a fresh thread
+// read, because the cached thread and snapshot may predate the latest turns.
+func (s *Service) loadThreadTopicHistory(ctx context.Context, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, opening bool) []appserver.CompletedTurnMessage {
+	// The app-server history database keeps turn items even on builds where
+	// thread/read returns turns without items, so it is the primary source.
+	if turns, err := appserver.ReadRecentCompletedTurns(ctx, s.codexHomeDir(), thread.ID, topicHistoryTurns); err == nil && len(turns) > 0 {
+		return turns
+	}
+	if opening {
+		if turns := s.readThreadTopicHistory(ctx, thread.ID); len(turns) > 0 {
+			return turns
+		}
+	}
+	for _, raw := range topicHistoryPayloads(thread, snapshot) {
+		var payload map[string]any
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			continue
+		}
+		if turns := appserver.RecentCompletedTurnMessages(payload, topicHistoryTurns); len(turns) > 0 {
+			return turns
+		}
+	}
+	return nil
+}
+
+func topicHistoryPayloads(thread model.Thread, snapshot *appserver.ThreadReadSnapshot) []json.RawMessage {
+	raws := make([]json.RawMessage, 0, 2)
+	if snapshot != nil && len(snapshot.Thread.Raw) > 0 {
+		raws = append(raws, snapshot.Thread.Raw)
+	}
+	if len(thread.Raw) > 0 {
+		raws = append(raws, thread.Raw)
+	}
+	return raws
+}
+
+func (s *Service) readThreadTopicHistory(ctx context.Context, threadID string) []appserver.CompletedTurnMessage {
+	threadID = strings.TrimSpace(threadID)
+	session := s.activeRuntimeSession()
+	if threadID == "" || session == nil {
+		return nil
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	payload, err := session.ThreadRead(readCtx, threadID, true)
+	if err != nil || len(payload) == 0 {
+		return nil
+	}
+	payload = appserver.HydrateThreadReadItems(ctx, s.codexHomeDir(), payload)
+	return appserver.RecentCompletedTurnMessages(payload, topicHistoryTurns)
+}
+
+func (s *Service) activeRuntimeSession() Session {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.liveConnected && s.live != nil {
+		return s.live
+	}
+	if s.pollConnected && s.poll != nil {
+		return s.poll
+	}
+	return nil
+}
+
+func (s *Service) backfillRecentThreadTopicTurns(ctx context.Context, sender Sender, target model.ObserverTarget, topic *model.FeishuThreadTopic, thread model.Thread, turns []appserver.CompletedTurnMessage, topicOpened bool) error {
+	if !topicOpened || topic == nil || topic.RootMessageID == 0 || strings.TrimSpace(thread.ID) == "" {
+		return nil
+	}
+	stateKey := threadTopicHistoryStateKey(topic)
+	state, err := s.store.GetState(ctx, stateKey)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(state) != "" {
+		return nil
+	}
+	if len(turns) == 0 {
+		return nil
+	}
+	for _, turn := range turns {
+		if err := s.sendThreadTopicHistoryMessage(ctx, sender, target, topic, thread.ID, turn, true); err != nil {
+			return err
+		}
+		if err := s.sendThreadTopicHistoryMessage(ctx, sender, target, topic, thread.ID, turn, false); err != nil {
+			return err
+		}
+	}
+	return s.store.SetState(ctx, stateKey, string(model.NowString()))
+}
+
+func threadTopicHistoryStateKey(topic *model.FeishuThreadTopic) string {
+	return fmt.Sprintf("feishu.topic_history.v1.%d.%d.%s", topic.ChatID, topic.RootMessageID, strings.TrimSpace(topic.ThreadID))
+}
+
+func (s *Service) sendThreadTopicHistoryMessage(ctx context.Context, sender Sender, target model.ObserverTarget, topic *model.FeishuThreadTopic, threadID string, turn appserver.CompletedTurnMessage, userMessage bool) error {
+	text := turn.FinalText
+	label := s.t(ctx, "[历史回复]", "[History answer]")
+	style := model.MessageStyleCodexPanel
+	itemID := "history-final"
+	if userMessage {
+		text = turn.UserText
+		label = s.t(ctx, "[历史用户]", "[History user]")
+		style = model.MessageStyleDesktopUser
+		itemID = firstNonEmpty(strings.TrimSpace(turn.UserItemID), "history-user")
+	}
+	messages := msgformat.RenderSegments([]msgformat.Segment{
+		msgformat.Plain(label + "\n"),
+		msgformat.Markdown(strings.TrimSpace(text)),
+	}, msgformat.MessageLimit)
+	for index := range messages {
+		messages[index].Style = style
+	}
+	messageIDs, err := sender.SendRenderedMessages(ctx, target.ChatID, target.TopicID, messages, nil, model.SendOptions{Silent: true})
+	if err != nil {
+		return err
+	}
+	for index, messageID := range messageIDs {
+		eventKind := "final"
+		if userMessage {
+			eventKind = "user"
+		}
+		if err := s.store.PutMessageRoute(ctx, model.MessageRoute{
+			ChatID:    topic.ChatID,
+			TopicID:   0,
+			MessageID: messageID,
+			ThreadID:  threadID,
+			TurnID:    turn.TurnID,
+			ItemID:    itemID,
+			EventID:   fmt.Sprintf("feishu.topic_history.%d.%s.%s.%d", topic.RootMessageID, turn.TurnID, eventKind, index),
+			CreatedAt: model.NowString(),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) loadThreadPanelSnapshot(ctx context.Context, threadID string) (*model.Thread, *appserver.ThreadReadSnapshot, error) {
@@ -406,7 +614,7 @@ func (s *Service) createCurrentPanel(ctx context.Context, sender Sender, target 
 	if err != nil {
 		return nil, err
 	}
-	summaryMessage, summaryButtons, summaryHash := s.renderSummaryPanel(ctx, thread, snapshot, nil)
+	summaryMessage, summaryButtons, summaryHash := s.renderSummaryPanel(ctx, thread, snapshot, pending)
 	toolText, toolHash, shouldSendTool := s.renderToolPanelIfNeeded(ctx, thread, snapshot)
 	outputText, outputHash, shouldSendOutput := s.renderOutputPanelIfNeeded(ctx, thread, snapshot)
 
@@ -893,7 +1101,7 @@ func (s *Service) renderSummaryPanel(ctx context.Context, thread model.Thread, s
 	}
 	if pending != nil {
 		switch pending.PromptKind {
-		case "approval":
+		case "approval", "permissions_approval":
 			buttons = append(buttons,
 				[]model.ButtonSpec{
 					s.callbackButton(ctx, s.t(ctx, "批准", "Approve"), "approve", pending.ThreadID, pending.TurnID, pending.RequestID, nil),
@@ -987,7 +1195,7 @@ func (s *Service) renderSummaryPanelMarkdownAt(ctx context.Context, thread model
 	segments := []msgformat.Segment{}
 	if pending != nil {
 		switch pending.PromptKind {
-		case "approval":
+		case "approval", "permissions_approval":
 			segments = append(segments, msgformat.Plain(s.t(ctx, "\n\n[审批]\n", "\n\n[Approval]\n")), msgformat.Markdown(strings.TrimSpace(cleanNilLiteral(pending.Question))))
 		case "user_input":
 			segments = append(segments, msgformat.Plain(s.t(ctx, "\n\n[问题]\n", "\n\n[Question]\n")), msgformat.Markdown(strings.TrimSpace(cleanNilLiteral(pending.Question))))

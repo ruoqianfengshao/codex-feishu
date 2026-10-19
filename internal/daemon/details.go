@@ -19,15 +19,29 @@ const (
 )
 
 func (s *Service) maybeRenderFinalCard(ctx context.Context, sender Sender, target model.ObserverTarget, panel *model.ThreadPanel, thread model.Thread, snapshot *appserver.ThreadReadSnapshot) error {
-	finalText, finalFP := terminalCardTextAndFP(snapshot)
-	if !isTerminalStatus(snapshot.LatestTurnStatus) || strings.TrimSpace(finalText) == "" {
+	if snapshot == nil {
 		return nil
+	}
+	finalText, finalFP := terminalCardTextAndFP(snapshot)
+	if !isTerminalStatus(snapshot.LatestTurnStatus) {
+		return nil
+	}
+	incomplete := strings.TrimSpace(finalText) == ""
+	if incomplete {
+		if strings.EqualFold(strings.TrimSpace(snapshot.LatestTurnStatus), "completed") {
+			updated := parseTime(model.TimeString(snapshot.LatestTurnUpdatedAt))
+			if !updated.IsZero() && time.Since(updated) < 3*time.Second {
+				return nil
+			}
+		}
+		finalText = s.incompleteTurnText(ctx, snapshot)
+		finalFP = hashStrings("incomplete", snapshot.LatestTurnID, snapshot.LatestTurnStatus)
 	}
 	if panel == nil || finalFP == "" || s.finalCardAlreadyRecorded(ctx, panel, thread.ID, snapshot.LatestTurnID, finalFP) {
 		return nil
 	}
 
-	message, buttons, cardHash := s.renderFinalCard(ctx, panel.ID, thread, snapshot)
+	message, buttons, cardHash := s.renderTerminalCard(ctx, panel.ID, thread, snapshot, finalText, incomplete)
 	s.logChatRenderedMessagesContainsNil(thread.ID, snapshot.LatestTurnID, "final", 0, []model.RenderedMessage{message})
 	ids, err := sender.SendRenderedMessages(ctx, panel.ChatID, panel.TopicID, []model.RenderedMessage{message}, buttons, silentSendOptions())
 	if err != nil {
@@ -185,7 +199,23 @@ func (s *Service) latestFinalCardMissing(ctx context.Context, threadID, turnID, 
 	return err == nil && (route == nil || route.MessageID == 0)
 }
 
+func (s *Service) incompleteTurnText(ctx context.Context, snapshot *appserver.ThreadReadSnapshot) string {
+	reason := s.t(ctx, "本轮没有产生最终回答。", "This turn did not produce a final answer.")
+	switch strings.ToLower(strings.TrimSpace(snapshot.LatestTurnStatus)) {
+	case "interrupted":
+		reason = s.t(ctx, "本轮被中断，没有产生最终回答。", "This turn was interrupted before a final answer.")
+	case "failed":
+		reason = s.t(ctx, "本轮执行失败，没有产生最终回答。", "This turn failed before a final answer.")
+	}
+	return reason + "\n\n" + s.t(ctx, "可以打开桌面端继续这个会话。", "Open the desktop app to continue this conversation.")
+}
+
 func (s *Service) renderFinalCard(ctx context.Context, panelID int64, thread model.Thread, snapshot *appserver.ThreadReadSnapshot) (model.RenderedMessage, [][]model.ButtonSpec, string) {
+	finalText, _ := terminalCardTextAndFP(snapshot)
+	return s.renderTerminalCard(ctx, panelID, thread, snapshot, finalText, false)
+}
+
+func (s *Service) renderTerminalCard(ctx context.Context, panelID int64, thread model.Thread, snapshot *appserver.ThreadReadSnapshot, finalText string, incomplete bool) (model.RenderedMessage, [][]model.ButtonSpec, string) {
 	buttons := s.latestDetailsButtons(ctx, thread.ID, snapshot.LatestTurnID)
 	if !compactFeishuTopicCard(ctx) {
 		buttons = append(buttons, []model.ButtonSpec{
@@ -212,12 +242,17 @@ func (s *Service) renderFinalCard(ctx context.Context, panelID int64, thread mod
 			s.callbackButton(ctx, s.t(ctx, "获取线程 ID", "Get thread id"), "get_thread_id", thread.ID, snapshot.LatestTurnID, "", nil),
 		})
 	}
+	label := s.t(ctx, "最终回复", "Final")
+	statusLabel := s.t(ctx, "已处理", "Processed")
+	if incomplete {
+		label = s.t(ctx, "未完成", "Incomplete")
+		statusLabel = s.t(ctx, "未产生最终回答", "No final answer")
+	}
 	header := strings.Join([]string{
-		s.visualHeader(ctx, s.t(ctx, "最终回复", "Final"), thread, snapshot.LatestTurnID),
-		fmt.Sprintf("%s: %s", s.t(ctx, "状态", "Status"), s.t(ctx, "已处理", "Processed")),
+		s.visualHeader(ctx, label, thread, snapshot.LatestTurnID),
+		fmt.Sprintf("%s: %s", s.t(ctx, "状态", "Status"), statusLabel),
 	}, "\n")
-	body, _ := terminalCardTextAndFP(snapshot)
-	body = strings.TrimSpace(body)
+	body := strings.TrimSpace(finalText)
 	if line := runTimingFooter(snapshot, time.Now().UTC()); line != "" {
 		if body != "" {
 			body += "\n\n"
@@ -279,9 +314,6 @@ func terminalCardTextAndFP(snapshot *appserver.ThreadReadSnapshot) (string, stri
 	}
 	if text, fp := latestTerminalDetailText(snapshot.DetailItems); text != "" {
 		return text, firstNonEmpty(fp, hashStrings(snapshot.LatestTurnID, snapshot.LatestTurnStatus, text))
-	}
-	if text := strings.TrimSpace(snapshot.LatestProgressText); text != "" {
-		return text, hashStrings(snapshot.LatestTurnID, snapshot.LatestTurnStatus, snapshot.LatestProgressFP, text)
 	}
 	return "", ""
 }

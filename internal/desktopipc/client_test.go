@@ -13,6 +13,24 @@ import (
 	"time"
 )
 
+func TestDefaultSocketPathPrefersCodexHomeSocket(t *testing.T) {
+	home := shortTempDir(t)
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".codex", "ipc")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	path := filepath.Join(dir, "ipc.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	defer listener.Close()
+	if got := DefaultSocketPath(); got != path {
+		t.Fatalf("DefaultSocketPath() = %q, want %q", got, path)
+	}
+}
+
 func TestClientStartTurnFramesDesktopFollowerRequest(t *testing.T) {
 	t.Parallel()
 
@@ -22,16 +40,19 @@ func TestClientStartTurnFramesDesktopFollowerRequest(t *testing.T) {
 		t.Fatalf("Listen failed: %v", err)
 	}
 	defer listener.Close()
-	requests := make(chan wireMessage, 2)
+	requests := make(chan wireMessage, 3)
 	go serveDesktopIPCTest(t, listener, requests)
 
 	client := New(socketPath, time.Second)
 	defer client.Close()
 	result, err := client.StartTurn(context.Background(), "thread-1", map[string]any{
-		"threadId": "thread-1",
-		"input": []map[string]any{
-			{"type": "text", "text": "hello", "text_elements": []any{}},
+		"request": map[string]any{
+			"threadId": "thread-1",
+			"input": []map[string]any{
+				{"type": "text", "text": "hello", "text_elements": []any{}},
+			},
 		},
+		"context": map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("StartTurn failed: %v", err)
@@ -44,22 +65,30 @@ func TestClientStartTurnFramesDesktopFollowerRequest(t *testing.T) {
 	if got, want := initialize.Method, "initialize"; got != want {
 		t.Fatalf("initialize method = %q, want %q", got, want)
 	}
+	owner := <-requests
+	if got, want := owner.Method, "thread-owner-discovery"; got != want {
+		t.Fatalf("owner discovery method = %q, want %q", got, want)
+	}
 	request := <-requests
 	if got, want := request.Method, "thread-follower-start-turn"; got != want {
 		t.Fatalf("method = %q, want %q", got, want)
 	}
-	if got, want := request.Version, 1; got != want {
+	if got, want := request.Version, 2; got != want {
 		t.Fatalf("version = %d, want %d", got, want)
 	}
 	if got, want := request.Params["conversationId"], "thread-1"; got != want {
 		t.Fatalf("conversationId = %v, want %q", got, want)
 	}
-	params, ok := request.Params["turnStartParams"].(map[string]any)
+	params, ok := request.Params["turnStart"].(map[string]any)
 	if !ok {
-		t.Fatalf("turnStartParams = %#v, want object", request.Params["turnStartParams"])
+		t.Fatalf("turnStart = %#v, want object", request.Params["turnStart"])
 	}
-	if got, want := params["threadId"], "thread-1"; got != want {
-		t.Fatalf("turnStartParams.threadId = %v, want %q", got, want)
+	requestParams, ok := params["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("turnStart.request = %#v, want object", params["request"])
+	}
+	if got, want := requestParams["threadId"], "thread-1"; got != want {
+		t.Fatalf("turnStart.request.threadId = %v, want %q", got, want)
 	}
 }
 
@@ -72,7 +101,7 @@ func TestClientSteerTurnFramesRestoreMessage(t *testing.T) {
 		t.Fatalf("Listen failed: %v", err)
 	}
 	defer listener.Close()
-	requests := make(chan wireMessage, 2)
+	requests := make(chan wireMessage, 3)
 	go serveDesktopIPCTest(t, listener, requests)
 
 	client := New(socketPath, time.Second)
@@ -92,6 +121,7 @@ func TestClientSteerTurnFramesRestoreMessage(t *testing.T) {
 		t.Fatalf("result ok = %v, want %v", got, want)
 	}
 
+	<-requests
 	<-requests
 	request := <-requests
 	if got, want := request.Method, "thread-follower-steer-turn"; got != want {
@@ -183,7 +213,7 @@ func TestClientLoadCompleteHistoryAcceptsSnapshotBroadcast(t *testing.T) {
 		t.Fatalf("Listen failed: %v", err)
 	}
 	defer listener.Close()
-	requests := make(chan wireMessage, 2)
+	requests := make(chan wireMessage, 4)
 	go serveLoadHistoryBroadcastTest(t, listener, requests)
 
 	client := New(socketPath, time.Second)
@@ -200,6 +230,7 @@ func TestClientLoadCompleteHistoryAcceptsSnapshotBroadcast(t *testing.T) {
 	}
 
 	<-requests
+	<-requests
 	request := <-requests
 	if got, want := request.Method, "thread-follower-load-complete-history"; got != want {
 		t.Fatalf("method = %q, want %q", got, want)
@@ -215,7 +246,7 @@ func TestClientStartTurnTargetsOwnerFromSnapshotBroadcast(t *testing.T) {
 		t.Fatalf("Listen failed: %v", err)
 	}
 	defer listener.Close()
-	requests := make(chan wireMessage, 3)
+	requests := make(chan wireMessage, 4)
 	go serveLoadHistoryThenStartTurnTest(t, listener, requests)
 
 	client := New(socketPath, time.Second)
@@ -227,6 +258,7 @@ func TestClientStartTurnTargetsOwnerFromSnapshotBroadcast(t *testing.T) {
 		t.Fatalf("StartTurn failed: %v", err)
 	}
 
+	<-requests
 	<-requests
 	<-requests
 	request := <-requests
@@ -247,7 +279,7 @@ func TestClientSteerTurnTargetsOwnerFromHandledByClientID(t *testing.T) {
 		t.Fatalf("Listen failed: %v", err)
 	}
 	defer listener.Close()
-	requests := make(chan wireMessage, 3)
+	requests := make(chan wireMessage, 4)
 	go serveLoadHistoryResponseThenSteerTurnTest(t, listener, requests)
 
 	client := New(socketPath, time.Second)
@@ -259,6 +291,7 @@ func TestClientSteerTurnTargetsOwnerFromHandledByClientID(t *testing.T) {
 		t.Fatalf("SteerTurn failed: %v", err)
 	}
 
+	<-requests
 	<-requests
 	<-requests
 	request := <-requests
@@ -290,7 +323,9 @@ func serveDesktopIPCTest(t *testing.T, listener net.Listener, requests chan<- wi
 			t.Errorf("readWireMessage failed: %v", err)
 			return
 		}
-		requests <- msg
+		if msg.Type == "request" {
+			requests <- msg
+		}
 		result := map[string]any{"ok": true}
 		if msg.Method == "initialize" {
 			result = map[string]any{"clientId": "test-client"}
@@ -329,7 +364,9 @@ func serveLoadHistoryThenStartTurnTest(t *testing.T, listener net.Listener, requ
 			t.Errorf("readWireMessage failed: %v", err)
 			return
 		}
-		requests <- msg
+		if msg.Type == "request" {
+			requests <- msg
+		}
 		switch msg.Method {
 		case "initialize":
 			if err := writeWireMessage(conn, wireMessage{
@@ -340,6 +377,11 @@ func serveLoadHistoryThenStartTurnTest(t *testing.T, listener net.Listener, requ
 				Result:     map[string]any{"clientId": "test-client"},
 			}); err != nil {
 				t.Errorf("write initialize failed: %v", err)
+				return
+			}
+		case "thread-owner-discovery":
+			if err := writeOwnerDiscoveryResponse(conn, msg, "desktop-owner"); err != nil {
+				t.Errorf("write owner discovery failed: %v", err)
 				return
 			}
 		case "thread-follower-load-complete-history":
@@ -392,7 +434,9 @@ func serveLoadHistoryResponseThenSteerTurnTest(t *testing.T, listener net.Listen
 			t.Errorf("readWireMessage failed: %v", err)
 			return
 		}
-		requests <- msg
+		if msg.Type == "request" {
+			requests <- msg
+		}
 		switch msg.Method {
 		case "initialize":
 			if err := writeWireMessage(conn, wireMessage{
@@ -403,6 +447,11 @@ func serveLoadHistoryResponseThenSteerTurnTest(t *testing.T, listener net.Listen
 				Result:     map[string]any{"clientId": "test-client"},
 			}); err != nil {
 				t.Errorf("write initialize failed: %v", err)
+				return
+			}
+		case "thread-owner-discovery":
+			if err := writeOwnerDiscoveryResponse(conn, msg, "desktop-owner"); err != nil {
+				t.Errorf("write owner discovery failed: %v", err)
 				return
 			}
 		case "thread-follower-load-complete-history":
@@ -452,7 +501,9 @@ func serveLoadHistoryBroadcastTest(t *testing.T, listener net.Listener, requests
 			t.Errorf("readWireMessage failed: %v", err)
 			return
 		}
-		requests <- msg
+		if msg.Type == "request" {
+			requests <- msg
+		}
 		if msg.Method == "initialize" {
 			if err := writeWireMessage(conn, wireMessage{
 				Type:              "response",
@@ -463,6 +514,13 @@ func serveLoadHistoryBroadcastTest(t *testing.T, listener net.Listener, requests
 				Result:            map[string]any{"clientId": "test-client"},
 			}); err != nil {
 				t.Errorf("write initialize failed: %v", err)
+				return
+			}
+			continue
+		}
+		if msg.Method == "thread-owner-discovery" {
+			if err := writeOwnerDiscoveryResponse(conn, msg, "desktop-owner"); err != nil {
+				t.Errorf("write owner discovery failed: %v", err)
 				return
 			}
 			continue
@@ -539,6 +597,13 @@ func serveDiscoveryTest(t *testing.T, listener net.Listener, discoveryResponse c
 			discoveryResponse <- msg
 			discoverySeen = true
 		}
+		if msg.Method == "thread-owner-discovery" {
+			if err := writeOwnerDiscoveryResponse(conn, msg, "desktop-owner"); err != nil {
+				t.Errorf("write owner discovery failed: %v", err)
+				return
+			}
+			continue
+		}
 		if msg.Method == "thread-follower-load-complete-history" {
 			if err := writeWireMessage(conn, wireMessage{
 				Type:       "response",
@@ -580,4 +645,15 @@ func writeWireMessage(writer io.Writer, msg wireMessage) error {
 	binary.LittleEndian.PutUint32(header, uint32(len(body)))
 	_, err = writer.Write(append(header, body...))
 	return err
+}
+
+func writeOwnerDiscoveryResponse(writer io.Writer, request wireMessage, owner string) error {
+	return writeWireMessage(writer, wireMessage{
+		Type:              "response",
+		RequestID:         request.RequestID,
+		Method:            request.Method,
+		ResultType:        "success",
+		HandledByClientID: owner,
+		Result:            map[string]any{"ok": true},
+	})
 }

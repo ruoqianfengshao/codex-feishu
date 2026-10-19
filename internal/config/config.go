@@ -53,6 +53,7 @@ type Config struct {
 	FeishuAppSecret             string
 	FeishuAllowedOpenIDs        []string
 	FeishuAllowedChatIDs        []string
+	FeishuCardVersion           string
 	DefaultCWD                  string
 	CodexChatsRoot              string
 	LogEnabled                  bool
@@ -143,6 +144,7 @@ func fromSource(source envSource) Config {
 		FeishuAppSecret:             source.get("CTR_GO_FEISHU_APP_SECRET"),
 		FeishuAllowedOpenIDs:        parseStringList(source.get("CTR_GO_FEISHU_ALLOWED_OPEN_IDS")),
 		FeishuAllowedChatIDs:        parseStringList(source.get("CTR_GO_FEISHU_ALLOWED_CHAT_IDS")),
+		FeishuCardVersion:           normalizeFeishuCardVersion(source.get("CTR_GO_FEISHU_CARD_VERSION")),
 		DefaultCWD:                  source.string("CTR_GO_DEFAULT_CWD", cwd),
 		CodexChatsRoot:              source.path("CTR_GO_CODEX_CHATS_ROOT", DefaultCodexChatsRoot()),
 		LogEnabled:                  source.bool("CTR_GO_LOG_ENABLED", true),
@@ -224,9 +226,11 @@ func (c Config) MarshalJSON() ([]byte, error) {
 func DefaultCodexChatsRoot() string {
 	userHome, _ := os.UserHomeDir()
 	if strings.TrimSpace(userHome) == "" {
-		return filepath.Join("Documents", "Codex")
+		return filepath.Join(".codex-feishu", "chats")
 	}
-	return filepath.Join(userHome, "Documents", "Codex")
+	// Keep temporary chats outside macOS protected folders such as Documents so
+	// the app-server never needs a TCC prompt to read them.
+	return filepath.Join(userHome, ".codex-feishu", "chats")
 }
 
 func ConfigFilePath() string {
@@ -412,6 +416,18 @@ func parseStringList(raw string) []string {
 		out = append(out, part)
 	}
 	return out
+}
+
+// normalizeFeishuCardVersion selects the card schema used for rich list cards.
+// Feishu tenants without JSON 2.0 support render those cards as an "upgrade the
+// client" placeholder, so the compatible v1 schema is the default.
+func normalizeFeishuCardVersion(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "v2", "2", "modern", "json2":
+		return "v2"
+	default:
+		return "v1"
+	}
 }
 
 func normalizeAdapter(value string) string {

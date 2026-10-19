@@ -2,6 +2,7 @@ package appserver
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha1"
@@ -23,6 +24,11 @@ import (
 
 	"github.com/ruoqianfengshao/codex-feishu/internal/control"
 	"github.com/ruoqianfengshao/codex-feishu/internal/version"
+)
+
+const (
+	stderrTailMaxLines = 100
+	stderrLineMaxBytes = 4096
 )
 
 type Event = control.Event
@@ -313,7 +319,9 @@ func readWebSocketFrame(reader io.Reader) (byte, []byte, error) {
 		}
 		payloadLen = binary.BigEndian.Uint64(length[:])
 	}
-	if payloadLen > 16*1024*1024 {
+	// thread/read on long threads can exceed the old 16 MiB limit; the shared
+	// app-server sends the whole snapshot in one frame.
+	if payloadLen > 128*1024*1024 {
 		return 0, nil, fmt.Errorf("websocket frame too large: %d", payloadLen)
 	}
 	var maskKey [4]byte
@@ -1126,28 +1134,42 @@ func (c *Client) readStdout(generation uint64) {
 	if stdout == nil {
 		return
 	}
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for scanner.Scan() {
+	reader := bufio.NewReader(stdout)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(line) == 0 && err != nil {
+			if !c.isStartedGeneration(generation) {
+				return
+			}
+			if errors.Is(err, io.EOF) {
+				c.broadcast(Event{Channel: "transport_closed", Params: map[string]any{"stream": "stdout", "generation": generation, "reason": "eof", "stderr_tail": c.StderrTail()}})
+			} else {
+				c.broadcast(Event{Channel: "transport_error", Params: map[string]any{"stream": "stdout", "generation": generation, "error": err.Error(), "stderr_tail": c.StderrTail()}})
+			}
+			return
+		}
 		if !c.isStartedGeneration(generation) {
 			return
 		}
-		line := scanner.Bytes()
+		line = bytes.TrimRight(line, "\r\n")
 		var payload map[string]any
 		if err := json.Unmarshal(line, &payload); err != nil {
 			c.broadcast(Event{Channel: "transport_error", Params: map[string]any{"stream": "stdout", "generation": generation, "error": err.Error(), "line_len": len(line), "stderr_tail": c.StderrTail()}})
-			continue
+		} else {
+			c.handlePayload(payload, generation)
 		}
-		c.handlePayload(payload, generation)
+		if err != nil {
+			if !c.isStartedGeneration(generation) {
+				return
+			}
+			if errors.Is(err, io.EOF) {
+				c.broadcast(Event{Channel: "transport_closed", Params: map[string]any{"stream": "stdout", "generation": generation, "reason": "eof", "stderr_tail": c.StderrTail()}})
+			} else {
+				c.broadcast(Event{Channel: "transport_error", Params: map[string]any{"stream": "stdout", "generation": generation, "error": err.Error(), "stderr_tail": c.StderrTail()}})
+			}
+			return
+		}
 	}
-	if !c.isStartedGeneration(generation) {
-		return
-	}
-	if err := scanner.Err(); err != nil {
-		c.broadcast(Event{Channel: "transport_error", Params: map[string]any{"stream": "stdout", "generation": generation, "error": err.Error(), "stderr_tail": c.StderrTail()}})
-		return
-	}
-	c.broadcast(Event{Channel: "transport_closed", Params: map[string]any{"stream": "stdout", "generation": generation, "reason": "eof", "stderr_tail": c.StderrTail()}})
 }
 
 func (c *Client) readWebSocket(ws *webSocketProxyTransport, generation uint64) {
@@ -1190,20 +1212,40 @@ func (c *Client) readStderr(generation uint64) {
 	if stderr == nil {
 		return
 	}
-	scanner := bufio.NewScanner(stderr)
-	scanner.Buffer(make([]byte, 0, 512), 64*1024)
-	for scanner.Scan() {
-		if !c.isStartedGeneration(generation) {
+	reader := bufio.NewReader(stderr)
+	for {
+		raw, err := reader.ReadBytes('\n')
+		if len(raw) > 0 {
+			if !c.recordStderrLine(generation, compactStderrLine(raw)) {
+				return
+			}
+		}
+		if err != nil {
 			return
 		}
-		line := scanner.Text()
-		c.mu.Lock()
-		c.stderrLines = append(c.stderrLines, line)
-		if len(c.stderrLines) > 100 {
-			c.stderrLines = c.stderrLines[len(c.stderrLines)-100:]
-		}
-		c.mu.Unlock()
 	}
+}
+
+func compactStderrLine(raw []byte) string {
+	raw = bytes.TrimRight(raw, "\r\n")
+	if len(raw) <= stderrLineMaxBytes {
+		return string(raw)
+	}
+	tail := raw[len(raw)-stderrLineMaxBytes:]
+	return fmt.Sprintf("<truncated %d bytes> %s", len(raw)-stderrLineMaxBytes, string(tail))
+}
+
+func (c *Client) recordStderrLine(generation uint64, line string) bool {
+	if !c.isStartedGeneration(generation) {
+		return false
+	}
+	c.mu.Lock()
+	c.stderrLines = append(c.stderrLines, line)
+	if len(c.stderrLines) > stderrTailMaxLines {
+		c.stderrLines = c.stderrLines[len(c.stderrLines)-stderrTailMaxLines:]
+	}
+	c.mu.Unlock()
+	return true
 }
 
 func (c *Client) handlePayload(payload map[string]any, generation uint64) {

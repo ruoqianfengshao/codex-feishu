@@ -441,6 +441,49 @@ func TestBuildCodexPanelCardKeepsProgressAndFinalStructure(t *testing.T) {
 	}
 }
 
+func TestRenderSectionedCardDefaultsToLegacySchema(t *testing.T) {
+	t.Parallel()
+
+	sections := []model.MessageSection{{
+		Text:    "Projects",
+		Heading: true,
+		Rows: []model.MessageSectionRow{{
+			Title:    "alpha",
+			Trailing: "1 chats",
+			Button:   model.ButtonSpec{Text: "Open", CallbackData: "cb_open"},
+		}},
+	}}
+	bot := &Bot{}
+	card, err := bot.renderSectionedCard(sections)
+	if err != nil {
+		t.Fatalf("renderSectionedCard failed: %v", err)
+	}
+	for _, forbidden := range []string{`"schema":"2.0"`, "interactive_container", "background_style"} {
+		if strings.Contains(card, forbidden) {
+			t.Fatalf("card = %s, want legacy schema without %s", card, forbidden)
+		}
+	}
+	for _, needle := range []string{`"tag":"div"`, `"extra"`, `"tag":"lark_md"`} {
+		if !strings.Contains(card, needle) {
+			t.Fatalf("card = %s, want classic row layout with %s", card, needle)
+		}
+	}
+	for _, needle := range []string{"alpha", "1 chats", "cb_open"} {
+		if !strings.Contains(card, needle) {
+			t.Fatalf("card = %s, want %q preserved", card, needle)
+		}
+	}
+
+	bot.cfg.FeishuCardVersion = "v2"
+	modern, err := bot.renderSectionedCard(sections)
+	if err != nil {
+		t.Fatalf("renderSectionedCard(v2) failed: %v", err)
+	}
+	if !strings.Contains(modern, `"schema":"2.0"`) {
+		t.Fatalf("card = %s, want JSON 2.0 schema when explicitly selected", modern)
+	}
+}
+
 func TestBuildSectionedCardKeepsButtonsAfterEachSection(t *testing.T) {
 	t.Parallel()
 
@@ -1412,6 +1455,53 @@ func TestEnsureThreadTopicCreatesP2PThreadReply(t *testing.T) {
 	}
 }
 
+func TestEnsureThreadTopicReopensExistingRootWithoutCreatingNewTopic(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := storage.Open(t.TempDir() + "/state.sqlite")
+	if err != nil {
+		t.Fatalf("storage.Open failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	p2pChatID, err := store.ResolveExternalID(ctx, namespaceChat, "oc_p2p")
+	if err != nil {
+		t.Fatalf("ResolveExternalID(p2p chat) failed: %v", err)
+	}
+	oldRootID, err := store.ResolveExternalID(ctx, namespaceMessage, "om_old_root")
+	if err != nil {
+		t.Fatalf("ResolveExternalID(old root) failed: %v", err)
+	}
+	if err := store.PutFeishuMessageMap(ctx, oldRootID, "om_old_root", p2pChatID, "oc_p2p"); err != nil {
+		t.Fatalf("PutFeishuMessageMap(old root) failed: %v", err)
+	}
+	if err := store.UpsertFeishuThreadTopic(ctx, model.FeishuThreadTopic{
+		ChatID:            p2pChatID,
+		OpenChatID:        "oc_p2p",
+		ThreadID:          "thread-refresh-root",
+		RootMessageID:     oldRootID,
+		RootOpenMessageID: "om_old_root",
+	}); err != nil {
+		t.Fatalf("UpsertFeishuThreadTopic failed: %v", err)
+	}
+	api := &fakeAPIClient{}
+	bot := &Bot{store: store, api: api}
+
+	topic, err := bot.EnsureThreadTopic(model.WithForcedThreadTopicActivation(ctx), p2pChatID, model.Thread{ID: "thread-refresh-root", Title: "Refresh Root"}, nil, model.PanelSourceFeishuInput)
+	if err != nil {
+		t.Fatalf("EnsureThreadTopic failed: %v", err)
+	}
+	if api.sendCalls != 0 {
+		t.Fatalf("sendCalls = %d, want no new topic root", api.sendCalls)
+	}
+	if api.replyCalls != 1 || api.lastOpenMessageID != "om_old_root" || !api.lastReplyInThread {
+		t.Fatalf("activation reply calls=%d target=%q inThread=%v, want in-thread reply to the existing root", api.replyCalls, api.lastOpenMessageID, api.lastReplyInThread)
+	}
+	if topic == nil || topic.RootMessageID != oldRootID {
+		t.Fatalf("topic = %#v, want existing root reused", topic)
+	}
+}
+
 func TestEnsureThreadTopicReusesExistingTopicAcrossChats(t *testing.T) {
 	t.Parallel()
 
@@ -1701,6 +1791,7 @@ func TestSettingsCardActionReturnsNoToastAfterEdit(t *testing.T) {
 			LogDir:  filepath.Join(root, "logs"),
 			DBPath:  dbPath,
 		},
+		FeishuCardVersion: "v2",
 	}
 	service, err := daemon.New(cfg)
 	if err != nil {

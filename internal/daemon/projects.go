@@ -29,15 +29,16 @@ const (
 )
 
 type projectWorkspace struct {
-	Key               string `json:"key,omitempty"`
-	ProjectName       string `json:"project_name"`
-	DirectoryName     string `json:"directory_name,omitempty"`
-	CWD               string `json:"cwd"`
-	LatestThread      string `json:"latest_thread_id,omitempty"`
-	LatestThreadLabel string `json:"latest_thread_label,omitempty"`
-	ThreadCount       int    `json:"thread_count,omitempty"`
-	UpdatedAt         int64  `json:"updated_at,omitempty"`
-	Pinned            bool   `json:"pinned,omitempty"`
+	Key               string   `json:"key,omitempty"`
+	ProjectName       string   `json:"project_name"`
+	DirectoryName     string   `json:"directory_name,omitempty"`
+	CWD               string   `json:"cwd"`
+	RootPaths         []string `json:"root_paths,omitempty"`
+	LatestThread      string   `json:"latest_thread_id,omitempty"`
+	LatestThreadLabel string   `json:"latest_thread_label,omitempty"`
+	ThreadCount       int      `json:"thread_count,omitempty"`
+	UpdatedAt         int64    `json:"updated_at,omitempty"`
+	Pinned            bool     `json:"pinned,omitempty"`
 }
 
 type pendingNewThreadState struct {
@@ -59,6 +60,11 @@ func (s *Service) projectCatalog(ctx context.Context) (projectCatalog, error) {
 		return projectCatalog{}, err
 	}
 	codexProjects := loadCodexProjectState(s.codexGlobalStatePath)
+	// Prefer the app-server project registry. It is the same registry the
+	// Codex desktop sidebar uses, so names, roots and order always agree.
+	if registry, ok := s.projectRegistry(ctx); ok {
+		return s.registryProjectCatalog(threads, registry, codexProjects), nil
+	}
 	if !codexProjects.matchesAnyThread(threads) {
 		codexProjects.disableProjectFilter()
 	}
@@ -110,11 +116,30 @@ func (s *Service) projectCatalog(ctx context.Context) (projectCatalog, error) {
 	}
 	workspaces := make([]projectWorkspace, 0, len(grouped))
 	if len(codexProjects.order) > 0 {
+		orderedKeys := map[string]struct{}{}
 		for _, cwd := range codexProjects.order {
-			if workspace := grouped[model.NormalizePath(cwd)]; workspace != nil {
+			key := model.NormalizePath(cwd)
+			if workspace := grouped[key]; workspace != nil {
+				if _, exists := orderedKeys[key]; exists {
+					continue
+				}
+				orderedKeys[key] = struct{}{}
 				workspaces = append(workspaces, *workspace)
 			}
 		}
+		// Fail open: keep projects the order file does not mention instead of
+		// hiding them, sorted by recency after the explicitly ordered ones.
+		remaining := make([]projectWorkspace, 0, len(grouped)-len(workspaces))
+		for key, workspace := range grouped {
+			if _, exists := orderedKeys[key]; exists {
+				continue
+			}
+			remaining = append(remaining, *workspace)
+		}
+		sort.Slice(remaining, func(i, j int) bool {
+			return projectWorkspaceLess(remaining[i], remaining[j])
+		})
+		workspaces = append(workspaces, remaining...)
 		sort.SliceStable(workspaces, func(i, j int) bool {
 			return workspaces[i].Pinned && !workspaces[j].Pinned
 		})
@@ -147,24 +172,215 @@ func (s *Service) projectCatalog(ctx context.Context) (projectCatalog, error) {
 		sort.Slice(workspaces, func(i, j int) bool {
 			leftChats := isChatsProjectWorkspace(workspaces[i])
 			rightChats := isChatsProjectWorkspace(workspaces[j])
-			if leftChats != rightChats {
-				return !leftChats
-			}
-			return projectWorkspaceLess(workspaces[i], workspaces[j])
+			return !leftChats && rightChats
 		})
 	}
 	assignProjectWorkspaceKeys(workspaces)
 	return projectCatalog{Workspaces: workspaces, Chats: chats}, nil
 }
 
+// projectRegistry returns the app-server project registry ordered the way the
+// Codex sidebar orders it. Projects without a usable root are skipped because
+// they cannot be mapped to cached threads or used to start a new thread.
+func (s *Service) projectRegistry(ctx context.Context) ([]appserver.StateProject, bool) {
+	catalog, err := s.readStateCatalog(ctx)
+	if err != nil || len(catalog.Projects) == 0 {
+		return nil, false
+	}
+	registry := make([]appserver.StateProject, 0, len(catalog.Projects))
+	for _, project := range catalog.Projects {
+		if strings.TrimSpace(project.ID) == "" || len(project.RootPaths) == 0 {
+			continue
+		}
+		registry = append(registry, project)
+	}
+	if len(registry) == 0 {
+		return nil, false
+	}
+	return registry, true
+}
+
+func matchRegistryProject(registry []appserver.StateProject, cwd string) (appserver.StateProject, bool) {
+	normalized := model.NormalizePath(cwd)
+	if normalized == "" {
+		return appserver.StateProject{}, false
+	}
+	best := -1
+	bestLen := -1
+	for index := range registry {
+		for _, root := range registry[index].RootPaths {
+			if !isPathUnderRoot(normalized, root) {
+				continue
+			}
+			if len(root) > bestLen {
+				best = index
+				bestLen = len(root)
+			}
+		}
+	}
+	if best < 0 {
+		return appserver.StateProject{}, false
+	}
+	return registry[best], true
+}
+
+func (s *Service) registryProjectCatalog(threads []model.Thread, registry []appserver.StateProject, codexProjects codexProjectState) projectCatalog {
+	chats := []model.Thread{}
+	byProjectID := map[string]*projectWorkspace{}
+	extras := map[string]*projectWorkspace{}
+	extraOrder := []string{}
+
+	for _, thread := range threads {
+		if !threadVisibleInProjectCatalog(thread) {
+			continue
+		}
+		if s.isCodexChatThread(thread) || codexProjects.isProjectlessThread(thread.ID) {
+			chats = append(chats, thread)
+			continue
+		}
+		if project, ok := matchRegistryProject(registry, thread.CWD); ok {
+			workspace := byProjectID[project.ID]
+			if workspace == nil {
+				workspace = registryWorkspace(project, codexProjects)
+				byProjectID[project.ID] = workspace
+			}
+			addThreadToProjectWorkspace(workspace, thread, codexProjects)
+			continue
+		}
+		// Fail open: a thread in a folder that Codex does not list as a project
+		// stays visible as its own entry instead of disappearing.
+		cwdKey := model.NormalizePath(thread.CWD)
+		if cwdKey == "" {
+			cwdKey = "thread:" + thread.ID
+		}
+		workspace := extras[cwdKey]
+		if workspace == nil {
+			workspace = threadWorkspace(thread, codexProjects)
+			extras[cwdKey] = workspace
+			extraOrder = append(extraOrder, cwdKey)
+		}
+		addThreadToProjectWorkspace(workspace, thread, codexProjects)
+	}
+
+	workspaces := make([]projectWorkspace, 0, len(registry)+len(extras)+1)
+	for _, project := range registry {
+		workspace := byProjectID[project.ID]
+		if workspace == nil {
+			workspace = registryWorkspace(project, codexProjects)
+		}
+		workspaces = append(workspaces, *workspace)
+	}
+	for _, key := range extraOrder {
+		workspaces = append(workspaces, *extras[key])
+	}
+	sort.SliceStable(workspaces, func(i, j int) bool {
+		return workspaces[i].Pinned && !workspaces[j].Pinned
+	})
+	sort.Slice(chats, func(i, j int) bool {
+		return threadLess(chats[i], chats[j], codexProjects)
+	})
+	if len(chats) > 0 {
+		latest := chats[0]
+		workspaces = append(workspaces, projectWorkspace{
+			Key:               chatsProjectWorkspaceKey,
+			ProjectName:       chatsProjectName,
+			DirectoryName:     chatsProjectName,
+			CWD:               s.codexChatsRoot(),
+			LatestThread:      latest.ID,
+			LatestThreadLabel: threadDisplayLabel(latest),
+			ThreadCount:       len(chats),
+			UpdatedAt:         latest.UpdatedAt,
+			Pinned:            codexProjects.hasPinnedThread(chats),
+		})
+		sort.Slice(workspaces, func(i, j int) bool {
+			leftChats := isChatsProjectWorkspace(workspaces[i])
+			rightChats := isChatsProjectWorkspace(workspaces[j])
+			return !leftChats && rightChats
+		})
+	}
+	assignProjectWorkspaceKeys(workspaces)
+	return projectCatalog{Workspaces: workspaces, Chats: chats}
+}
+
+func registryWorkspace(project appserver.StateProject, codexProjects codexProjectState) *projectWorkspace {
+	root := ""
+	if len(project.RootPaths) > 0 {
+		root = project.RootPaths[0]
+	}
+	workspace := &projectWorkspace{
+		ProjectName:   strings.TrimSpace(project.Name),
+		DirectoryName: filepath.Base(root),
+		CWD:           root,
+		RootPaths:     append([]string{}, project.RootPaths...),
+	}
+	if workspace.ProjectName == "" || workspace.ProjectName == "." {
+		workspace.ProjectName = filepath.Base(root)
+	}
+	if workspace.DirectoryName == "" || workspace.DirectoryName == "." {
+		workspace.DirectoryName = workspace.ProjectName
+	}
+	if codexProjects.isPinnedProjectID(project.ID) || codexProjects.isPinnedProject(root) {
+		workspace.Pinned = true
+	}
+	return workspace
+}
+
+func threadWorkspace(thread model.Thread, codexProjects codexProjectState) *projectWorkspace {
+	projectName := strings.TrimSpace(thread.ProjectName)
+	directoryName := strings.TrimSpace(thread.DirectoryName)
+	if projectName == "" || directoryName == "" {
+		derivedProject, derivedDirectory := model.ProjectNameFromCWD(thread.CWD)
+		projectName = firstNonEmpty(projectName, derivedProject)
+		directoryName = firstNonEmpty(directoryName, derivedDirectory)
+	}
+	workspace := &projectWorkspace{
+		ProjectName:       firstNonEmpty(projectName, "Shared/General"),
+		DirectoryName:     directoryName,
+		CWD:               thread.CWD,
+		RootPaths:         workspaceRootPaths(thread.CWD),
+		LatestThread:      thread.ID,
+		LatestThreadLabel: threadDisplayLabel(thread),
+		UpdatedAt:         thread.UpdatedAt,
+	}
+	if codexProjects.isPinnedThread(thread.ID) || codexProjects.isPinnedProject(thread.CWD) {
+		workspace.Pinned = true
+	}
+	return workspace
+}
+
+func addThreadToProjectWorkspace(workspace *projectWorkspace, thread model.Thread, codexProjects codexProjectState) {
+	if workspace == nil {
+		return
+	}
+	workspace.ThreadCount++
+	if codexProjects.isPinnedThread(thread.ID) || codexProjects.isPinnedProject(thread.CWD) {
+		workspace.Pinned = true
+	}
+	if thread.UpdatedAt > workspace.UpdatedAt {
+		workspace.UpdatedAt = thread.UpdatedAt
+		workspace.LatestThread = thread.ID
+		workspace.LatestThreadLabel = threadDisplayLabel(thread)
+	}
+}
+
+func workspaceRootPaths(cwd string) []string {
+	normalized := model.NormalizePath(cwd)
+	if normalized == "" {
+		return nil
+	}
+	return []string{normalized}
+}
+
 type codexProjectState struct {
 	hasProjectList   bool
 	allowedProjects  map[string]struct{}
 	order            []string
+	localProjects    map[string][]string
 	projectlessIDs   map[string]struct{}
 	workspaceRootIDs map[string]string
 	pinnedThreadIDs  map[string]struct{}
 	pinnedProjects   map[string]struct{}
+	pinnedProjectIDs map[string]struct{}
 }
 
 func defaultCodexGlobalStatePath() string {
@@ -191,16 +407,28 @@ func loadCodexProjectState(path string) codexProjectState {
 		PinnedThreadIDs             []string          `json:"pinned-thread-ids"`
 		PinnedProjectIDs            []string          `json:"pinned-project-ids"`
 		ThreadWorkspaceRootHints    map[string]string `json:"thread-workspace-root-hints"`
+		LocalProjects               map[string]struct {
+			RootPaths []string `json:"rootPaths"`
+		} `json:"local-projects"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return codexProjectState{}
 	}
 	state := codexProjectState{
 		allowedProjects:  map[string]struct{}{},
+		localProjects:    map[string][]string{},
 		projectlessIDs:   map[string]struct{}{},
 		workspaceRootIDs: map[string]string{},
 		pinnedThreadIDs:  map[string]struct{}{},
 		pinnedProjects:   map[string]struct{}{},
+		pinnedProjectIDs: map[string]struct{}{},
+	}
+	for projectID, project := range payload.LocalProjects {
+		for _, root := range project.RootPaths {
+			if normalized := model.NormalizePath(root); normalized != "" {
+				state.localProjects[strings.TrimSpace(projectID)] = append(state.localProjects[strings.TrimSpace(projectID)], normalized)
+			}
+		}
 	}
 	for _, id := range payload.ProjectlessThreadIDs {
 		if trimmed := strings.TrimSpace(id); trimmed != "" {
@@ -212,8 +440,23 @@ func loadCodexProjectState(path string) codexProjectState {
 			state.pinnedThreadIDs[trimmed] = struct{}{}
 		}
 	}
-	for _, cwd := range payload.PinnedProjectIDs {
-		if normalized := model.NormalizePath(cwd); normalized != "" {
+	for _, projectOrRoot := range payload.PinnedProjectIDs {
+		value := strings.TrimSpace(projectOrRoot)
+		if value == "" {
+			continue
+		}
+		if roots := state.localProjects[value]; len(roots) > 0 {
+			state.pinnedProjectIDs[value] = struct{}{}
+			for _, root := range roots {
+				state.pinnedProjects[root] = struct{}{}
+			}
+			continue
+		}
+		if !looksLikeFilesystemPath(value) {
+			state.pinnedProjectIDs[value] = struct{}{}
+			continue
+		}
+		if normalized := model.NormalizePath(value); normalized != "" {
 			state.pinnedProjects[normalized] = struct{}{}
 		}
 	}
@@ -222,15 +465,23 @@ func loadCodexProjectState(path string) codexProjectState {
 			state.workspaceRootIDs[id] = model.NormalizePath(root)
 		}
 	}
-	for _, root := range append(payload.ProjectOrder, payload.ElectronSavedWorkspaceRoots...) {
-		normalized := model.NormalizePath(root)
-		if normalized == "" {
+	for _, projectOrRoot := range payload.ProjectOrder {
+		value := strings.TrimSpace(projectOrRoot)
+		if roots := state.localProjects[value]; len(roots) > 0 {
+			for _, root := range roots {
+				state.addAllowedProject(root, true)
+			}
 			continue
 		}
-		if _, ok := state.allowedProjects[normalized]; !ok {
-			state.order = append(state.order, normalized)
+		// project-order may contain app-server project IDs instead of paths.
+		// Treating an ID as a directory would filter every project out.
+		if !looksLikeFilesystemPath(value) {
+			continue
 		}
-		state.allowedProjects[normalized] = struct{}{}
+		state.addAllowedProject(value, true)
+	}
+	for _, root := range payload.ElectronSavedWorkspaceRoots {
+		state.addAllowedProject(root, false)
 	}
 	for _, root := range payload.ActiveWorkspaceRoots {
 		normalized := model.NormalizePath(root)
@@ -242,8 +493,42 @@ func loadCodexProjectState(path string) codexProjectState {
 		}
 		state.allowedProjects[normalized] = struct{}{}
 	}
+	for _, roots := range state.localProjects {
+		for _, root := range roots {
+			state.addAllowedProject(root, false)
+		}
+	}
 	state.hasProjectList = len(state.allowedProjects) > 0
 	return state
+}
+
+func (s *codexProjectState) addAllowedProject(root string, ordered bool) {
+	normalized := model.NormalizePath(root)
+	if normalized == "" {
+		return
+	}
+	if _, exists := s.allowedProjects[normalized]; !exists && ordered {
+		s.order = append(s.order, normalized)
+	}
+	s.allowedProjects[normalized] = struct{}{}
+}
+
+// looksLikeFilesystemPath distinguishes real project roots from opaque IDs.
+// Codex stores app-server project IDs in project-order, and those must never be
+// compared against thread working directories.
+func looksLikeFilesystemPath(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, "~/") {
+		return true
+	}
+	if len(value) >= 3 && value[1] == ':' && (value[2] == '\\' || value[2] == '/') {
+		first := value[0]
+		return (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z')
+	}
+	return strings.HasPrefix(value, `\\`)
 }
 
 func (s codexProjectState) allowProject(cwd string) bool {
@@ -278,6 +563,11 @@ func (s codexProjectState) isPinnedThread(threadID string) bool {
 
 func (s codexProjectState) isPinnedProject(cwd string) bool {
 	_, ok := s.pinnedProjects[model.NormalizePath(cwd)]
+	return ok
+}
+
+func (s codexProjectState) isPinnedProjectID(projectID string) bool {
+	_, ok := s.pinnedProjectIDs[strings.TrimSpace(projectID)]
 	return ok
 }
 
@@ -357,7 +647,11 @@ func (s *Service) isCodexChatThread(thread model.Thread) bool {
 	if isPathUnderRoot(thread.CWD, s.codexChatsRoot()) {
 		return true
 	}
-	return strings.TrimSpace(thread.CWD) == "" && strings.EqualFold(strings.TrimSpace(thread.ProjectName), chatsProjectName)
+	if strings.TrimSpace(thread.CWD) != "" {
+		return false
+	}
+	project := strings.TrimSpace(thread.ProjectName)
+	return strings.EqualFold(project, chatsProjectName) || strings.EqualFold(project, "Shared/General")
 }
 
 func isPathUnderRoot(value, root string) bool {
@@ -501,6 +795,7 @@ func (s *Service) projectsOverview(ctx context.Context) (*DirectResponse, error)
 }
 
 func (s *Service) projectsOverviewPage(ctx context.Context, page int) (*DirectResponse, error) {
+	s.syncThreads(ctx, 50)
 	lang := s.botLanguage(ctx)
 	catalog, err := s.projectCatalog(ctx)
 	if err != nil {
@@ -537,13 +832,13 @@ func (s *Service) projectsOverviewPage(ctx context.Context, page int) (*DirectRe
 		trailing := fmt.Sprintf("%d chats · %s", workspace.ThreadCount, projectUpdatedAtLabel(workspace.UpdatedAt, s.now))
 		lines = append(lines,
 			fmt.Sprintf("%d. %s", displayIndex, label),
-			fmt.Sprintf("   %s · %s", trailing, latest),
+			"   "+workspaceTrailingText(trailing, latest),
 		)
 		button := s.callbackButton(ctx, projectWorkspaceDisplayButtonLabel(lang, displayIndex, workspace), "project_open", "", "", "", projectWorkspacePayload(workspace))
 		buttons = append(buttons, []model.ButtonSpec{button})
 		row := model.MessageSectionRow{
 			Title:           label,
-			Trailing:        fmt.Sprintf("%s · %s", trailing, latest),
+			Trailing:        workspaceTrailingText(trailing, latest),
 			BackgroundStyle: projectWorkspaceBackgroundStyle(workspace),
 			Button:          button,
 		}
@@ -559,14 +854,14 @@ func (s *Service) projectsOverviewPage(ctx context.Context, page int) (*DirectRe
 		trailing := fmt.Sprintf("%d chats · %s", chatsWorkspace.ThreadCount, projectUpdatedAtLabel(chatsWorkspace.UpdatedAt, s.now))
 		lines = append(lines,
 			fmt.Sprintf("%d. %s", displayIndex, label),
-			fmt.Sprintf("   %s · %s", trailing, latest),
+			"   "+workspaceTrailingText(trailing, latest),
 		)
 		button := s.callbackButton(ctx, projectWorkspaceDisplayButtonLabel(lang, displayIndex, *chatsWorkspace), "project_open", "", "", "", projectWorkspacePayload(*chatsWorkspace))
 		buttons = append(buttons, []model.ButtonSpec{button})
 		chatsSection := model.MessageSection{Text: label, Heading: true, Divider: len(sections) > 0}
 		chatsSection.Rows = append(chatsSection.Rows, model.MessageSectionRow{
 			Title:           label,
-			Trailing:        fmt.Sprintf("%s · %s", trailing, latest),
+			Trailing:        workspaceTrailingText(trailing, latest),
 			BackgroundStyle: chatWorkspaceBackgroundStyle(*chatsWorkspace),
 			Button:          button,
 		})
@@ -583,6 +878,15 @@ func projectWorkspaceBackgroundStyle(workspace projectWorkspace) string {
 		return "cus-0"
 	}
 	return "cus-2"
+}
+
+func workspaceTrailingText(trailing, latest string) string {
+	trailing = strings.TrimSpace(trailing)
+	latest = strings.TrimSpace(latest)
+	if latest == "" {
+		return trailing
+	}
+	return trailing + " · " + latest
 }
 
 func chatWorkspaceBackgroundStyle(workspace projectWorkspace) string {
@@ -637,38 +941,19 @@ func threadVisibleInProjectCatalog(thread model.Thread) bool {
 }
 
 func threadMarkedArchivedOrDeletedForOverview(thread model.Thread) bool {
-	var payload map[string]any
-	if len(thread.Raw) == 0 || json.Unmarshal(thread.Raw, &payload) != nil {
+	if len(thread.Raw) == 0 {
 		return false
 	}
-	return payloadBoolish(payload["archived"]) ||
-		payloadBoolish(payload["isArchived"]) ||
-		payloadBoolish(payload["deleted"]) ||
-		payloadBoolish(payload["isDeleted"]) ||
-		payloadNestedBoolish(payload, "thread", "archived") ||
-		payloadNestedBoolish(payload, "thread", "isArchived") ||
-		payloadNestedBoolish(payload, "thread", "deleted") ||
-		payloadNestedBoolish(payload, "thread", "isDeleted")
-}
-
-func payloadNestedBoolish(payload map[string]any, parent, key string) bool {
-	nested, ok := payload[parent].(map[string]any)
-	return ok && payloadBoolish(nested[key])
-}
-
-func payloadBoolish(value any) bool {
-	switch typed := value.(type) {
-	case bool:
-		return typed
-	case string:
-		switch strings.ToLower(strings.TrimSpace(typed)) {
-		case "1", "true", "yes":
-			return true
+	// Raw thread payloads can be several megabytes. A string scan avoids
+	// unmarshalling the whole document just to check four boolean flags.
+	raw := string(thread.Raw)
+	for _, key := range []string{"archived", "isArchived", "deleted", "isDeleted"} {
+		for _, value := range []string{"true", `"1"`, `"true"`, `"yes"`, "1"} {
+			if strings.Contains(raw, `"`+key+`":`+value) ||
+				strings.Contains(raw, `"`+key+`": `+value) {
+				return true
+			}
 		}
-	case float64:
-		return typed != 0
-	case json.Number:
-		return typed.String() != "" && typed.String() != "0"
 	}
 	return false
 }
@@ -726,6 +1011,7 @@ func projectWorkspacePayload(workspace projectWorkspace) map[string]any {
 		"project_name":   workspace.ProjectName,
 		"directory_name": workspace.DirectoryName,
 		"cwd":            workspace.CWD,
+		"root_paths":     append([]string{}, workspace.RootPaths...),
 		"latest_thread":  workspace.LatestThread,
 		"latest_label":   workspace.LatestThreadLabel,
 		"thread_count":   workspace.ThreadCount,
@@ -739,10 +1025,31 @@ func projectWorkspaceFromPayload(payload map[string]any) projectWorkspace {
 		ProjectName:       payloadMapString(payload, "project_name"),
 		DirectoryName:     payloadMapString(payload, "directory_name"),
 		CWD:               payloadMapString(payload, "cwd"),
+		RootPaths:         payloadMapStringSlice(payload, "root_paths"),
 		LatestThread:      payloadMapString(payload, "latest_thread"),
 		LatestThreadLabel: payloadMapString(payload, "latest_label"),
 		ThreadCount:       payloadMapInt(payload, "thread_count"),
 		Pinned:            payloadMapBool(payload, "pinned"),
+	}
+}
+
+func payloadMapStringSlice(values map[string]any, key string) []string {
+	if values == nil {
+		return nil
+	}
+	switch typed := values[key].(type) {
+	case []string:
+		return append([]string{}, typed...)
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if value, ok := item.(string); ok && strings.TrimSpace(value) != "" {
+				out = append(out, value)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
 
@@ -876,67 +1183,46 @@ func (s *Service) openChatThread(ctx context.Context, chatID, topicID int64, thr
 	if err != nil {
 		return nil, err
 	}
-	if thread == nil || !s.isCodexChatThread(*thread) {
+	if thread == nil {
 		return &DirectResponse{Text: s.t(ctx, "这个对话按钮已过期。请用“打开临时对话”刷新。", "This Chat button is stale. Use Open Chats to refresh.")}, nil
 	}
 	return s.openThreadTopic(ctx, chatID, topicID, *thread, sourceMode)
 }
 
 func (s *Service) openThreadTopic(ctx context.Context, chatID, topicID int64, thread model.Thread, sourceMode string) (*DirectResponse, error) {
-	s.openThreadTopicAsync(ctx, chatID, topicID, thread, sourceMode)
+	s.openFeishuThreadAsync(ctx, chatID, topicID, thread.ID, func(openCtx context.Context) (*DirectResponse, error) {
+		if err := s.ensureOpenThreadTopicRoot(openCtx, chatID, topicID, thread, sourceMode); err != nil {
+			return nil, err
+		}
+		panelCtx := model.WithSilentThreadTopicActivation(openCtx)
+		return s.showThread(withSkippedThreadRefresh(panelCtx), chatID, topicID, thread.ID, true, sourceMode)
+	})
 	return &DirectResponse{
 		CallbackText: s.t(ctx, "正在打开话题", "Opening topic"),
 		ThreadID:     thread.ID,
 	}, nil
 }
 
-func (s *Service) openThreadTopicAsync(ctx context.Context, chatID, topicID int64, thread model.Thread, sourceMode string) {
-	timeout := s.cfg.RequestTimeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
+func (s *Service) ensureOpenThreadTopicRoot(ctx context.Context, chatID, topicID int64, thread model.Thread, sourceMode string) error {
+	s.mu.RLock()
+	sender := s.sender
+	s.mu.RUnlock()
+	if sender == nil {
+		return nil
 	}
-	s.spawn(context.Background(), func(context.Context) {
-		openCtx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-		openCtx = model.WithSilentThreadTopicActivation(openCtx)
-		s.mu.RLock()
-		sender := s.sender
-		s.mu.RUnlock()
-		var topic *model.FeishuThreadTopic
-		if sender != nil {
-			target := model.ObserverTarget{
-				ChatKey: model.ChatKey(chatID, topicID),
-				ChatID:  chatID,
-				TopicID: topicID,
-				Enabled: true,
-			}
-			createdTopic, err := s.ensureThreadTopic(openCtx, sender, target, thread, nil, sourceMode)
-			if err != nil {
-				s.setError(ctx, err)
-				return
-			}
-			topic = createdTopic
-		}
-		response, err := s.showThread(openCtx, chatID, topicID, thread.ID, true, sourceMode)
-		if err != nil {
-			s.setError(ctx, err)
-			return
-		}
-		if response == nil {
-			response = &DirectResponse{}
-		}
-		bindDirectResponseToThreadTopic(response, topic)
-	})
-}
-
-func bindDirectResponseToThreadTopic(response *DirectResponse, topic *model.FeishuThreadTopic) {
-	if response == nil || topic == nil || topic.ChatID == 0 || topic.RootMessageID == 0 {
-		return
+	target := model.ObserverTarget{
+		ChatKey: model.ChatKey(chatID, topicID),
+		ChatID:  chatID,
+		TopicID: topicID,
+		Enabled: true,
 	}
-	response.DeliveryTopicID = 0
-	response.Options.FeishuReplyToMessageID = topic.RootMessageID
-	response.Options.FeishuReplyInThread = true
-	response.Options.FeishuCodexThreadID = topic.ThreadID
+	// One Codex thread owns exactly one Feishu topic. Re-opening it must reuse
+	// that topic instead of creating a new root every time.
+	topicCtx := model.WithForcedThreadTopicActivation(ctx)
+	s.topicMu.Lock()
+	defer s.topicMu.Unlock()
+	_, err := s.ensureThreadTopic(topicCtx, sender, target, thread, nil, sourceMode)
+	return err
 }
 
 func (s *Service) projectMenu(ctx context.Context, payload map[string]any) (*DirectResponse, error) {
@@ -1035,7 +1321,16 @@ func (s *Service) threadBelongsToProjectWorkspace(thread model.Thread, workspace
 	if strings.EqualFold(strings.TrimSpace(workspace.ProjectName), chatsProjectName) || strings.TrimSpace(workspace.Key) == chatsProjectWorkspaceKey {
 		return s.isCodexChatThread(thread)
 	}
-	return model.NormalizePath(thread.CWD) == model.NormalizePath(workspace.CWD)
+	roots := workspace.RootPaths
+	if len(roots) == 0 && strings.TrimSpace(workspace.CWD) != "" {
+		roots = []string{workspace.CWD}
+	}
+	for _, root := range roots {
+		if isPathUnderRoot(thread.CWD, root) {
+			return true
+		}
+	}
+	return false
 }
 
 func threadBackgroundStyle(thread model.Thread, codexProjects codexProjectState) string {

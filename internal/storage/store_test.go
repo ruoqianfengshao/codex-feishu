@@ -223,6 +223,113 @@ func TestReconcileListedThreadsHidesThreadsMissingFromCodexList(t *testing.T) {
 	}
 }
 
+func TestSavePendingApprovalKeepsDeliveredMessageID(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	ctx := context.Background()
+	approval := model.PendingApproval{
+		RequestID:  "req-1",
+		ThreadID:   "thread-1",
+		TurnID:     "turn-1",
+		PromptKind: "approval",
+		Question:   "Allow?",
+		Status:     "pending",
+		UpdatedAt:  model.NowString(),
+	}
+	if err := store.SavePendingApproval(ctx, approval); err != nil {
+		t.Fatalf("SavePendingApproval failed: %v", err)
+	}
+	if err := store.UpdatePendingApprovalMessageID(ctx, "req-1", 4242); err != nil {
+		t.Fatalf("UpdatePendingApprovalMessageID failed: %v", err)
+	}
+	// A repeated app-server event must not reset the delivered card id.
+	if err := store.SavePendingApproval(ctx, approval); err != nil {
+		t.Fatalf("SavePendingApproval(repeat) failed: %v", err)
+	}
+	stored, err := store.GetPendingApproval(ctx, "req-1")
+	if err != nil {
+		t.Fatalf("GetPendingApproval failed: %v", err)
+	}
+	if stored == nil || stored.ChatMessageID != 4242 {
+		t.Fatalf("stored approval = %#v, want chat message id preserved", stored)
+	}
+}
+
+func TestReconcileListedThreadsKeepsCatalogOnEmptyResult(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	ctx := context.Background()
+	if err := store.UpsertThread(ctx, model.Thread{
+		ID:          "visible-thread",
+		Title:       "Visible",
+		ProjectName: "visible-project",
+		UpdatedAt:   20,
+		Raw:         json.RawMessage(`{"id":"visible-thread"}`),
+	}); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+
+	if err := store.ReconcileListedThreads(ctx, nil); err != nil {
+		t.Fatalf("ReconcileListedThreads(nil) failed: %v", err)
+	}
+	listed, err := store.ListThreads(ctx, 10, "")
+	if err != nil {
+		t.Fatalf("ListThreads failed: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != "visible-thread" {
+		t.Fatalf("listed threads = %#v, want cache kept after empty reconcile", listed)
+	}
+}
+
+func TestUpsertCatalogThreadsPreservesRuntimeFields(t *testing.T) {
+	t.Parallel()
+
+	store := openTestStore(t)
+	ctx := context.Background()
+	original := model.Thread{
+		ID:           "catalog-thread",
+		Title:        "Original title",
+		CWD:          "/Users/example/work/project",
+		ProjectName:  "project",
+		UpdatedAt:    10,
+		Status:       "active",
+		ActiveTurnID: "turn-1",
+		LastPreview:  "original preview",
+		Raw:          json.RawMessage(`{"id":"catalog-thread","rollout":"/tmp/rollout.jsonl"}`),
+	}
+	if err := store.UpsertThread(ctx, original); err != nil {
+		t.Fatalf("UpsertThread failed: %v", err)
+	}
+	if err := store.UpsertCatalogThreads(ctx, []model.Thread{{
+		ID:          "catalog-thread",
+		Title:       "",
+		CWD:         "/Users/example/work/project/sub",
+		ProjectName: "",
+		UpdatedAt:   30,
+		LastPreview: "",
+	}}, map[string]struct{}{"catalog-thread": {}}); err != nil {
+		t.Fatalf("UpsertCatalogThreads failed: %v", err)
+	}
+	thread, err := store.GetThread(ctx, "catalog-thread")
+	if err != nil {
+		t.Fatalf("GetThread failed: %v", err)
+	}
+	if thread == nil {
+		t.Fatal("thread missing after catalog upsert")
+	}
+	if thread.Title != "Original title" || thread.ProjectName != "project" {
+		t.Fatalf("thread = %#v, want catalog to keep existing title and project", thread)
+	}
+	if thread.Status != "active" || thread.ActiveTurnID != "turn-1" || thread.LastPreview != "original preview" {
+		t.Fatalf("thread = %#v, want runtime fields preserved", thread)
+	}
+	if thread.CWD != "/Users/example/work/project/sub" || thread.UpdatedAt != 30 {
+		t.Fatalf("thread = %#v, want catalog cwd and newer timestamp", thread)
+	}
+}
+
 func TestDeliveryQueueClaimRetryAndComplete(t *testing.T) {
 	t.Parallel()
 
